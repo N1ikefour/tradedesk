@@ -58,20 +58,31 @@ Skills: `.claude/skills/ingest-mt5/` — домен нормализации dea
 
 ## 4. Команды
 
+Полный список с пометками — `make help`.
+
+**Работают:**
+
 ```
-make init      # .env из .env.example с генерацией секретов
-make up        # docker compose --profile local up -d
-make down
-make test      # pytest (api) + vitest (web)
-make lint      # ruff + mypy + eslint + prettier --check
-make migrate   # alembic upgrade head внутри контейнера api
-make revision m="описание"   # новая миграция
-make types     # openapi → apps/web/src/api/schema.d.ts
+make install   # venv + зависимости обоих python-пакетов + npm ci. Предусловие для всего остального
+make hooks     # pre-commit install
+make ci        # lint + test + build-web. ЭТО гейт перед PR
+make lint      # ruff + mypy (api, collector) + eslint + prettier + tsc (web)
+make test      # pytest
+make build-web # vite build
+make format    # автоформат
+```
+
+**Заглушки** — печатают, в какой задаче появятся, и падают с ненулевым кодом:
+
+```
+make init / up / down          # S0-06 (Docker Compose)
+make migrate / revision        # S0-02, S0-03 (Alembic)
+make types                     # S0-07 (openapi → schema.d.ts)
 ```
 
 Коллектор: `cd apps/collector-mt5 && run-collector.bat` (Windows).
 
-**Статус:** ни одна команда пока не существует — `Makefile` создаётся в S0‑01. До этого проверки запускаются напрямую, и это указывается в итоге явно.
+⚠️ `make ci` включает `pre-commit run --all-files`, а часть хуков умеет править файлы (`ruff --fix`, форматтеры). Прогон гейта может изменить рабочее дерево — это не поломка, а поведение хуков.
 
 ---
 
@@ -96,7 +107,7 @@ make types     # openapi → apps/web/src/api/schema.d.ts
 - Тестовая БД защищена guard'ом: имя обязано содержать `_test`; guard кидает исключение до первого запроса.
 - Порог покрытия `ingest` и `analytics` — 90 %.
 - Новый код‑путь = тест. Нет теста — явное «почему нет» в итоге.
-- Перед PR: `make lint && make test` зелёные.
+- Перед PR: **`make ci` зелёный**. Это единственная точка правды — CI вызывает те же цели, поэтому локальный гейт и удалённый совпадают. `make lint && make test` — подмножество: они не проверяют сборку web.
 
 ---
 
