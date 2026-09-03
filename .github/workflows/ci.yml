@@ -29,12 +29,12 @@ jobs:
             apps/collector-mt5/pyproject.toml
 
       # MetaTrader5 не ставится: он объявлен extra с маркером sys_platform == 'win32'.
+      # pre-commit приходит из apps/api[dev] — граница версии живёт только в pyproject.
       - name: install dev tools
         run: |
           python -m pip install --upgrade pip
           pip install -e "apps/api[dev]"
           pip install -e "apps/collector-mt5[dev]"
-          pip install "pre-commit>=3.5,<5"
 
       # Ровно та же цель, что гоняется локально: make ci = ci-api + ci-web.
       - run: make ci-api
