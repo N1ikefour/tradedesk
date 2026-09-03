@@ -16,14 +16,17 @@ ifneq ($(wildcard $(VENV_BIN)/ruff),)
 RUFF  := $(VENV_BIN)/ruff
 MYPY  := $(VENV_BIN)/mypy
 PYTEST := $(VENV_BIN)/pytest
+PRECOMMIT := $(VENV_BIN)/pre-commit
 else
 RUFF  := ruff
 MYPY  := mypy
 PYTEST := pytest
+PRECOMMIT := pre-commit
 endif
 
-.PHONY: help install hooks lint lint-api lint-collector lint-web test test-api build-web format \
-        guard-python guard-web init up down migrate revision types
+.PHONY: help install hooks ci ci-api ci-web lint lint-api lint-collector lint-web lint-hooks \
+        test test-api build-web format guard-python guard-precommit guard-web \
+        init up down migrate revision types
 
 ## ----------------------------------------------------------------------------
 ## Справка
@@ -34,12 +37,17 @@ help:
 	@echo "TradeDesk — команды разработки"
 	@echo ""
 	@echo "  Работают:"
+	@echo "    make ci              ВЕСЬ гейт: то же самое и в том же составе, что гоняет GitHub Actions"
+	@echo "                         (ci-api + ci-web). Перед PR прогоняется именно она"
+	@echo "    make ci-api          джоб api: lint-api + lint-collector + lint-hooks + test-api"
+	@echo "    make ci-web          джоб web: lint-web + build-web"
 	@echo "    make install         установка dev-зависимостей (.venv для python, npm ci для web)"
 	@echo "    make hooks           поставить git-хуки pre-commit (после make install)"
 	@echo "    make lint            ruff + mypy (api, collector) + eslint + prettier --check + tsc (web)"
 	@echo "    make lint-api        ruff check + ruff format --check + mypy для apps/api"
 	@echo "    make lint-collector  ruff check + ruff format --check + mypy для apps/collector-mt5"
 	@echo "    make lint-web        eslint + prettier --check + tsc --noEmit для apps/web"
+	@echo "    make lint-hooks      pre-commit run --all-files (в т.ч. detect-private-key)"
 	@echo "    make test            тесты: pytest (api). Тесты web (vitest) появятся в S0-07"
 	@echo "    make test-api        pytest для apps/api"
 	@echo "    make build-web       vite build для apps/web"
@@ -76,12 +84,27 @@ guard-python:
 	@command -v $(RUFF) >/dev/null 2>&1 || { \
 	  echo "ruff/mypy/pytest не найдены. Запусти: make install"; exit 1; }
 
+guard-precommit:
+	@command -v $(PRECOMMIT) >/dev/null 2>&1 || { \
+	  echo "pre-commit не найден. Запусти: make install"; exit 1; }
+
 guard-web:
 	@test -d $(WEB_DIR)/node_modules || { \
 	  echo "apps/web/node_modules нет. Запусти: make install"; exit 1; }
 
 ## ----------------------------------------------------------------------------
-## Линт и тесты — те же команды, что гоняет CI
+## Гейт целиком. CI вызывает ci-api и ci-web, локально `make ci` = оба джоба.
+## Расхождение локального прогона и CI — баг инфраструктуры, а не «особенность».
+## ----------------------------------------------------------------------------
+
+ci: ci-api ci-web
+
+ci-api: lint-api lint-collector lint-hooks test-api
+
+ci-web: lint-web build-web
+
+## ----------------------------------------------------------------------------
+## Отдельные проверки
 ## ----------------------------------------------------------------------------
 
 lint: lint-api lint-collector lint-web
@@ -100,6 +123,9 @@ lint-web: guard-web
 	cd $(WEB_DIR) && $(NPM) run lint
 	cd $(WEB_DIR) && $(NPM) run format:check
 	cd $(WEB_DIR) && $(NPM) run typecheck
+
+lint-hooks: guard-precommit
+	$(PRECOMMIT) run --all-files
 
 test: test-api
 	@echo "тесты web (vitest) появятся в S0-07"

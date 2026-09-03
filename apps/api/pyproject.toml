@@ -25,13 +25,16 @@ include = ["app*"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# ruff 0.16 форматирует python-блоки внутри markdown — документация не его дело.
+# ruff 0.16 форматирует python-блоки внутри markdown. Здесь это страхует прогоны
+# внутри каталога приложения; документы в корне репозитория защищает только
+# types_or: [python, pyi] в .pre-commit-config.yaml — сюда ruff за конфигом не ходит.
 extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "C4", "RUF"]
-# Комментарии и docstring'и в проекте на русском — RUF001-003 (ambiguous unicode) шумят на кириллице.
-ignore = ["RUF001", "RUF002", "RUF003"]
+# Комментарии и docstring'и в проекте на русском: RUF002/RUF003 шумят на них постоянно.
+# RUF001 (строковые литералы) включён: гомоглиф в тикере или коде ошибки — баг данных.
+ignore = ["RUF002", "RUF003"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -41,11 +44,24 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
 
-# SPEC.md 2.2: strict для domains/ingest и domains/analytics, остальное — обычный mypy.
-# Модулей ещё нет, конфиг заведён заранее, чтобы strict не пришлось «включать потом».
+# SPEC.md 2.2: strict только для domains/ingest и domains/analytics.
+# `strict = true` в per-module секции mypy молча применяет к проекту целиком,
+# поэтому набор флагов перечислен явно. warn_redundant_casts и warn_unused_configs
+# mypy принимает только глобально: первый включён выше, второй не используем.
 [[tool.mypy.overrides]]
 module = ["app.domains.ingest.*", "app.domains.analytics.*"]
-strict = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_decorators = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_reexport = true
+strict_equality = true
+extra_checks = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -24,13 +24,16 @@ include = ["collector*"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# ruff 0.16 форматирует python-блоки внутри markdown — документация не его дело.
+# ruff 0.16 форматирует python-блоки внутри markdown. Здесь это страхует прогоны
+# внутри каталога приложения; документы в корне репозитория защищает только
+# types_or: [python, pyi] в .pre-commit-config.yaml — сюда ruff за конфигом не ходит.
 extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "C4", "RUF"]
-# Комментарии и docstring'и в проекте на русском — RUF001-003 (ambiguous unicode) шумят на кириллице.
-ignore = ["RUF001", "RUF002", "RUF003"]
+# Комментарии и docstring'и в проекте на русском: RUF002/RUF003 шумят на них постоянно.
+# RUF001 (строковые литералы) включён: гомоглиф в тикере или коде ошибки — баг данных.
+ignore = ["RUF002", "RUF003"]
 
 [tool.mypy]
 python_version = "3.12"
