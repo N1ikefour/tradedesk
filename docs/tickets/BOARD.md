@@ -14,7 +14,7 @@ Updated: 2026-09-03
 
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
-| S0-01 | Скелет монорепо | infra | In Progress | `feat/S0-01-monorepo-skeleton` |
+| S0-01 | Скелет монорепо | infra | In Review | [PR #1](https://github.com/N1ikefour/tradedesk/pull/1) |
 | S0-02 | API-скелет | backend | Backlog | — |
 | S0-03 | Миграция ядра | backend | Backlog | — |
 | S0-04 | Auth | backend | Backlog | — |
