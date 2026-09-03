@@ -26,7 +26,7 @@ endif
 
 .PHONY: help install hooks ci ci-api ci-web lint lint-api lint-collector lint-web lint-hooks \
         test test-api build-web format guard-python guard-precommit guard-web \
-        init up down migrate revision types
+        init up down types
 
 ## ----------------------------------------------------------------------------
 ## Справка
@@ -58,8 +58,9 @@ help:
 	@echo "    make init            .env из .env.example с генерацией секретов   → S0-06"
 	@echo "    make up              docker compose --profile local up -d         → S0-06"
 	@echo "    make down            остановка окружения                          → S0-06"
-	@echo "    make migrate         alembic upgrade head в контейнере api        → S0-03"
-	@echo "    make revision m=\"…\"  новая alembic-миграция                       → S0-03"
+	@echo "    make migrate         alembic upgrade head"
+	@echo "    make revision m=\"…\"  новая alembic-миграция (autogenerate)"
+	@echo "    make downgrade       откат на шаг назад, make downgrade to=base"
 	@echo "    make types           openapi → apps/web/src/api/schema.d.ts       → S0-07"
 	@echo ""
 
@@ -72,7 +73,6 @@ install:
 	$(VENV_BIN)/python -m pip install --upgrade pip
 	$(VENV_BIN)/python -m pip install -e "$(API_DIR)[dev]"
 	$(VENV_BIN)/python -m pip install -e "$(COLLECTOR_DIR)[dev]"
-	$(VENV_BIN)/python -m pip install "pre-commit>=3.5,<5"
 	cd $(WEB_DIR) && $(NPM) ci
 	@echo ""
 	@echo "Готово. Git-хуки ставятся отдельно: make hooks"
@@ -159,14 +159,17 @@ down:
 	@echo "make down ещё не реализована — задача S0-06."
 	@exit 1
 
-migrate:
-	@echo "make migrate ещё не реализована — задачи S0-02 (Alembic) и S0-03 (миграция ядра)."
-	@exit 1
+migrate: guard-python
+	cd $(API_DIR) && $(VENV_BIN)/alembic upgrade head
 
-revision:
-	@echo "make revision ещё не реализована — задачи S0-02 (Alembic) и S0-03 (миграция ядра)."
-	@echo 'Будет: make revision m="описание"'
-	@exit 1
+.PHONY: downgrade
+downgrade: guard-python
+	cd $(API_DIR) && $(VENV_BIN)/alembic downgrade $(or $(to),-1)
+
+.PHONY: revision
+revision: guard-python
+	@test -n "$(m)" || { echo 'Нужно описание: make revision m="что меняем"'; exit 1; }
+	cd $(API_DIR) && $(VENV_BIN)/alembic revision --autogenerate -m "$(m)"
 
 types:
 	@echo "make types ещё не реализована — задача S0-07 (openapi-typescript → apps/web/src/api/schema.d.ts)."
