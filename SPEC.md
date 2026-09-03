@@ -1,6 +1,6 @@
 # SPEC — техническая спецификация v1 (этапы 0–2 и веха «Первый тест»)
 
-Версия 1.0 — 3 сентября 2026. Дополняет `PLAN.md`. Написана для разработки с AI‑агентами: каждый раздел самодостаточен, решения зафиксированы, неопределённости вынесены в раздел 14.
+Версия 1.1 — 3 сентября 2026 (v1.1: guard тестовой БД в DoD S0‑02; оговорка про инструментальные зависимости в 2.3). Дополняет `PLAN.md`. Написана для разработки с AI‑агентами: каждый раздел самодостаточен, решения зафиксированы, неопределённости вынесены в раздел 14.
 
 Рабочее название продукта: **TradeDesk** (переименовать одной заменой — используется только в UI‑строках и `APP_NAME`).
 
@@ -117,6 +117,8 @@ trading/
 **web:** react 19, react-router 7, @tanstack/react-query, @tanstack/react-table, @tanstack/react-virtual, openapi-fetch + openapi-typescript, zustand (глобальный переключатель счетов), tailwindcss, shadcn/ui (radix), lucide-react, lightweight-charts, recharts, date-fns + date-fns-tz, zod, vitest, @testing-library/react, playwright (smoke).
 
 **collector-mt5:** MetaTrader5, httpx, pydantic, pydantic-settings, structlog, tenacity.
+
+Ограничение этого раздела касается **продуктовых** зависимостей. Сопутствующие инструментальные пакеты — плагины и конфиги линтеров, типы `@types/*`, сборочные плагины — следуют из требований 2.2 и отдельного согласования не требуют.
 
 ---
 
@@ -670,7 +672,7 @@ SENTRY_DSN=
 ### Этап 0 — Фундамент
 
 - **S0‑01 Скелет монорепо** — структура 2.1, `Makefile`, `ruff/mypy/eslint/prettier`, pre‑commit, GitHub Actions (lint + test api, lint + build web). DoD: CI зелёный на пустых приложениях.
-- **S0‑02 API‑скелет** — `main.py`, config через pydantic‑settings, async‑SQLAlchemy, Alembic, `GET /health`, structlog JSON‑логи, Sentry по DSN, обработчик ошибок 5.1. DoD: `/health` отдаёт статусы БД и Redis.
+- **S0‑02 API‑скелет** — `main.py`, config через pydantic‑settings, async‑SQLAlchemy, Alembic, `GET /health`, structlog JSON‑логи, Sentry по DSN, обработчик ошибок 5.1. DoD: `/health` отдаёт статусы БД и Redis; guard тестовой БД — имя обязано содержать `_test`, исключение бросается до первого запроса (раздел 13).
 - **S0‑03 Миграция ядра** — все таблицы раздела 3 (кроме `daily_stats` — S3‑xx). DoD: `alembic upgrade head` / `downgrade base` без ошибок; ER‑диаграмма в `docs/`.
 - **S0‑04 Auth** — раздел 4 полностью, `ConsoleEmailProvider`, `dev_outbox`, rate‑limit. DoD: интеграционные тесты: запрос кода, неверный код ×5 → блок, верный код → cookie, `me`, logout, 429.
 - **S0‑05 Шифрование credentials** — `core/security.py`: envelope‑схема 3.2, функции `encrypt_credentials(dict) -> (ciphertext, wrapped_key)`, `decrypt_credentials`, ротация `MASTER_KEY` (скрипт). DoD: тесты, включая ротацию.
