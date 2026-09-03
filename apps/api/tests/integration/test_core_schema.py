@@ -630,8 +630,10 @@ async def test_check_constraints_accept_boundary_values(migrated: None) -> None:
         await session.commit()
 
         stored = await session.execute(
-            text("select confidence, setup_grade, execution_grade from reflections"
-                 " order by confidence")
+            text(
+                "select confidence, setup_grade, execution_grade from reflections"
+                " order by confidence"
+            )
         )
         assert stored.all() == [(1, "A", "D"), (5, "D", "A")]
 
