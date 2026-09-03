@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from sqlalchemy import text
+from sqlalchemy import MetaData, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import (
@@ -27,8 +27,21 @@ TEST_DATABASE_MARKER = "_test"
 PING_TIMEOUT_SECONDS = 2.0
 
 
+# Без этого имена ограничений придумывает Postgres, и `downgrade` в следующих задачах
+# приходится писать по факту, а не по модели. Задаётся один раз, до первой миграции.
+NAMING_CONVENTION = {
+    "ix": "ix_%(table_name)s_%(column_0_N_name)s",
+    "uq": "uq_%(table_name)s_%(column_0_N_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_N_name)s",
+    "pk": "pk_%(table_name)s",
+}
+
+
 class Base(DeclarativeBase):
-    """Общий declarative-базис. Таблицы появляются в S0-03."""
+    """Общий declarative-базис. Таблицы — в `app/domains/*/models.py`."""
+
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
 class DatabaseGuardError(RuntimeError):
