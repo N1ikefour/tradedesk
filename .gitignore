@@ -1,9 +1,12 @@
 # --- секреты и локальное окружение ---
+# .env, .env.local, .env.production, collector.env, collector.env.production —
+# в репозиторий попадают только *.env.example. Дублируется хуком forbid-env-files.
 .env
-.env.local
+.env.*
 *.env
+*.env.*
 !.env.example
-!collector.env.example
+!*.env.example
 backups/
 
 # --- Python ---

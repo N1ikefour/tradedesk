@@ -1,0 +1,40 @@
+minimum_pre_commit_version: "3.5.0"
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        # В markdown два пробела на конце строки — перенос, а не мусор.
+        args: ["--markdown-linebreak-ext=md"]
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+        exclude: ^apps/web/tsconfig\.json$
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.5
+    hooks:
+      # types_or: ruff 0.16 форматирует python-блоки внутри .md — документы трогать нельзя.
+      - id: ruff-check
+        args: ["--fix"]
+        types_or: [python, pyi]
+      - id: ruff-format
+        types_or: [python, pyi]
+
+  - repo: local
+    hooks:
+      # Секрет, попавший в историю, — необратимая проблема (DEVELOPER_MANUAL.md 11.1).
+      # В git идут только *.env.example.
+      - id: forbid-env-files
+        name: "файлы окружения не коммитятся"
+        entry: "в репозиторий попадает только *.env.example; .env и collector.env содержат секреты"
+        language: fail
+        # .env, .env.local, .env.production, collector.env, collector.env.production.
+        files: '(^|/)[^/]*\.env(\.[^/]*)?$'
+        exclude: '\.example$'
