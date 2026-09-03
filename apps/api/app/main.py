@@ -34,12 +34,15 @@ def _init_sentry(settings: Settings) -> bool:
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    # Инициализация — отдельным шагом: побочный эффект внутри аргумента log.info прятал бы
+    # причину падения Sentry SDK за строчкой логирования.
+    sentry_enabled = _init_sentry(settings)
     # В лог идёт присутствие секретов, не значения (DEVELOPER_MANUAL.md 11.1).
     log.info(
         "app.started",
         app_env=settings.app_env,
         version=__version__,
-        sentry="enabled" if _init_sentry(settings) else "disabled",
+        sentry="enabled" if sentry_enabled else "disabled",
         secrets=settings.secret_presence(),
     )
     try:
@@ -53,7 +56,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     """Гейты конфигурации отрабатывают здесь — до старта сервера и первого запроса."""
     settings = get_settings()
-    configure_logging()
+    # Значения секретов передаются логгеру, чтобы он вырезал их из любого текста,
+    # включая traceback: цензура по имени ключа не спасает от текста исключения.
+    configure_logging(secret_values=settings.scrubbable_secret_values())
 
     app = FastAPI(
         title=settings.app_name,

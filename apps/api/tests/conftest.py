@@ -12,10 +12,11 @@ from fastapi import FastAPI
 
 from app.core import db as db_module
 from app.core import redis as redis_module
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
+from app.core.db import ensure_test_database
 
 # Порт, на котором заведомо никто не слушает: зависимость «недоступна» без ожидания сети.
-UNREACHABLE_DB_URL = "postgresql+asyncpg://td:td@127.0.0.1:1/td"
+UNREACHABLE_DB_URL = "postgresql+asyncpg://td:td@127.0.0.1:1/td_test"
 UNREACHABLE_REDIS_URL = "redis://127.0.0.1:1/0"
 
 
@@ -38,6 +39,26 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         if "integration" in item.keywords:
             item.add_marker(skip)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def guard_test_database() -> Iterator[None]:
+    """Ни один движок в тестах не создаётся до проверки имени БД.
+
+    Guard как отдельная функция ничего не защищает: его надо поставить на путь создания
+    движка. Здесь — единственное место, через которое тесты получают соединение.
+    """
+    original = db_module.create_engine
+
+    def guarded(settings: Settings) -> object:
+        ensure_test_database(settings.database_url.get_secret_value())
+        return original(settings)
+
+    db_module.create_engine = guarded  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        db_module.create_engine = original
 
 
 @pytest.fixture(autouse=True)

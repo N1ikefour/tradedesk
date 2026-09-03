@@ -71,6 +71,16 @@ class Settings(BaseSettings):
             "COLLECTOR_TOKEN": self.collector_token,
         }
 
+    def scrubbable_secret_values(self) -> list[str]:
+        """Значения, которые логгер вырезает из любого текста. URL целиком не отдаём —
+        в нём есть и полезный для диагностики хост; пароль из него режет регексп логгера."""
+        values = [secret.get_secret_value() for secret in self.required_secrets().values()]
+        values += [
+            self.resend_api_key.get_secret_value(),
+            self.s3_secret_key.get_secret_value(),
+        ]
+        return [value for value in values if value.strip()]
+
     def secret_presence(self) -> dict[str, str]:
         """Presence-check для логов: present/MISSING, никогда не значение."""
         return {

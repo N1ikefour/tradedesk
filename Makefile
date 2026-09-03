@@ -26,7 +26,7 @@ endif
 
 .PHONY: help install hooks ci ci-api ci-web lint lint-api lint-collector lint-web lint-hooks \
         test test-api build-web format guard-python guard-precommit guard-web \
-        init up down types
+        init up down migrate downgrade revision types
 
 ## ----------------------------------------------------------------------------
 ## Справка

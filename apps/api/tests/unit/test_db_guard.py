@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.db import DatabaseGuardError, ensure_test_database, mask_database_url
+from app.core.db import (
+    DatabaseGuardError,
+    ensure_test_database,
+    get_engine,
+    mask_database_url,
+)
 
 
 def test_guard_raises_on_non_test_database() -> None:
@@ -40,3 +45,16 @@ def test_mask_database_url_hides_password() -> None:
 
     assert "hunter2" not in masked
     assert "localhost" in masked
+
+
+def test_suite_refuses_engine_for_non_test_database(
+    local_env: pytest.MonkeyPatch,
+) -> None:
+    """Guard стоит на пути создания движка, а не лежит непозванной функцией.
+
+    Ревью S0-02 показало: без этой проверки сьют молча подключался к базе `tradedesk_prod`.
+    """
+    local_env.setenv("DATABASE_URL", "postgresql+asyncpg://td:td@127.0.0.1:1/tradedesk_prod")
+
+    with pytest.raises(DatabaseGuardError):
+        get_engine()
