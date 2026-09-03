@@ -596,29 +596,49 @@ async def test_check_constraints_reject_forbidden_values(migrated: None) -> None
 
 
 async def test_check_constraints_accept_boundary_values(migrated: None) -> None:
-    """Обратная сторона: границы словарей и диапазона обязаны проходить."""
+    """Обратная сторона: границы словарей и диапазона обязаны проходить.
+
+    Reject-кейсы ловят только слишком широкий предикат. Сужение живого значения
+    (`between 1 and 4`, `account_type in ('netting')`) они пропускают — ревью S0-03
+    показало это двумя выжившими мутациями. Поэтому здесь проверяются оба конца
+    диапазона и каждое значение словарей, а не по одному представителю.
+    """
     async with AsyncSession(get_engine()) as session:
-        account = await _account(session, "manual", account_type="netting")
-        account.status = "archived"
-        position = await _position(session, account)
-        position_id = position.id
+        hedging = await _account(session, "manual", account_type="hedging")
+        netting = await _account(session, "manual", account_type="netting")
+        netting.status = "archived"
+        low = await _position(session, hedging)
+        high = await _position(session, netting)
         session.add_all(
             [
                 Reflection(
-                    position_id=position_id,
+                    position_id=low.id,
                     setup_grade="A",
                     execution_grade="D",
                     confidence=1,
                     updated_at=datetime.now(UTC),
-                )
+                ),
+                Reflection(
+                    position_id=high.id,
+                    setup_grade="D",
+                    execution_grade="A",
+                    confidence=5,
+                    updated_at=datetime.now(UTC),
+                ),
             ]
         )
         await session.commit()
 
         stored = await session.execute(
-            text("select confidence, setup_grade, execution_grade from reflections")
+            text("select confidence, setup_grade, execution_grade from reflections"
+                 " order by confidence")
         )
-        assert stored.all() == [(1, "A", "D")]
+        assert stored.all() == [(1, "A", "D"), (5, "D", "A")]
+
+        account_types = await session.execute(
+            text("select account_type from trading_accounts order by account_type")
+        )
+        assert [row[0] for row in account_types] == ["hedging", "netting"]
 
 
 async def test_mt5_accounts_collide_on_server_and_login(migrated: None) -> None:
