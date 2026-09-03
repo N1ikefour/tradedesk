@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    name: api — lint + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            apps/api/pyproject.toml
+            apps/collector-mt5/pyproject.toml
+
+      # MetaTrader5 не ставится: он объявлен extra с маркером sys_platform == 'win32'.
+      - name: install dev tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "apps/api[dev]"
+          pip install -e "apps/collector-mt5[dev]"
+
+      - run: make lint-api
+      - run: make lint-collector
+      - run: make test-api
+
+  web:
+    name: web — lint + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # vite 8 требует node ^20.19 || >=22.12; 22 — то же, что на машине разработки.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: install deps
+        run: npm ci
+        working-directory: apps/web
+
+      - run: make lint-web
+      - run: make build-web
