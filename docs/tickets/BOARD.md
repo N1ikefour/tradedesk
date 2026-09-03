@@ -15,7 +15,7 @@ Updated: 2026-09-03
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
 | S0-01 | Скелет монорепо | infra | **Done** | [PR #1](https://github.com/N1ikefour/tradedesk/pull/1) |
-| S0-02 | API-скелет | backend | In Progress | `feat/S0-02-api-skeleton` |
+| S0-02 | API-скелет | backend | In Review | [PR #2](https://github.com/N1ikefour/tradedesk/pull/2) |
 | S0-03 | Миграция ядра | backend | Backlog | — |
 | S0-04 | Auth | backend | Backlog | — |
 | S0-05 | Шифрование credentials | backend | Backlog | — |
@@ -77,3 +77,5 @@ Updated: 2026-09-03
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
 | X-01 | `make ci-target`: гейт на целевой версии Python | infra | Todo | — |
+| X-02 | Скраб секретов в логах: рекурсия по значениям и пароли БД | backend | Todo | — |
+| X-03 | Формат ошибок в OpenAPI | backend | Todo | — |
