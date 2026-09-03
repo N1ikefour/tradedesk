@@ -14,7 +14,8 @@ dependencies = [
   "uvicorn>=0.30,<1.0",
   "sqlalchemy[asyncio]>=2.0,<3.0",
   "asyncpg>=0.29,<1.0",
-  "alembic>=1.13,<2.0",
+  # 1.16 — там появился path_separator, который стоит в alembic.ini.
+  "alembic>=1.16,<2.0",
   "pydantic>=2.8,<3.0",
   "pydantic-settings>=2.4,<3.0",
   "redis>=5.0,<7.0",
@@ -29,7 +30,9 @@ dev = [
   "pytest>=8,<9",
   "pytest-asyncio>=0.24,<2",
   "httpx>=0.27,<1.0",
-  "testcontainers>=4.8,<5.0",
+  # 4.15 — раньше не было пакета testcontainers.community.*, из которого
+  # интеграционные тесты берут PostgresContainer и RedisContainer.
+  "testcontainers>=4.15,<5.0",
   # Граница версии живёт здесь одна: Makefile и CI ставят pre-commit этим extra.
   "pre-commit>=3.5,<5",
 ]

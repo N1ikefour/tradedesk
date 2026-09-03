@@ -11,12 +11,18 @@ from alembic import context
 from app.core.config import get_settings
 from app.core.db import Base, create_engine
 
+# Импорт ради побочного эффекта: без него модели не зарегистрированы в Base.metadata
+# и autogenerate предложит удалить все таблицы. Новый домен с моделями — новая строка здесь.
+from app.domains.accounts import models as accounts_models  # noqa: F401
+from app.domains.auth import models as auth_models  # noqa: F401
+from app.domains.ingest import models as ingest_models  # noqa: F401
+from app.domains.journal import models as journal_models  # noqa: F401
+
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Модели импортируются здесь, чтобы autogenerate видел метаданные. Таблицы — с S0-03.
 target_metadata = Base.metadata
 
 
