@@ -66,6 +66,7 @@ Skills: `.claude/skills/ingest-mt5/` — домен нормализации dea
 make install   # venv + зависимости обоих python-пакетов + npm ci. Предусловие для всего остального
 make hooks     # pre-commit install
 make ci        # lint + test + build-web. ЭТО гейт перед PR
+make ci-target # тот же линт и unit-тесты, но на ЦЕЛЕВОМ Python 3.12 в контейнере
 make lint      # ruff + mypy (api, collector) + eslint + prettier + tsc (web)
 make test      # pytest
 make build-web # vite build
@@ -83,6 +84,8 @@ make types                     # S0-07 (openapi → schema.d.ts)
 Коллектор: `cd apps/collector-mt5 && run-collector.bat` (Windows).
 
 ⚠️ `make ci` включает `pre-commit run --all-files`, а часть хуков умеет править файлы (`ruff --fix`, форматтеры). Прогон гейта может изменить рабочее дерево — это не поломка, а поведение хуков.
+
+⚠️ `make ci-target` **дополняет** `make ci`, а не заменяет её: он гоняет ruff, mypy и unit-тесты на целевом Python 3.12 в контейнере, но без pre-commit и без интеграционных тестов (testcontainers не достаёт опубликованный порт из sibling-контейнера). Нужен, потому что на машине разработки стоит 3.14: локальный зелёный прогон на ней не доказывает зелёный CI. Авторитетная проверка остаётся за GitHub Actions.
 
 ---
 
