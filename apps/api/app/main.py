@@ -13,6 +13,7 @@ from app.core.config import Settings, get_settings
 from app.core.db import dispose_engine
 from app.core.errors import register_error_handlers
 from app.core.logging import configure_logging, get_logger
+from app.core.openapi import install_error_responses
 from app.core.origin import OriginCheckMiddleware
 from app.core.redis import close_redis
 from app.core.security import check_master_key, master_key_scrub_values
@@ -98,6 +99,10 @@ def create_app() -> FastAPI:
         redoc_url=None,
     )
     register_error_handlers(app)
+    # Тот же формат ошибок — в OpenAPI (ADR-0004). Без этого схема обещает фронту
+    # `422 HTTPValidationError`, которого приложение не отдаёт, и не знает ни одного
+    # кода из словаря SPEC.md 5.1.
+    install_error_responses(app)
     # CSRF из SPEC.md 4: проверка Origin распространяется на все мутирующие запросы.
     app.add_middleware(OriginCheckMiddleware, app_url=settings.app_url)
     app.include_router(system_router, prefix=API_PREFIX)

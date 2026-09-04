@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.client_ip import client_ip, trusted_proxies
 from app.core.config import Settings, get_settings
 from app.core.db import get_session
+from app.core.openapi import RETRY_AFTER_DETAILS, domain_errors
 from app.core.redis import get_redis
 from app.domains.auth import service
 from app.domains.auth.cookies import clear_session_cookie, set_session_cookie
@@ -46,6 +47,9 @@ def _client_ip(request: Request, settings: Settings) -> str | None:
     "/request-code",
     response_model=RequestCodeResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    # Единственный производитель 429 в API: только здесь у `details` есть `retry_after`
+    # (SPEC.md 5.1). ADR-0004: специфика ответа объявляется на своём маршруте.
+    responses=domain_errors({429: [service.RATE_LIMITED_CODE]}, {429: RETRY_AFTER_DETAILS}),
 )
 async def request_code(
     payload: RequestCodeRequest,
@@ -64,7 +68,11 @@ async def request_code(
     return RequestCodeResponse()
 
 
-@router.post("/verify", response_model=UserResponse)
+@router.post(
+    "/verify",
+    response_model=UserResponse,
+    responses=domain_errors({422: [service.INVALID_CODE_CODE, service.TOO_MANY_ATTEMPTS_CODE]}),
+)
 async def verify(
     payload: VerifyRequest,
     request: Request,
