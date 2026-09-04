@@ -19,7 +19,7 @@ Updated: 2026-09-03
 | S0-03 | Миграция ядра | backend | **Done** | [PR #3](https://github.com/N1ikefour/tradedesk/pull/3) |
 | S0-04 | Auth | backend | **Done** | [PR #5](https://github.com/N1ikefour/tradedesk/pull/5) |
 | S0-05 | Шифрование credentials | backend | **Done** | [PR #6](https://github.com/N1ikefour/tradedesk/pull/6) |
-| S0-06 | Docker Compose local/prod | infra | Backlog | — |
+| S0-06 | Docker Compose local/prod | infra | In Progress | `feat/S0-06-compose` |
 | S0-07 | Web-скелет | frontend | Backlog | — |
 | S0-08 | Settings | backend + frontend | Backlog | — |
 | S0-09 | SETUP.md черновик | infra | Backlog | — |
@@ -76,11 +76,11 @@ Updated: 2026-09-03
 
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
-| X-01 | `make ci-target`: гейт на целевой версии Python | infra | Todo | — |
+| X-01 | `make ci-target`: гейт на целевой версии Python | infra | Поглощён S0-06 | — |
 | X-02 | Скраб секретов в логах: рекурсия по значениям и пароли БД | backend | **Done** | [PR #4](https://github.com/N1ikefour/tradedesk/pull/4) |
 | X-03 | Формат ошибок в OpenAPI | backend | Todo | — |
 | X-04 | Не-str ключи в логах роняют рендерер | backend | Todo | — |
 | X-05 | Счётчик непросмотренного в логах врёт | backend | Todo | — |
-| X-06 | Лимит по IP за прокси общий на всех | infra + backend | Todo | — |
+| X-06 | Лимит по IP за прокси общий на всех | infra + backend | Поглощён S0-06 | — |
 | X-07 | Sentry получает исключение мимо защиты логов | backend | Todo | — |
 | X-08 | Вторая ротация до окончания первой уничтожает данные | backend | Todo | — |
