@@ -1,0 +1,31 @@
+# Контекст сборки — корень репозитория (см. docker-compose.yml). Всё, что не нужно
+# внутри образа, отсекается здесь: иначе .env уезжает в слой образа, а node_modules
+# с хоста — в контекст, и сборка занимает минуты.
+.env
+.env.*
+*.env
+*.env.*
+!*.env.example
+
+.git
+.github
+.claude
+.venv
+node_modules
+backups
+
+**/__pycache__
+**/*.py[cod]
+.mypy_cache
+.ruff_cache
+.pytest_cache
+htmlcov
+.coverage
+**/*.egg-info
+
+apps/web/dist
+apps/web/.vite
+
+docs
+*.md
+!apps/**/*.md

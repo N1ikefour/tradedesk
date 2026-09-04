@@ -1,0 +1,23 @@
+# Профиль prod (SPEC.md 11.1). ⚠️ Не проверено на живом домене: сервера и домена нет
+# (docs/SERVER_STATE.md пуст), автосертификат без реального DNS не проверяется никак.
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# X-06. header_up ЗАМЕНЯЕТ заголовок адресом соединения, а не дописывает к нему.
+	# Дописывание оставляло бы слева то, что прислал клиент; замена делает подделку
+	# невозможной в принципе — api видит ровно один элемент и ровно от caddy.
+	handle /api/* {
+		reverse_proxy api:8000 {
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
+	handle {
+		reverse_proxy web-static:80
+	}
+
+	log {
+		output stdout
+	}
+}

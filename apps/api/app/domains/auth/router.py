@@ -13,6 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.client_ip import client_ip, trusted_proxies
 from app.core.config import Settings, get_settings
 from app.core.db import get_session
 from app.core.redis import get_redis
@@ -33,13 +34,12 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 USER_AGENT_HEADER = "user-agent"
 
 
-def _client_ip(request: Request) -> str | None:
-    """Только адрес соединения.
+def _client_ip(request: Request, settings: Settings) -> str | None:
+    """Адрес клиента для лимита по IP. X-Forwarded-For — только от доверенного прокси.
 
-    X-Forwarded-For не читаем: без доверенного прокси заголовок подделывается клиентом,
-    и лимит по IP обходится одной строкой. Прокси-заголовки включатся вместе с прод-развёрткой.
+    Разбор и обоснование — `app/core/client_ip.py` (X-06).
     """
-    return request.client.host if request.client else None
+    return client_ip(request, trusted_proxies(settings))
 
 
 @router.post(
@@ -59,7 +59,7 @@ async def request_code(
         settings=settings,
         provider=get_email_provider(settings, session),
         email=payload.email,
-        ip=_client_ip(request),
+        ip=_client_ip(request, settings),
     )
     return RequestCodeResponse()
 

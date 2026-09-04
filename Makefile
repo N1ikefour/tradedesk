@@ -11,6 +11,10 @@ COLLECTOR_DIR := $(ROOT)/apps/collector-mt5
 PYTHON ?= python3
 NPM    ?= npm
 
+# Целевая версия Python — одна на весь проект: этот файл, .github/workflows/ci.yml
+# (python-version-file) и apps/api/Dockerfile читают одно и то же .python-version.
+PY_VERSION := $(shell tr -d ' \t\r\n' < $(ROOT)/.python-version)
+
 # Локально инструменты берутся из .venv (см. make install), в CI — из PATH.
 ifneq ($(wildcard $(VENV_BIN)/ruff),)
 RUFF  := $(VENV_BIN)/ruff
@@ -24,8 +28,10 @@ PYTEST := pytest
 PRECOMMIT := pre-commit
 endif
 
-.PHONY: help install hooks ci ci-api ci-web lint lint-api lint-collector lint-web lint-hooks \
-        test test-api build-web format guard-python guard-precommit guard-web \
+SCRIPTS := $(ROOT)/infra/scripts
+
+.PHONY: help install hooks ci ci-api ci-web ci-target lint lint-api lint-collector lint-web \
+        lint-hooks test test-api build-web format guard-python guard-precommit guard-web \
         init up down migrate downgrade revision types
 
 ## ----------------------------------------------------------------------------
@@ -37,10 +43,17 @@ help:
 	@echo "TradeDesk — команды разработки"
 	@echo ""
 	@echo "  Работают:"
+	@echo "    make init            .env из .env.example с генерацией секретов."
+	@echo "                         Существующий .env НЕ перезаписывает: в нём MASTER_KEY"
+	@echo "    make up              docker compose --profile local up -d --build, печатает URL"
+	@echo "    make down            остановка окружения, данные в volume остаются"
 	@echo "    make ci              ВЕСЬ гейт: то же самое и в том же составе, что гоняет GitHub Actions"
 	@echo "                         (ci-api + ci-web). Перед PR прогоняется именно она"
 	@echo "    make ci-api          джоб api: lint-api + lint-collector + lint-hooks + test-api"
 	@echo "    make ci-web          джоб web: lint-web + build-web"
+	@echo "    make ci-target       ruff + mypy + unit-тесты в контейнере python:$(PY_VERSION)-slim —"
+	@echo "                         на целевой версии, которой нет на машине. ДОПОЛНЯЕТ make ci,"
+	@echo "                         не заменяет её: без pre-commit и integration-тестов"
 	@echo "    make install         установка dev-зависимостей (.venv для python, npm ci для web)"
 	@echo "    make hooks           поставить git-хуки pre-commit (после make install)"
 	@echo "    make lint            ruff + mypy (api, collector) + eslint + prettier --check + tsc (web)"
@@ -52,15 +65,12 @@ help:
 	@echo "    make test-api        pytest для apps/api"
 	@echo "    make build-web       vite build для apps/web"
 	@echo "    make format          ruff format + prettier --write"
+	@echo "    make migrate         alembic upgrade head (в .venv; в контейнере это делает старт api)"
+	@echo "    make revision m=\"…\"  новая alembic-миграция (autogenerate)"
+	@echo "    make downgrade       откат на шаг назад, make downgrade to=base"
 	@echo "    make help            эта справка"
 	@echo ""
 	@echo "  Ещё не реализованы (падают с подсказкой, в какой задаче появятся):"
-	@echo "    make init            .env из .env.example с генерацией секретов   → S0-06"
-	@echo "    make up              docker compose --profile local up -d         → S0-06"
-	@echo "    make down            остановка окружения                          → S0-06"
-	@echo "    make migrate         alembic upgrade head"
-	@echo "    make revision m=\"…\"  новая alembic-миграция (autogenerate)"
-	@echo "    make downgrade       откат на шаг назад, make downgrade to=base"
 	@echo "    make types           openapi → apps/web/src/api/schema.d.ts       → S0-07"
 	@echo ""
 
@@ -103,6 +113,12 @@ ci-api: lint-api lint-collector lint-hooks test-api
 
 ci-web: lint-web build-web
 
+# Гейт на целевой версии Python в контейнере (X-01). Дополняет `make ci`, не заменяет её:
+# вторая равноправная цель рано или поздно разошлась бы с первой. Авторитетный прогон —
+# по-прежнему GitHub Actions. Что именно и почему не входит — в самом скрипте.
+ci-target:
+	@$(SCRIPTS)/ci-target.sh
+
 ## ----------------------------------------------------------------------------
 ## Отдельные проверки
 ## ----------------------------------------------------------------------------
@@ -142,22 +158,18 @@ format: guard-python guard-web
 	cd $(WEB_DIR) && $(NPM) run format
 
 ## ----------------------------------------------------------------------------
-## Заглушки: команда задокументирована в CLAUDE.md 4, реализуется в своей задаче
+## Локальное окружение (SPEC.md 11). Логика — в infra/scripts: те же скрипты вызывают
+## start.bat/stop.bat на Windows, и чинить её приходится в одном месте, а не в двух.
 ## ----------------------------------------------------------------------------
 
 init:
-	@echo "make init ещё не реализована — задача S0-06 (docker compose local/prod, генерация секретов в .env)."
-	@echo "Сейчас в репозитории только скелет монорепо (S0-01)."
-	@exit 1
+	@$(SCRIPTS)/init-env.sh
 
 up:
-	@echo "make up ещё не реализована — задача S0-06 (docker-compose.yml, профиль local)."
-	@echo "Поднимать пока нечего: apps/api и apps/web — пустые каркасы."
-	@exit 1
+	@$(SCRIPTS)/start.sh
 
 down:
-	@echo "make down ещё не реализована — задача S0-06."
-	@exit 1
+	@$(SCRIPTS)/stop.sh
 
 migrate: guard-python
 	cd $(API_DIR) && $(VENV_BIN)/alembic upgrade head

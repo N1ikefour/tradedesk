@@ -86,7 +86,11 @@ def _rate_limited(retry_after: int) -> ApiError:
 
 
 async def _check_rate_limits(redis: Redis, settings: Settings, email: str, ip: str | None) -> None:
-    """Порядок важен: исчерпанный лимит по адресу не должен тратить лимит по адресу IP.
+    """Порядок важен: IP-лимит проверяется первым, до инкремента счётчика по адресу почты.
+
+    Обратный порядок означал бы, что запрос, отбитый общим лимитом по IP, дополнительно
+    выжигает личную квоту пользователя — 3 запроса в 10 минут (X-06). За общим NAT или
+    прокси пользователь, ничего не сделавший, терял бы и общий лимит, и свой.
 
     Недоступный Redis закрывает отправку, а не открывает её (fail-closed). Счётчик
     попыток в `otp_codes` ограничивает пять догадок **на код**, а не общий их бюджет:
@@ -100,11 +104,13 @@ async def _check_rate_limits(redis: Redis, settings: Settings, email: str, ip: s
     pepper = settings.otp_pepper.get_secret_value()
     subject = hash_rate_limit_subject(email, pepper)
     try:
-        retry_after = await hit(
-            redis, f"rl:auth:request_code:email:{subject}", REQUEST_CODE_EMAIL_LIMIT
-        )
-        if retry_after is None and ip:
+        retry_after = None
+        if ip:
             retry_after = await hit(redis, f"rl:auth:request_code:ip:{ip}", REQUEST_CODE_IP_LIMIT)
+        if retry_after is None:
+            retry_after = await hit(
+                redis, f"rl:auth:request_code:email:{subject}", REQUEST_CODE_EMAIL_LIMIT
+            )
     except RateLimiterUnavailableError as exc:
         raise _rate_limited(RATE_LIMITER_DOWN_RETRY_AFTER) from exc
     if retry_after is not None:

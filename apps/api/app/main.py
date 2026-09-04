@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app import __version__
+from app.core.client_ip import check_trusted_proxies, trusted_proxies
 from app.core.config import Settings, get_settings
 from app.core.db import dispose_engine
 from app.core.errors import register_error_handlers
@@ -50,6 +51,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         sentry="enabled" if sentry_enabled else "disabled",
         secrets=settings.secret_presence(),
     )
+    if not trusted_proxies(settings):
+        # X-06: без списка доверенных прокси лимит по IP считается по адресу соединения.
+        # За прокси это один адрес на всех, и лимит становится общим на всю установку —
+        # молчать об этом нельзя, но и доверять заголовку «на всякий случай» тоже.
+        log.warning(
+            "app.trusted_proxies_unset",
+            hint=(
+                "TRUSTED_PROXIES не задан: X-Forwarded-For не читается, лимит по IP считается "
+                "по адресу соединения. За прокси он окажется общим на всех пользователей"
+            ),
+        )
     try:
         yield
     finally:
@@ -72,6 +84,9 @@ def create_app() -> FastAPI:
     check_email_provider(settings)
     # Битый MASTER_KEY — тоже отказ на старте, а не 500 на первой записи credentials (S1-06).
     check_master_key(settings)
+    # Непригодный TRUSTED_PROXIES — отказ на старте: опечатка в адресе прокси иначе тихо
+    # возвращает лимит по IP к общему на всю установку (X-06).
+    check_trusted_proxies(settings)
 
     app = FastAPI(
         title=settings.app_name,
