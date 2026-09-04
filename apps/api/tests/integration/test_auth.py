@@ -557,6 +557,35 @@ async def test_forged_forwarded_for_does_not_move_the_limit(
     assert response.json()["error"]["code"] == "rate_limited"
 
 
+async def test_concurrent_burst_cannot_outrun_the_request_limit(client: AsyncClient) -> None:
+    """⚠️ Прогон ревью S0-06: 60 одновременных запросов кода на один адрес.
+
+    Реализация «прочитать счётчики, потом увеличить» проходит все последовательные
+    проверки этого файла и при этом пропускает бёрст целиком: между чтением и инкрементом
+    два await-а. Ревью получило 60 из 60 — шестьдесят кодов и шестьдесят писем на один
+    адрес, оба лимита не сработали ни разу. Барьер обязателен: без него корутины
+    расходятся по времени и гонки не видно.
+    """
+    burst = 60
+    barrier = asyncio.Barrier(burst)
+
+    async def attempt() -> Response:
+        await barrier.wait()
+        return await request_code(client)
+
+    responses = await asyncio.gather(*(attempt() for _ in range(burst)))
+
+    accepted = [response for response in responses if response.status_code == 202]
+    assert len(accepted) == EMAIL_LIMIT, f"пропущено {len(accepted)} из {burst}"
+    assert {response.status_code for response in responses} == {202, 429}
+    # Ни лишнего кода, ни лишнего письма: и то и другое стоит денег и репутации домена.
+    assert len(await fetch_all("select id from otp_codes")) == EMAIL_LIMIT
+    assert len(await fetch_all("select id from dev_outbox")) == EMAIL_LIMIT
+    # Часовой бюджет по адресу тоже не растрачен отбитыми запросами.
+    spent = int(await get_redis().get(f"rl:auth:request_code:ip:{CLIENT_IP}"))
+    assert spent == EMAIL_LIMIT
+
+
 async def test_impatient_user_does_not_burn_the_shared_ip_budget(
     live_env: pytest.MonkeyPatch, make_app: Callable[[], FastAPI]
 ) -> None:
