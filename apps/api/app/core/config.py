@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     otp_pepper: SecretStr = SecretStr("")
     collector_token: SecretStr = SecretStr("")
 
+    # Предыдущий MASTER_KEY. Пуст в обычной жизни; задаётся только на время ротации, чтобы
+    # API читал строки, до которых скрипт ещё не дошёл. Убирается после «осталось: 0».
+    # Номера версии в окружении нет: `key_version` — отпечаток самого ключа (core/security.py).
+    master_key_previous: SecretStr = SecretStr("")
+
     # В URL хранилищ есть пароль — они тоже секреты.
     database_url: SecretStr = SecretStr("postgresql+asyncpg://td:td@postgres:5432/td")
     redis_url: SecretStr = SecretStr("redis://redis:6379/0")
@@ -80,6 +85,9 @@ class Settings(BaseSettings):
         в нём есть и полезный для диагностики хост; из URL регистрируется только пароль."""
         values = [secret.get_secret_value() for secret in self.required_secrets().values()]
         values += [
+            # Не в required_secrets: без него запускаются и прод, и локальная разработка.
+            # Вырезать из логов его нужно ровно так же — это второй живой мастер-ключ.
+            self.master_key_previous.get_secret_value(),
             self.resend_api_key.get_secret_value(),
             self.s3_access_key.get_secret_value(),
             self.s3_secret_key.get_secret_value(),

@@ -18,6 +18,7 @@ SECRET_EVENT_KEYS = frozenset(
     {
         "secret_key",
         "master_key",
+        "master_key_previous",
         "otp_pepper",
         "collector_token",
         "database_url",
@@ -37,6 +38,13 @@ SECRET_EVENT_KEYS = frozenset(
         "otp_code",
         "verification_code",
         "email",
+        # Envelope-шифрование credentials (S0-05): открытый пароль счёта, ключ данных
+        # и оба слоя блоба. Блобы не секрет сами по себе, но в логе от них нет пользы.
+        "credentials",
+        "investor_password",
+        "data_key",
+        "wrapped_data_key",
+        "ciphertext",
     }
 )
 

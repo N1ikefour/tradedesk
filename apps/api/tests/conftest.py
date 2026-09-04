@@ -19,6 +19,9 @@ from app.core.db import ensure_test_database
 UNREACHABLE_DB_URL = "postgresql+asyncpg://td:td@127.0.0.1:1/td_test"
 UNREACHABLE_REDIS_URL = "redis://127.0.0.1:1/0"
 
+# base64 от b"tradedesk-test-master-key-32byte" — ровно 32 байта, как требует S0-05.
+TEST_MASTER_KEY = "dHJhZGVkZXNrLXRlc3QtbWFzdGVyLWtleS0zMmJ5dGU="
+
 
 @lru_cache(maxsize=1)
 def docker_available() -> bool:
@@ -78,7 +81,9 @@ def local_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[pytest.MonkeyPatch]:
     """Минимальное валидное окружение local. Тест меняет только то, что проверяет."""
     monkeypatch.setenv("APP_ENV", "local")
     monkeypatch.setenv("SECRET_KEY", "test-secret-key")
-    monkeypatch.setenv("MASTER_KEY", "test-master-key")
+    # Валидный по формату ключ (base64 от 32 байт), а не просто непустая строка:
+    # с S0-05 create_app в проде отказывается грузиться на непригодном MASTER_KEY.
+    monkeypatch.setenv("MASTER_KEY", TEST_MASTER_KEY)
     monkeypatch.setenv("OTP_PEPPER", "test-otp-pepper")
     monkeypatch.setenv("COLLECTOR_TOKEN", "test-collector-token")
     monkeypatch.setenv("SENTRY_DSN", "")
