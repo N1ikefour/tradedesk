@@ -87,3 +87,4 @@ Updated: 2026-09-03
 | X-09 | Приложение собирается на импорте `app.main` | backend | Todo | — |
 | X-10 | Инлайн-объявления ошибок растят типы впятеро | backend | Todo | — |
 | X-11 | Заголовки ответов не объявлены в OpenAPI | backend | Todo | — |
+| X-12 | Том postgres переживает worktree, `make up` умирает на пароле | infra | Todo | — |
