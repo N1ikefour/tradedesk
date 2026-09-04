@@ -78,7 +78,7 @@ Updated: 2026-09-03
 |---|---|---|---|---|
 | X-01 | `make ci-target`: гейт на целевой версии Python | infra | **Done** | [PR #7](https://github.com/N1ikefour/tradedesk/pull/7) |
 | X-02 | Скраб секретов в логах: рекурсия по значениям и пароли БД | backend | **Done** | [PR #4](https://github.com/N1ikefour/tradedesk/pull/4) |
-| X-03 | Формат ошибок в OpenAPI | backend | In Progress | `fix/X-03-openapi-errors` |
+| X-03 | Формат ошибок в OpenAPI | backend | In Review | [PR #8](https://github.com/N1ikefour/tradedesk/pull/8) |
 | X-04 | Не-str ключи в логах роняют рендерер | backend | Todo | — |
 | X-05 | Счётчик непросмотренного в логах врёт | backend | Todo | — |
 | X-06 | Лимит по IP за прокси общий на всех | infra + backend | **Done** (частично, ограничение в итоге S0-06) | [PR #7](https://github.com/N1ikefour/tradedesk/pull/7) |
@@ -86,3 +86,4 @@ Updated: 2026-09-03
 | X-08 | Вторая ротация до окончания первой уничтожает данные | backend | Todo | — |
 | X-09 | Приложение собирается на импорте `app.main` | backend | Todo | — |
 | X-10 | Инлайн-объявления ошибок растят типы впятеро | backend | Todo | — |
+| X-11 | Заголовки ответов не объявлены в OpenAPI | backend | Todo | — |
