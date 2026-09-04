@@ -14,7 +14,7 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   fullyParallel: false,
   workers: 1,
-  // Повторов нет: лимит «10 запросов кода в час на IP» (SPEC.md 4) делает вторую
+  // Повторов нет: лимит по IP (10 запросов кода в час, SPEC.md 4) делает вторую
   // попытку не такой же, а хуже первой — ретрай прятал бы настоящую причину.
   retries: 0,
   reporter: [['list']],

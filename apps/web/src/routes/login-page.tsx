@@ -55,14 +55,23 @@ export function LoginPage() {
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [error, setError] = useState<unknown>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [rateLimit, setRateLimit] = useState<RateLimit | null>(null);
 
-  // Отметку ставит обработчик 401 (auth/session.ts). Читается один раз при входе
-  // на страницу и сразу снимается, чтобы не всплыть при следующем визите.
-  const [sessionExpired] = useState(
-    () => queryClient.getQueryData<boolean>(SESSION_EXPIRED_QUERY_KEY) === true,
-  );
+  // Объяснение «почему ты здесь» — состояние момента, а не маршрута, поэтому оно
+  // сеется один раз при открытии страницы и дальше живёт как обычное сообщение.
+  // Читай оно `location.state` в каждом рендере — надпись пережила бы свою причину:
+  // «проверьте соединение» висело бы поверх экрана, который соединение уже доказал.
+  // Причина 401 приходит от обработчика в auth/session.ts, причина сбоя проверки —
+  // от RequireAuth через состояние навигации.
+  const [notice, setNotice] = useState<string | null>(() => {
+    if (readState(location.state, 'reason') === 'check-failed') {
+      return t.login.sessionCheckFailed;
+    }
+    return queryClient.getQueryData<boolean>(SESSION_EXPIRED_QUERY_KEY) === true
+      ? t.login.sessionExpired
+      : null;
+  });
+  // Отметка снимается сразу: она описывает один переход, а не состояние пользователя.
   useEffect(() => {
     queryClient.removeQueries({ queryKey: SESSION_EXPIRED_QUERY_KEY });
   }, [queryClient]);
@@ -111,6 +120,8 @@ export function LoginPage() {
       onSuccess: () => {
         setCode('');
         setStep('code');
+        // Запрос прошёл — значит лимит на этот адрес больше не действует.
+        setRateLimit(null);
         if (resend) {
           setNotice(t.login.codeResent(target));
         }
@@ -196,14 +207,6 @@ export function LoginPage() {
         ? messageForError(error)
         : null;
 
-  const noticeText =
-    notice ??
-    (readState(location.state, 'reason') === 'check-failed'
-      ? t.login.sessionCheckFailed
-      : sessionExpired
-        ? t.login.sessionExpired
-        : null);
-
   return (
     <div className="relative flex min-h-screen items-center justify-center px-4 py-10">
       {/* Шапки на /login нет, а переключатель темы нужен и до входа. */}
@@ -219,7 +222,7 @@ export function LoginPage() {
         </CardHeader>
 
         <CardContent className="flex flex-col gap-4">
-          {noticeText === null ? null : <Alert>{noticeText}</Alert>}
+          {notice === null ? null : <Alert>{notice}</Alert>}
           {errorText === null ? null : <Alert variant="destructive">{errorText}</Alert>}
 
           {step === 'email' ? (

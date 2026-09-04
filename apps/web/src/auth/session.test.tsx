@@ -1,5 +1,6 @@
 import { focusManager, QueryClient } from '@tanstack/react-query';
 import { act, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { api, unwrap } from '@/api/client';
@@ -49,6 +50,7 @@ describe('обработка 401', () => {
     installFetchMock({
       [ME]: () => jsonResponse(200, TEST_USER),
       [OUTBOX]: () => errorResponse(401, 'unauthorized', 'Требуется вход'),
+      'POST /api/v1/auth/request-code': () => jsonResponse(202, { status: 'accepted' }),
     });
     renderApp(['/journal']);
     await screen.findByRole('heading', { name: t.pages.journal });
@@ -59,6 +61,15 @@ describe('обработка 401', () => {
 
     expect(await screen.findByRole('heading', { name: t.login.title })).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent(t.login.sessionExpired);
+
+    // Тот же класс, что и у сбоя проверки: объяснение перехода не должно пережить
+    // следующий успешный шаг.
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText(t.login.emailLabel), TEST_USER.email);
+    await user.click(screen.getByRole('button', { name: t.login.requestCode }));
+    await screen.findByLabelText(t.login.codeLabel);
+
+    expect(screen.queryByText(t.login.sessionExpired)).not.toBeInTheDocument();
   });
 
   it('возврат во вкладку перепроверяет сессию и замечает, что её погасили', async () => {

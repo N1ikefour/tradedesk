@@ -217,6 +217,35 @@ describe('Login', () => {
     );
   });
 
+  it('успешный запрос кода снимает алерт лимита', async () => {
+    let limited = true;
+    installFetchMock({
+      [ME]: () => errorResponse(401, 'unauthorized', 'Требуется вход'),
+      // 429 без retry_after: счётчика нет, кнопка не заблокирована — повтор возможен
+      // сразу, и старый алерт не должен пережить удавшийся запрос.
+      [REQUEST_CODE]: () => {
+        if (limited) {
+          limited = false;
+          return errorResponse(429, 'rate_limited', 'Слишком часто');
+        }
+        return jsonResponse(202, { status: 'accepted' });
+      },
+    });
+    const user = userEvent.setup();
+    renderApp(['/login']);
+
+    await user.type(screen.getByLabelText(t.login.emailLabel), TEST_USER.email);
+    await user.click(screen.getByRole('button', { name: t.login.requestCode }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      t.errors.rateLimitedUnknownDelayFor(TEST_USER.email),
+    );
+
+    await user.click(screen.getByRole('button', { name: t.login.requestCode }));
+    await screen.findByLabelText(t.login.codeLabel);
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('выход возвращает на /login', async () => {
     installFetchMock({
       [ME]: () => jsonResponse(200, TEST_USER),
