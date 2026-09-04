@@ -1,6 +1,6 @@
 # SPEC — техническая спецификация v1 (этапы 0–2 и веха «Первый тест»)
 
-Версия 1.2 — 4 сентября 2026 (v1.1: guard тестовой БД в DoD S0‑02, оговорка про инструментальные зависимости в 2.3; v1.2: домен `mail` в 2.1). Дополняет `PLAN.md`. Написана для разработки с AI‑агентами: каждый раздел самодостаточен, решения зафиксированы, неопределённости вынесены в раздел 14.
+Версия 1.3 — 4 сентября 2026 (v1.1: guard тестовой БД в DoD S0‑02, оговорка про инструментальные зависимости в 2.3; v1.2: домен `mail` в 2.1; v1.3: формат блобов credentials и `key_version` как отпечаток ключа, ADR‑0003). Дополняет `PLAN.md`. Написана для разработки с AI‑агентами: каждый раздел самодостаточен, решения зафиксированы, неопределённости вынесены в раздел 14.
 
 Рабочее название продукта: **TradeDesk** (переименовать одной заменой — используется только в UI‑строках и `APP_NAME`).
 
@@ -191,12 +191,16 @@ account_credentials (
   account_id uuid pk fk trading_accounts on delete cascade,
   ciphertext bytea not null,                  -- envelope: AES-256-GCM(data_key, json{password})
   wrapped_data_key bytea not null,            -- AES-256-GCM(MASTER_KEY, data_key)
-  key_version smallint not null default 1,
+  key_version smallint not null,               -- отпечаток MASTER_KEY, выводится из ключа (ADR-0003)
   updated_at timestamptz not null
 )
 ```
 
 Правило: пароль читается только эндпоинтом `GET /internal/collector/assignments` (раздел 5.6) и никогда не возвращается в пользовательский API.
+
+Формат блобов (S0‑05): оба поля самоописывающиеся — `версия раскладки (1 байт) | nonce (12) | AES‑256‑GCM | tag (16)`. В AAD входит `account_id`, поэтому шифротекст нельзя переставить в строку другого счёта. Открытый текст набивается до кратной длины: у GCM длина шифротекста равна длине открытого текста, иначе дамп БД выдаёт длину пароля.
+
+`key_version` — **отпечаток мастер‑ключа, выведенный из его материала**, а не порядковый номер, которым управляет оператор. Колонка не может разойтись с реальностью, см. `docs/adr/0003-key-version-as-fingerprint.md`.
 
 ### 3.3 Сделки
 
@@ -636,7 +640,8 @@ APP_ENV=local                 # local | prod
 APP_NAME=TradeDesk
 APP_URL=http://localhost:5173
 SECRET_KEY=…                  # сессии, подпись
-MASTER_KEY=…                  # base64 32 байта, шифрование credentials
+MASTER_KEY=…                  # base64 32 байта, шифрование credentials. ПОТЕРЯ НЕОБРАТИМА
+MASTER_KEY_PREVIOUS=          # только на время ротации, см. docs/adr/0003
 OTP_PEPPER=…
 COLLECTOR_TOKEN=…
 DATABASE_URL=postgresql+asyncpg://td:td@postgres:5432/td
