@@ -112,3 +112,36 @@ async def test_health_degraded_when_dependencies_unreachable(
         "redis": "unavailable",
         "version": __version__,
     }
+
+
+async def test_unhandled_error_keeps_traceback_in_logs(capsys: pytest.CaptureFixture[str]) -> None:
+    """Ошибке БД traceback не печатается (в нём содержимое строки), всем остальным — да.
+
+    Без этого различие «БД / не БД» однажды схлопнется в «никому», и причина 500
+    перестанет находиться вовсе.
+    """
+    from app.core.logging import configure_logging
+
+    configure_logging()
+    app = FastAPI()
+    register_error_handlers(app)
+
+    @app.get("/boom")
+    async def boom() -> None:
+        raise ValueError("подробности только для лога")
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/boom")
+
+    assert response.status_code == 500
+    assert response.json()["error"] == {
+        "code": "internal_error",
+        "message": "Внутренняя ошибка сервера",
+        "details": {},
+    }
+    # Наружу текст исключения не уходит, в лог — уходит вместе со стеком.
+    assert "подробности только для лога" not in response.text
+    output = capsys.readouterr().out
+    assert "api.unhandled_exception" in output
+    assert "Traceback" in output

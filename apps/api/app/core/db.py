@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 
 from sqlalchemy import MetaData, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import ArgumentError
+from sqlalchemy.exc import ArgumentError, DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -25,6 +25,9 @@ log = get_logger(__name__)
 TEST_DATABASE_MARKER = "_test"
 
 PING_TIMEOUT_SECONDS = 2.0
+
+# Параметризованный SQL длинный, а для диагностики хватает начала.
+MAX_LOGGED_STATEMENT_LENGTH = 500
 
 
 # Без этого имена ограничений придумывает Postgres, и `downgrade` в следующих задачах
@@ -72,10 +75,17 @@ def ensure_test_database(url: str) -> None:
 
 
 def create_engine(settings: Settings) -> AsyncEngine:
-    """Создание движка не открывает соединений: asyncpg подключается лениво."""
+    """Создание движка не открывает соединений: asyncpg подключается лениво.
+
+    `hide_parameters`: SQLAlchemy вкладывает bound parameters в текст `StatementError`,
+    а обработчик необработанных исключений печатает traceback целиком. Без этого флага
+    в лог уезжает всё, что участвовало в упавшем запросе, — код входа, адрес почты,
+    а позже и содержимое `account_credentials`.
+    """
     return create_async_engine(
         settings.database_url.get_secret_value(),
         pool_pre_ping=True,
+        hide_parameters=True,
     )
 
 
@@ -110,6 +120,39 @@ async def dispose_engine() -> None:
         await _engine.dispose()
     _engine = None
     _session_factory = None
+
+
+def describe_database_error(exc: BaseException) -> dict[str, str] | None:
+    """Портрет ошибки БД, пригодный для логов. `None` — если ошибка не про БД.
+
+    Текст такой ошибки печатать нельзя ни в каком виде: SQLAlchemy вкладывает в него
+    bound parameters, а Postgres — свой `DETAIL: Failing row contains (…)`, и второе
+    не убирается `hide_parameters`. В обоих случаях наружу поехало бы содержимое строки:
+    код входа, адрес почты, а позже расшифрованные credentials счёта.
+
+    Взамен берётся то, что значений не содержит: тип, SQLSTATE и SQL с плейсхолдерами.
+    Traceback теряется — место падения показывают `path` и `method`.
+
+    Точная классификация — по `db_sqlstate` (23505 unique_violation, 23514 check_violation):
+    `db_error_type` через asyncpg-обёртку SQLAlchemy схлопывается до `IntegrityError`
+    и настоящего `UniqueViolationError` не показывает. Имя ограничения не берём вовсе:
+    на `exc.orig` этой обёртки доступен только `sqlstate`.
+
+    `db_statement` безопасен ровно потому, что SQLAlchemy параметризует запросы и в тексте
+    остаются плейсхолдеры (`$1::UUID`). Сырой `text()` с подставленными в строку значениями
+    приедет в лог как есть — такие запросы писать нельзя.
+    """
+    if not isinstance(exc, DBAPIError):
+        return None
+    origin = exc.orig
+    described = {"db_error_type": type(origin if origin is not None else exc).__name__}
+    statement = exc.statement or ""
+    if statement:
+        described["db_statement"] = statement[:MAX_LOGGED_STATEMENT_LENGTH]
+    sqlstate = getattr(origin, "sqlstate", None)
+    if sqlstate:
+        described["db_sqlstate"] = str(sqlstate)
+    return described
 
 
 async def check_database() -> bool:

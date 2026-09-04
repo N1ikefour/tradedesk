@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -24,6 +25,7 @@ from testcontainers.community.postgres import PostgresContainer
 from alembic import command
 from app.core.db import Base, get_engine
 from app.core.ids import uuid7
+from app.core.logging import configure_logging, get_logger
 from app.domains.accounts.models import TradingAccount
 from app.domains.auth.models import User
 from app.domains.ingest.models import Position
@@ -34,6 +36,8 @@ pytestmark = pytest.mark.integration
 API_DIR = Path(__file__).resolve().parents[2]
 
 # SPEC.md 3 целиком, кроме daily_stats: она создаётся в S2-05.
+# dev_outbox в SPEC.md 3 не описана: её требуют раздел 4 и DoD S0-04, схема — из
+# docs/tickets/S0-04.md.
 EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
     "account_credentials": {
         "account_id": "uuid not null",
@@ -75,6 +79,14 @@ EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
         "raw": "jsonb not null",
         "source": "text not null",
         "ingested_at": "timestamptz not null",
+    },
+    "dev_outbox": {
+        "id": "uuid not null",
+        "to_email": "text not null",
+        "subject": "text not null",
+        "body_text": "text not null",
+        "body_html": "text null",
+        "created_at": "timestamptz not null",
     },
     "journal_entries": {
         "position_id": "uuid not null",
@@ -210,6 +222,7 @@ EXPECTED_INDEXES: dict[str, set[str]] = {
         "ix_deals_account_id_position_id",
         "ix_deals_account_id_time_utc",
     },
+    "dev_outbox": {"pk_dev_outbox", "ix_dev_outbox_created_at"},
     "journal_entries": {"pk_journal_entries"},
     "otp_codes": {"pk_otp_codes", "ix_otp_codes_email_created_at"},
     "positions": {
@@ -219,11 +232,15 @@ EXPECTED_INDEXES: dict[str, set[str]] = {
         "ix_positions_account_id_symbol_norm",
     },
     "reflections": {"pk_reflections"},
-    "sessions": {"pk_sessions"},
+    "sessions": {"pk_sessions", "ix_sessions_user_id"},
     "symbols": {"pk_symbols", "uq_symbols_raw"},
     "sync_runs": {"pk_sync_runs", "ix_sync_runs_account_id"},
     "tags": {"pk_tags", "uq_tags_user_id_name"},
-    "trading_accounts": {"pk_trading_accounts", "uq_trading_accounts_mt5_identity"},
+    "trading_accounts": {
+        "pk_trading_accounts",
+        "uq_trading_accounts_mt5_identity",
+        "ix_trading_accounts_user_id",
+    },
     "users": {"pk_users", "uq_users_email"},
 }
 
@@ -262,6 +279,7 @@ EXPECTED_SERVER_DEFAULTS: dict[tuple[str, str], str] = {
     ("deals", "swap"): "0",
     ("deals", "fee"): "0",
     ("deals", "ingested_at"): "now()",
+    ("dev_outbox", "created_at"): "now()",
     ("journal_entries", "tags"): "'{}'::text[]",
     ("otp_codes", "attempts"): "0",
     ("otp_codes", "created_at"): "now()",
@@ -343,6 +361,35 @@ def test_upgrade_and_downgrade_run_twice_without_cleanup(alembic_config: Config)
 
     command.upgrade(alembic_config, "head")
     command.downgrade(alembic_config, "base")
+
+
+def test_migrations_keep_application_logging_intact(
+    alembic_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Логи приложения переживают миграцию: тот же поток, тот же уровень, тот же формат.
+
+    Проверяется реальный вывод, а не флаг `disabled`: настройка логов из alembic.ini
+    переустанавливает root целиком (WARNING + stderr + plain), и тогда `INFO` от `app.*`
+    после миграции исчезает совсем. Тест, читающий stdout ради «секрета в выводе нет»,
+    в таком состоянии зеленеет на пустом буфере — то есть перестаёт что-либо проверять.
+    """
+    configure_logging()
+    probe = get_logger("app.probe.migrations")
+    probe.info("probe.before_migration")
+
+    command.upgrade(alembic_config, "head")
+    command.downgrade(alembic_config, "base")
+
+    probe.info("probe.after_migration")
+
+    captured = capsys.readouterr()
+    events = [
+        json.loads(line).get("event") for line in captured.out.splitlines() if line.startswith("{")
+    ]
+    # Контроль: до миграции запись видна — значит проверка ниже про миграцию, а не про сетап.
+    assert "probe.before_migration" in events
+    assert "probe.after_migration" in events
+    assert "probe.after_migration" not in captured.err
 
 
 async def test_downgrade_leaves_no_tables(rolled_back: None) -> None:

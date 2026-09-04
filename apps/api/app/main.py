@@ -12,7 +12,11 @@ from app.core.config import Settings, get_settings
 from app.core.db import dispose_engine
 from app.core.errors import register_error_handlers
 from app.core.logging import configure_logging, get_logger
+from app.core.origin import OriginCheckMiddleware
 from app.core.redis import close_redis
+from app.domains.auth.router import router as auth_router
+from app.domains.mail.provider import check_email_provider
+from app.domains.mail.router import router as dev_router
 from app.domains.system.router import router as system_router
 
 API_PREFIX = "/api/v1"
@@ -59,6 +63,8 @@ def create_app() -> FastAPI:
     # Значения секретов передаются логгеру, чтобы он вырезал их из любого текста,
     # включая traceback: цензура по имени ключа не спасает от текста исключения.
     configure_logging(secret_values=settings.scrubbable_secret_values())
+    # Отсутствующий провайдер писем — отказ на старте, а не 500 на первом входе.
+    check_email_provider(settings)
 
     app = FastAPI(
         title=settings.app_name,
@@ -70,7 +76,14 @@ def create_app() -> FastAPI:
         redoc_url=None,
     )
     register_error_handlers(app)
+    # CSRF из SPEC.md 4: проверка Origin распространяется на все мутирующие запросы.
+    app.add_middleware(OriginCheckMiddleware, app_url=settings.app_url)
     app.include_router(system_router, prefix=API_PREFIX)
+    app.include_router(auth_router, prefix=API_PREFIX)
+    if not settings.is_prod:
+        # Письма с кодами наружу не выставляются: в проде маршрута просто нет,
+        # он не появляется и в OpenAPI.
+        app.include_router(dev_router, prefix=API_PREFIX)
     return app
 
 
