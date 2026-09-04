@@ -13,19 +13,23 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Callable, Iterator
+from copy import deepcopy
 from typing import Any
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 
+from app.core import openapi as openapi_module
 from app.core.errors import register_error_handlers
 from app.core.openapi import ERROR_CODE_SCHEMA_NAME, ERROR_SCHEMA_NAME, JSON_MEDIA_TYPE
 
 API = "/api/v1"
 
-# Словарь SPEC.md 5.1 плюс то, что порождает не домен, а окружение: 405/415 от фреймворка
-# (S0-02) и forbidden_origin от проверки Origin (SPEC.md 4). Набор продублирован здесь
+# Словарь SPEC.md 5.1 плюс то, что порождает не домен, а окружение: 405 от роутера и 500
+# от общего обработчика (S0-02), forbidden_origin от проверки Origin (SPEC.md 4).
+# У 409 и 415 производителя пока нет — они объявлены авансом (415 появится в S2-04,
+# на загрузке вложений; фреймворк его не ставит нигде). Набор продублирован здесь
 # намеренно: тест сверяет схему со спекой, а не с таблицей, из которой схема построена.
 EXPECTED_GLOBAL_CODES: dict[int, set[str]] = {
     400: {"validation_error"},
@@ -142,6 +146,22 @@ def assert_response_matches_schema(
     )
 
 
+def assert_error_shape(declared: dict[str, Any], where: str) -> None:
+    """Форма конверта SPEC.md 5.1: обязательные поля есть, лишних быть не может.
+
+    Сверка тела этого не ловит принципиально: схема без `required` остаётся верной для
+    любого ответа, а открытый объект пропустил бы лишнее поле — например, стек.
+    """
+    schema = declared["content"][JSON_MEDIA_TYPE]["schema"]
+    assert schema["required"] == ["error"], f"{where}: конверт не требует error"
+    assert schema["additionalProperties"] is False, f"{where}: конверт открыт"
+    error = schema["properties"]["error"]
+    assert set(error["required"]) == {"code", "message", "details"}, (
+        f"{where}: error требует {error.get('required')}, а не code/message/details"
+    )
+    assert error["additionalProperties"] is False, f"{where}: error открыт"
+
+
 def assert_declaration_is_global(document: dict[str, Any], status_code: int) -> dict[str, Any]:
     """Объявление статуса, общее для всех операций; заодно проверяет, что оно одно.
 
@@ -155,6 +175,7 @@ def assert_declaration_is_global(document: dict[str, Any], status_code: int) -> 
     assert all(item == declarations[0] for item in declarations), (
         f"объявление {status_code} различается по операциям"
     )
+    assert_error_shape(declarations[0], f"общее объявление {status_code}")
     return declarations[0]
 
 
@@ -245,23 +266,70 @@ async def test_every_reference_resolves(document: dict[str, Any]) -> None:
     walk(document, "")
 
 
-async def test_global_codes_declared_on_every_operation(document: dict[str, Any]) -> None:
+async def test_declared_codes_match_the_dictionary_exactly(document: dict[str, Any]) -> None:
+    """Равенство, а не подмножество.
+
+    Подмножество пропускало бы чужой код под чужим статусом: `conflict` в наборе 400
+    остался бы незамеченным, потому что в словаре он есть — просто у другого статуса.
+    """
     for path, method, _ in _operations(document):
         for status_code, codes in EXPECTED_GLOBAL_CODES.items():
+            expected = codes | EXPECTED_DOMAIN_CODES.get((path, method, status_code), set())
             declared = _code_enum(_declared(document, path, method, status_code))
-            assert codes <= declared, (
-                f"{method.upper()} {path}: у {status_code} не объявлены {sorted(codes - declared)}"
+            assert declared == expected, (
+                f"{method.upper()} {path}: у {status_code} объявлено {sorted(declared)}, "
+                f"ожидалось {sorted(expected)}"
             )
 
 
 async def test_domain_codes_declared_on_their_endpoints(document: dict[str, Any]) -> None:
     for (path, method, status_code), codes in EXPECTED_DOMAIN_CODES.items():
         declared = _code_enum(_declared(document, path, method, status_code))
-        assert codes <= declared, (
-            f"{method.upper()} {path}: у {status_code} не объявлены {sorted(codes - declared)}"
-        )
         # Доменные коды идут поверх общего набора, а не вместо него.
-        assert EXPECTED_GLOBAL_CODES[status_code] <= declared
+        assert declared == EXPECTED_GLOBAL_CODES[status_code] | codes, (
+            f"{method.upper()} {path}: у {status_code} объявлено {sorted(declared)}"
+        )
+
+
+async def test_every_error_response_declares_the_full_shape(document: dict[str, Any]) -> None:
+    """Форма конверта проверяется на каждом объявлении, а не только на общих."""
+    checked = 0
+    for path, method, operation in _operations(document):
+        for status_code, declared in operation["responses"].items():
+            if status_code.startswith(("4", "5")):
+                assert_error_shape(declared, f"{method.upper()} {path} {status_code}")
+                checked += 1
+    assert checked == len(EXPECTED_GLOBAL_CODES) * len(list(_operations(document)))
+
+
+async def test_schema_is_described_once(app: FastAPI, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Описание применяется один раз и кэшируется.
+
+    Правка сделана идемпотентной намеренно, но повторный проход по уже описанной схеме —
+    трата и приглашение однажды сделать её неидемпотентной незаметно для всех.
+    """
+    calls = 0
+    original = openapi_module.describe_errors
+
+    def counting(schema: dict[str, Any]) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return original(schema)
+
+    monkeypatch.setattr(openapi_module, "describe_errors", counting)
+    first = app.openapi()
+    second = app.openapi()
+
+    assert calls == 1, f"описание применено {calls} раз(а)"
+    assert first is second
+
+
+async def test_describing_twice_changes_nothing(document: dict[str, Any]) -> None:
+    """Идемпотентность: второй проход не должен ни дублировать, ни расширять объявленное."""
+    once = deepcopy(document)
+    twice = openapi_module.describe_errors(deepcopy(once))
+
+    assert twice == once
 
 
 def _details_schema(declared: dict[str, Any]) -> dict[str, Any]:

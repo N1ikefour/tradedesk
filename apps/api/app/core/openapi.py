@@ -15,6 +15,7 @@ validation_error`.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
+from copy import deepcopy
 from typing import Any
 
 from fastapi import FastAPI
@@ -35,9 +36,14 @@ GENERATED_VALIDATION_REF = "#/components/schemas/HTTPValidationError"
 HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
 
 # Общий набор: словарь SPEC.md 5.1 плюс то, что порождает не домен, а окружение —
-# 405/415 от фреймворка и 500 от общего обработчика (S0-02), `forbidden_origin` от
-# проверки Origin (SPEC.md 4). Проверка Origin — middleware, она стоит перед любым
-# мутирующим маршрутом, поэтому её код общий, а не эндпоинтный.
+# 405 от роутера и 500 от общего обработчика (S0-02), `forbidden_origin` от проверки
+# Origin (SPEC.md 4): это middleware, она стоит перед любым мутирующим маршрутом,
+# поэтому её код общий, а не эндпоинтный.
+# Часть кодов объявлена авансом, производителя у них пока нет: 409 и 415 (появится
+# в S2-04 — неподходящий тип файла при загрузке вложений). Ни FastAPI 0.141, ни
+# Starlette 415 не ставят: неподходящий Content-Type они приводят к ошибке валидации,
+# то есть к нашему 400. По ADR-0004 такие коды объявляются заранее — фронт должен уметь
+# их обрабатывать до появления производителя.
 GLOBAL_ERROR_CODES: Mapping[int, tuple[str, ...]] = {
     400: (CODE_BY_STATUS[400],),
     401: (CODE_BY_STATUS[401],),
@@ -86,14 +92,20 @@ def error_body_schema(
     return {
         "type": "object",
         "required": ["error"],
+        # Конверт закрыт на обоих уровнях: `error_payload` кладёт ровно эти поля и ничего
+        # сверх. Открытый объект пропустил бы наружу лишнее — например, стек.
+        "additionalProperties": False,
         "properties": {
             "error": {
                 "type": "object",
                 "required": ["code", "message", "details"],
+                "additionalProperties": False,
                 "properties": {
                     "code": {"type": "string", "enum": sorted(set(codes))},
                     "message": {"type": "string"},
-                    "details": dict(details),
+                    # Глубокая копия: объявления делят константы `*_DETAILS`, и правка
+                    # вложенного `properties` в одном месте разошлась бы по всем.
+                    "details": deepcopy(dict(details)),
                 },
             }
         },
@@ -170,10 +182,12 @@ def describe_errors(schema: dict[str, Any]) -> dict[str, Any]:
         "description": "Формат ошибки SPEC.md 5.1 — тело любого ответа с ошибкой.",
         "type": "object",
         "required": ["error"],
+        "additionalProperties": False,
         "properties": {
             "error": {
                 "type": "object",
                 "required": ["code", "message", "details"],
+                "additionalProperties": False,
                 "properties": {
                     "code": {"$ref": ERROR_CODE_REF},
                     "message": {"type": "string"},
