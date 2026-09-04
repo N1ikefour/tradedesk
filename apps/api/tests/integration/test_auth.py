@@ -557,6 +557,34 @@ async def test_forged_forwarded_for_does_not_move_the_limit(
     assert response.json()["error"]["code"] == "rate_limited"
 
 
+async def test_impatient_user_does_not_burn_the_shared_ip_budget(
+    live_env: pytest.MonkeyPatch, make_app: Callable[[], FastAPI]
+) -> None:
+    """Отбитый лимитом по почте запрос не платит по часовому бюджету адреса.
+
+    Сценарий тикета: тестировщик десять раз жмёт «прислать код» на свой же адрес.
+    Пока отбитые запросы инкрементировали счётчик по IP, семь лишних нажатий съедали
+    часовой бюджет установки, и следующий пользователь получал 429 на час.
+    """
+    app = proxied_app(live_env, make_app)
+    ip = "203.0.113.77"
+    presses = 10
+
+    codes = []
+    for _ in range(presses):
+        async with make_proxied_client(app, ip=ip) as impatient:
+            codes.append((await request_code(impatient, "impatient@example.test")).status_code)
+
+    assert codes == [202] * EMAIL_LIMIT + [429] * (presses - EMAIL_LIMIT)
+
+    async with make_proxied_client(app, ip=ip) as neighbour:
+        assert (await request_code(neighbour, "neighbour@example.test")).status_code == 202
+
+    # Счётчик по адресу вырос ровно на пропущенные запросы: три письма плюс письмо соседа.
+    spent = int(await get_redis().get(f"rl:auth:request_code:ip:{ip}"))
+    assert spent == EMAIL_LIMIT + 1
+
+
 async def test_ip_limit_does_not_spend_the_email_limit(
     live_env: pytest.MonkeyPatch, make_app: Callable[[], FastAPI]
 ) -> None:

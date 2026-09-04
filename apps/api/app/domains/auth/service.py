@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.core.errors import ApiError
 from app.core.ids import uuid7
-from app.core.rate_limit import RateLimit, RateLimiterUnavailableError, hit
+from app.core.rate_limit import RateLimit, RateLimiterUnavailableError, hit, peek
 from app.domains.auth import models
 from app.domains.auth.cookies import SESSION_TTL_DAYS
 from app.domains.auth.security import (
@@ -86,11 +86,15 @@ def _rate_limited(retry_after: int) -> ApiError:
 
 
 async def _check_rate_limits(redis: Redis, settings: Settings, email: str, ip: str | None) -> None:
-    """Порядок важен: IP-лимит проверяется первым, до инкремента счётчика по адресу почты.
+    """Сначала опрашиваются оба счётчика, платит только пропущенный запрос (X-06).
 
-    Обратный порядок означал бы, что запрос, отбитый общим лимитом по IP, дополнительно
-    выжигает личную квоту пользователя — 3 запроса в 10 минут (X-06). За общим NAT или
-    прокси пользователь, ничего не сделавший, терял бы и общий лимит, и свой.
+    Инкремент до решения ломается в обе стороны, каким бы ни был порядок проверок.
+    Инкремент по почте первым — и запрос, отбитый общим лимитом по IP, дополнительно
+    выжигает личную квоту: за прокси пользователь, ничего не сделавший, терял бы и общий
+    лимит, и свой. Инкремент по IP первым — и один нетерпеливый пользователь, десять раз
+    нажавший «прислать код» на свой же адрес, выбирает часовой бюджет по IP и блокирует
+    установку для соседей. Оба свойства сохраняются, только если отбитый запрос не платит
+    вовсе: `peek` для решения, `hit` — после него.
 
     Недоступный Redis закрывает отправку, а не открывает её (fail-closed). Счётчик
     попыток в `otp_codes` ограничивает пять догадок **на код**, а не общий их бюджет:
@@ -103,14 +107,17 @@ async def _check_rate_limits(redis: Redis, settings: Settings, email: str, ip: s
     """
     pepper = settings.otp_pepper.get_secret_value()
     subject = hash_rate_limit_subject(email, pepper)
+    email_key = f"rl:auth:request_code:email:{subject}"
+    ip_key = f"rl:auth:request_code:ip:{ip}" if ip else None
     try:
-        retry_after = None
-        if ip:
-            retry_after = await hit(redis, f"rl:auth:request_code:ip:{ip}", REQUEST_CODE_IP_LIMIT)
+        retry_after = await peek(redis, email_key, REQUEST_CODE_EMAIL_LIMIT)
+        if retry_after is None and ip_key is not None:
+            retry_after = await peek(redis, ip_key, REQUEST_CODE_IP_LIMIT)
         if retry_after is None:
-            retry_after = await hit(
-                redis, f"rl:auth:request_code:email:{subject}", REQUEST_CODE_EMAIL_LIMIT
-            )
+            # Решение принято — только теперь запрос платит по обоим счётчикам.
+            if ip_key is not None:
+                await hit(redis, ip_key, REQUEST_CODE_IP_LIMIT)
+            await hit(redis, email_key, REQUEST_CODE_EMAIL_LIMIT)
     except RateLimiterUnavailableError as exc:
         raise _rate_limited(RATE_LIMITER_DOWN_RETRY_AFTER) from exc
     if retry_after is not None:

@@ -27,6 +27,32 @@ class RateLimiterUnavailableError(RuntimeError):
     """
 
 
+async def peek(redis: Redis, key: str, rule: RateLimit) -> int | None:
+    """Проверяет лимит, НЕ трогая счётчик. Возвращает `retry_after`, если лимит исчерпан.
+
+    Отдельная от `hit` проверка нужна там, где счётчиков несколько: инкремент до решения
+    означает, что запрос, отбитый одним лимитом, платит по всем остальным. Вызывающий
+    сначала опрашивает все счётчики через `peek` и платит `hit` только за пропущенный
+    запрос (X-06).
+
+    Пара `peek` + `hit` не атомарна: несколько одновременных запросов могут пройти проверку
+    до инкремента и превысить лимит на их число. Это осознанный размен. Атомарный `hit`
+    первым списывает квоту с отбитых запросов, и один нетерпеливый пользователь блокирует
+    часовой лимит по адресу для всех остальных; лишнее письмо в редкой гонке дешевле.
+    """
+    try:
+        raw = await redis.get(key)
+        count = int(raw) if raw is not None else 0
+        if count < rule.limit:
+            return None
+        ttl = int(await redis.ttl(key))
+    except Exception as exc:
+        # Текст исключения redis-py может содержать URL с паролем — берём только тип.
+        log.warning("rate_limit.unavailable", error_type=type(exc).__name__)
+        raise RateLimiterUnavailableError(key) from exc
+    return max(ttl, 1)
+
+
 async def hit(redis: Redis, key: str, rule: RateLimit) -> int | None:
     """Регистрирует обращение. Возвращает `retry_after` в секундах, если лимит исчерпан.
 

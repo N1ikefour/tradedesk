@@ -19,7 +19,10 @@ services:
       POSTGRES_USER: td
       POSTGRES_DB: td
       # Пароль генерирует `make init` и кладёт в .env — он же внутри DATABASE_URL.
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан — запусти make init}
+      # Не `${...:?}`: интерполяция срабатывает и на `docker compose down`, и установка
+      # с испорченным .env оказалась бы без способа погасить собственный стек.
+      # Непустоту проверяет infra/scripts/start.sh — до запуска, с внятным сообщением.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     volumes:
       - td_pgdata:/var/lib/postgresql/data
     # Только на loopback: база не должна торчать в локальную сеть ни в одном профиле.
@@ -93,6 +96,15 @@ services:
     depends_on: [api]
     ports:
       - "127.0.0.1:${WEB_PORT:-5173}:5173"
+    healthcheck:
+      # Без этого `make up` печатает ссылку раньше, чем vite начал слушать. На холодном
+      # старте (а на Windows с bind-mount npm ci идёт минутами) человек открывает
+      # свежесообщённый адрес и видит ошибку. start_period покрывает установку зависимостей.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5173/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 600s
     networks:
       default:
         # Статический адрес, а не подсеть: api доверяет X-Forwarded-For ровно от него.
@@ -107,6 +119,12 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
     profiles: ["prod"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     restart: unless-stopped
 
   caddy:

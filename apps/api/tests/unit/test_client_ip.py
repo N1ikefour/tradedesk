@@ -21,7 +21,7 @@ from app.core.client_ip import (
     parse_trusted_proxies,
     trusted_proxies,
 )
-from app.core.config import ConfigError, Settings
+from app.core.config import ConfigError, Settings, get_settings
 
 PROXY = "10.87.0.10"
 BROWSER = "203.0.113.7"
@@ -105,11 +105,37 @@ def test_ports_are_stripped_from_the_chain() -> None:
     ]
 
 
-def test_networks_are_supported() -> None:
-    trusted = parse_trusted_proxies("10.87.0.0/24")
+def test_networks_are_refused() -> None:
+    """Подсеть опаснее `*` на вид безобиднее: она включает шлюз docker.
 
-    assert client_ip(make_request("10.87.0.42", BROWSER), trusted) == BROWSER
-    assert client_ip(make_request("10.88.0.42", BROWSER), trusted) == "10.88.0.42"
+    Прогон ревью S0-06 с `10.87.0.0/24` в списке: 12 подделанных адресов напрямую с хоста
+    получили 12 отдельных лимитов, то есть лимита не осталось вовсе. Запрос с хоста мимо
+    прокси приходит именно со шлюза, и он оказывался «доверенным прокси».
+    """
+    with pytest.raises(ConfigError) as excinfo:
+        parse_trusted_proxies("10.87.0.0/24")
+
+    message = str(excinfo.value)
+    assert "10.87.0.0/24" in message
+    assert "шлюз" in message
+
+
+def test_non_ip_in_the_chain_falls_back_to_the_peer() -> None:
+    """Значение уходит в ключ Redis: `unknown` и произвольная строка туда попасть не должны."""
+    trusted = parse_trusted_proxies(PROXY)
+
+    assert client_ip(make_request(PROXY, "unknown"), trusted) == PROXY
+    assert client_ip(make_request(PROXY, "$(whoami)"), trusted) == PROXY
+    assert client_ip(make_request(PROXY, "x" * 300), trusted) == PROXY
+
+
+def test_non_ip_does_not_let_the_walk_continue_leftwards() -> None:
+    """Пропустить мусор и взять элемент левее — значит взять то, что прислал клиент."""
+    trusted = parse_trusted_proxies(PROXY)
+
+    request = make_request(PROXY, "203.0.113.9, unknown")
+
+    assert client_ip(request, trusted) == PROXY
 
 
 def test_missing_peer_is_not_a_crash() -> None:
@@ -133,7 +159,7 @@ def test_garbage_is_refused() -> None:
 
 
 def test_gate_reads_the_setting(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TRUSTED_PROXIES", "10.87.0.10, 10.87.1.0/24")
+    monkeypatch.setenv("TRUSTED_PROXIES", "10.87.0.10, 10.87.0.11")
 
     assert bool(trusted_proxies(Settings()))
     check_trusted_proxies(Settings())
@@ -146,6 +172,25 @@ def test_gate_refuses_broken_setting(monkeypatch: pytest.MonkeyPatch) -> None:
         check_trusted_proxies(Settings())
 
 
+async def run_startup(env: pytest.MonkeyPatch, make_app: Callable[[], FastAPI], value: str) -> None:
+    """Прогоняет старт приложения с заданным TRUSTED_PROXIES.
+
+    Импорт внутри функции и `cache_clear` после него — оба обязательны, и оба про одно:
+    `app/main.py` собирает приложение прямо на импорте модуля, а `get_settings` кэширован.
+    Импорт на уровне модуля наполнил бы кэш значениями из .env репозитория ещё на сборе
+    тестов — то есть раньше, чем отработают модульные фикстуры integration-тестов, и те
+    полезли бы в боевую БД вместо тестовой. Без `cache_clear` окружение теста не видно
+    вовсе, и результат зависит от того, импортировал ли `app.main` кто-то раньше.
+    """
+    from app.main import lifespan
+
+    env.setenv("TRUSTED_PROXIES", value)
+    get_settings.cache_clear()
+    app = make_app()
+    async with lifespan(app):
+        pass
+
+
 async def test_startup_warns_when_the_list_is_unset(
     local_env: pytest.MonkeyPatch,
     make_app: Callable[[], FastAPI],
@@ -156,13 +201,7 @@ async def test_startup_warns_when_the_list_is_unset(
     Доверять заголовку «на всякий случай» — тем более: это полный обход лимита.
     Остаётся сказать вслух при старте.
     """
-    from app.main import lifespan
-
-    local_env.setenv("TRUSTED_PROXIES", "")
-    app = make_app()
-
-    async with lifespan(app):
-        pass
+    await run_startup(local_env, make_app, "")
 
     assert "app.trusted_proxies_unset" in capsys.readouterr().out
 
@@ -173,14 +212,21 @@ async def test_startup_is_quiet_when_the_list_is_set(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Контроль: предупреждение не должно быть фоновым шумом в настроенной установке."""
-    from app.main import lifespan
-
-    local_env.setenv("TRUSTED_PROXIES", PROXY)
-    app = make_app()
-
-    async with lifespan(app):
-        pass
+    await run_startup(local_env, make_app, PROXY)
 
     output = capsys.readouterr().out
     assert "app.started" in output
     assert "app.trusted_proxies_unset" not in output
+
+
+async def test_startup_refuses_a_subnet(
+    local_env: pytest.MonkeyPatch, make_app: Callable[[], FastAPI]
+) -> None:
+    """Гейт на старте, а не молчаливая дыра: подсеть в списке роняет запуск."""
+    local_env.setenv("TRUSTED_PROXIES", "10.87.0.0/24")
+    get_settings.cache_clear()
+
+    with pytest.raises(ConfigError) as excinfo:
+        make_app()
+
+    assert "10.87.0.0/24" in str(excinfo.value)

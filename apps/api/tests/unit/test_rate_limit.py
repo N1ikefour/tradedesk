@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 from redis.asyncio import Redis
 
-from app.core.rate_limit import RateLimit, RateLimiterUnavailableError, hit
+from app.core.rate_limit import RateLimit, RateLimiterUnavailableError, hit, peek
 
 RULE = RateLimit(limit=3, window_seconds=600)
 
@@ -24,6 +24,9 @@ class FakeRedis:
         self.counters[key] = self.counters.get(key, 0) + 1
         return self.counters[key]
 
+    async def get(self, key: str) -> int | None:
+        return self.counters.get(key)
+
     async def ttl(self, key: str) -> int:
         return self.ttls.get(key, -1)
 
@@ -35,6 +38,9 @@ class FakeRedis:
 
 class BrokenRedis:
     async def incr(self, key: str) -> int:
+        raise ConnectionError("redis://user:hunter2@redis:6379 недоступен")
+
+    async def get(self, key: str) -> int | None:
         raise ConnectionError("redis://user:hunter2@redis:6379 недоступен")
 
 
@@ -115,4 +121,58 @@ async def test_unavailable_redis_does_not_carry_the_url(
     # Контроль проверки: traceback обязан быть в выводе, иначе assert ниже пуст.
     assert "test.rate_limit_failed" in output
     assert "Traceback" in output
+    assert "hunter2" not in output
+
+
+# --- peek: решение без списания квоты (X-06) ----------------------------------
+
+
+async def test_peek_does_not_touch_the_counter() -> None:
+    """Ради этого peek и существует: отбитый запрос не должен платить по чужому счётчику."""
+    fake = FakeRedis()
+    await hit(_redis(fake), "k", RULE)
+
+    for _ in range(10):
+        assert await peek(_redis(fake), "k", RULE) is None
+
+    assert fake.counters["k"] == 1
+    assert fake.expire_calls == 1
+
+
+async def test_peek_reports_exhausted_limit() -> None:
+    fake = FakeRedis()
+    for _ in range(RULE.limit):
+        await hit(_redis(fake), "k", RULE)
+
+    assert await peek(_redis(fake), "k", RULE) == RULE.window_seconds
+
+
+async def test_peek_on_unknown_key_allows() -> None:
+    assert await peek(_redis(FakeRedis()), "never-seen", RULE) is None
+
+
+async def test_peek_boundary_matches_hit() -> None:
+    """peek обязан блокировать ровно там же, где блокировал бы hit, — иначе лимит поедет."""
+    peeked = FakeRedis()
+    hitted = FakeRedis()
+    for _ in range(RULE.limit):
+        await hit(_redis(peeked), "k", RULE)
+        await hit(_redis(hitted), "k", RULE)
+
+    assert (await peek(_redis(peeked), "k", RULE) is None) == (
+        await hit(_redis(hitted), "k", RULE) is None
+    )
+
+
+async def test_peek_reports_unavailable_redis(capsys: pytest.CaptureFixture[str]) -> None:
+    """Мёртвый счётчик обязан закрывать отправку так же, как в hit, а не открывать её."""
+    from app.core.logging import configure_logging
+
+    configure_logging(secret_values=["hunter2"])
+
+    with pytest.raises(RateLimiterUnavailableError):
+        await peek(_redis(BrokenRedis()), "k", RULE)
+
+    output = capsys.readouterr().out
+    assert "rate_limit.unavailable" in output
     assert "hunter2" not in output
