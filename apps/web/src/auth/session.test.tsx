@@ -1,6 +1,6 @@
-import { QueryClient } from '@tanstack/react-query';
+import { focusManager, QueryClient } from '@tanstack/react-query';
 import { act, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { api, unwrap } from '@/api/client';
 import { ApiRequestError } from '@/api/errors';
@@ -60,4 +60,36 @@ describe('обработка 401', () => {
     expect(await screen.findByRole('heading', { name: t.login.title })).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent(t.login.sessionExpired);
   });
+
+  it('возврат во вкладку перепроверяет сессию и замечает, что её погасили', async () => {
+    let authorized = true;
+    installFetchMock({
+      [ME]: () =>
+        authorized
+          ? jsonResponse(200, TEST_USER)
+          : errorResponse(401, 'unauthorized', 'Требуется вход'),
+    });
+    renderApp(['/journal']);
+    await screen.findByRole('heading', { name: t.pages.journal });
+
+    // Сессию гасят на сервере, пока вкладка лежит в фоне.
+    authorized = false;
+
+    // Запрос сессии свежий 30 секунд, иначе возврат фокуса ничего не перечитывает.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 60_000);
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+
+    expect(await screen.findByRole('heading', { name: t.login.title })).toBeInTheDocument();
+  });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  // Менеджер фокуса — глобальный синглтон react-query: оставленное значение
+  // просочилось бы в следующий тест.
+  focusManager.setFocused(undefined);
 });

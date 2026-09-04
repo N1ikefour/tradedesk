@@ -26,6 +26,18 @@ describe('RequireAuth', () => {
     expect(screen.queryByRole('heading', { name: t.login.title })).not.toBeInTheDocument();
   });
 
+  it('неудачный запрос сессии — это не «не вошёл»: причина объясняется', async () => {
+    // Один повтор настроен на самом запросе сессии, поэтому 500 приходит дважды.
+    installFetchMock({ [ME]: () => errorResponse(500, 'internal_error', 'Внутренняя ошибка') });
+    renderApp(['/journal']);
+
+    // Повтор откладывается на секунду, поэтому ожидание длиннее умолчания.
+    const title = await screen.findByRole('heading', { name: t.login.title }, { timeout: 5000 });
+    expect(title).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent(t.login.sessionCheckFailed);
+    expect(screen.queryByRole('heading', { name: t.pages.journal })).not.toBeInTheDocument();
+  });
+
   it('вошедший пользователь видит защищённый маршрут', async () => {
     installFetchMock({ [ME]: () => jsonResponse(200, TEST_USER) });
     renderApp(['/journal']);

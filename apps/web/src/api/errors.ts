@@ -21,6 +21,10 @@ export const ERROR_CODE = {
   rateLimited: 'rate_limited',
 } as const satisfies Record<string, ErrorCode>;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /** Ответ с кодом ошибки. `code` может быть неизвестным: схема шире, чем набор выше. */
 export class ApiRequestError extends Error {
   readonly status: number;
@@ -40,6 +44,35 @@ export class ApiRequestError extends Error {
     this.details = details;
   }
 
+  /**
+   * `details.fields` из ответа 400 `validation_error` — SPEC.md 5.1. Ключи приходят с
+   * приставкой места в запросе (`body.email`), поэтому искать поле надо по `fieldError`.
+   */
+  get fields(): Readonly<Record<string, string>> {
+    const raw = this.details['fields'];
+    if (!isRecord(raw)) {
+      return {};
+    }
+    const result: Record<string, string> = {};
+    for (const [key, value] of Object.entries(raw)) {
+      if (typeof value === 'string') {
+        result[key] = value;
+      }
+    }
+    return result;
+  }
+
+  /** Сообщение по имени поля: совпадение целиком или последним сегментом (`body.email`). */
+  fieldError(name: string): string | null {
+    const suffix = `.${name}`;
+    for (const [key, value] of Object.entries(this.fields)) {
+      if (key === name || key.endsWith(suffix)) {
+        return value;
+      }
+    }
+    return null;
+  }
+
   /** `details.retry_after` из ответа 429 — секунды до следующей попытки. */
   get retryAfter(): number | null {
     const value = this.details['retry_after'];
@@ -56,10 +89,6 @@ export class NetworkError extends Error {
     super('network request failed', { cause });
     this.name = 'NetworkError';
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
