@@ -191,7 +191,7 @@ account_credentials (
   account_id uuid pk fk trading_accounts on delete cascade,
   ciphertext bytea not null,                  -- envelope: AES-256-GCM(data_key, json{password})
   wrapped_data_key bytea not null,            -- AES-256-GCM(MASTER_KEY, data_key)
-  key_version smallint not null,               -- отпечаток MASTER_KEY, выводится из ключа (ADR-0003)
+  key_version smallint not null,               -- НЕ счётчик: 15-битный отпечаток MASTER_KEY (blake2s), ADR-0003
   updated_at timestamptz not null
 )
 ```
