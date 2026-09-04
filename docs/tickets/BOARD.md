@@ -17,7 +17,7 @@ Updated: 2026-09-03
 | S0-01 | Скелет монорепо | infra | **Done** | [PR #1](https://github.com/N1ikefour/tradedesk/pull/1) |
 | S0-02 | API-скелет | backend | **Done** | [PR #2](https://github.com/N1ikefour/tradedesk/pull/2) |
 | S0-03 | Миграция ядра | backend | **Done** | [PR #3](https://github.com/N1ikefour/tradedesk/pull/3) |
-| S0-04 | Auth | backend | In Review | [PR #5](https://github.com/N1ikefour/tradedesk/pull/5) |
+| S0-04 | Auth | backend | **Done** | [PR #5](https://github.com/N1ikefour/tradedesk/pull/5) |
 | S0-05 | Шифрование credentials | backend | Backlog | — |
 | S0-06 | Docker Compose local/prod | infra | Backlog | — |
 | S0-07 | Web-скелет | frontend | Backlog | — |
