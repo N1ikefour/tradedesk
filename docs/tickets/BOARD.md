@@ -20,7 +20,7 @@ Updated: 2026-09-03
 | S0-04 | Auth | backend | **Done** | [PR #5](https://github.com/N1ikefour/tradedesk/pull/5) |
 | S0-05 | Шифрование credentials | backend | **Done** | [PR #6](https://github.com/N1ikefour/tradedesk/pull/6) |
 | S0-06 | Docker Compose local/prod | infra | **Done** | [PR #7](https://github.com/N1ikefour/tradedesk/pull/7) |
-| S0-07 | Web-скелет | frontend | In Progress | `feat/S0-07-web-skeleton` |
+| S0-07 | Web-скелет | frontend | In Review | [PR #9](https://github.com/N1ikefour/tradedesk/pull/9) |
 | S0-08 | Settings | backend + frontend | Backlog | — |
 | S0-09 | SETUP.md черновик | infra | Backlog | — |
 
@@ -88,3 +88,4 @@ Updated: 2026-09-03
 | X-10 | Инлайн-объявления ошибок растят типы впятеро | backend | Todo | — |
 | X-11 | Заголовки ответов не объявлены в OpenAPI | backend | Todo | — |
 | X-12 | Том postgres переживает worktree, `make up` умирает на пароле | infra | Todo | — |
+| X-13 | Приостановленный запрос выглядит как вечная загрузка | frontend | Todo | — |
