@@ -1,9 +1,28 @@
 <!doctype html>
-<html lang="ru">
+<!--
+  Тёмная тема — по умолчанию (SPEC.md 12, 14). Класс стоит прямо в разметке, поэтому
+  первый кадр уже тёмный: вспышки светлой темы не бывает даже до загрузки скриптов.
+-->
+<html lang="ru" class="dark" style="color-scheme: dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>TradeDesk</title>
+    <script>
+      // Единственная задача — снять тёмную тему, если пользователь выбрал светлую.
+      // Скрипт синхронный и стоит до стилей: к первой отрисовке класс уже верный.
+      // Ключ обязан совпадать с THEME_STORAGE_KEY в src/lib/theme.ts.
+      (function () {
+        try {
+          if (window.localStorage.getItem('td.theme.v1') === 'light') {
+            document.documentElement.classList.remove('dark');
+            document.documentElement.style.colorScheme = 'light';
+          }
+        } catch (error) {
+          // localStorage недоступен — остаётся тема по умолчанию.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

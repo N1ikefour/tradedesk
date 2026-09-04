@@ -31,8 +31,8 @@ endif
 SCRIPTS := $(ROOT)/infra/scripts
 
 .PHONY: help install hooks ci ci-api ci-web ci-target lint lint-api lint-collector lint-web \
-        lint-hooks test test-api build-web format guard-python guard-precommit guard-web \
-        init up down migrate downgrade revision types
+        lint-hooks test test-api test-web build-web smoke format guard-python guard-precommit \
+        guard-web init up down migrate downgrade revision types
 
 ## ----------------------------------------------------------------------------
 ## Справка
@@ -50,7 +50,7 @@ help:
 	@echo "    make ci              ВЕСЬ гейт: то же самое и в том же составе, что гоняет GitHub Actions"
 	@echo "                         (ci-api + ci-web). Перед PR прогоняется именно она"
 	@echo "    make ci-api          джоб api: lint-api + lint-collector + lint-hooks + test-api"
-	@echo "    make ci-web          джоб web: lint-web + build-web"
+	@echo "    make ci-web          джоб web: lint-web + test-web + build-web"
 	@echo "    make ci-target       ruff + mypy + unit-тесты в контейнере python:$(PY_VERSION)-slim —"
 	@echo "                         на целевой версии, которой нет на машине. ДОПОЛНЯЕТ make ci,"
 	@echo "                         не заменяет её: без pre-commit и integration-тестов"
@@ -61,17 +61,21 @@ help:
 	@echo "    make lint-collector  ruff check + ruff format --check + mypy для apps/collector-mt5"
 	@echo "    make lint-web        eslint + prettier --check + tsc --noEmit для apps/web"
 	@echo "    make lint-hooks      pre-commit run --all-files (в т.ч. detect-private-key)"
-	@echo "    make test            тесты: pytest (api). Тесты web (vitest) появятся в S0-07"
+	@echo "    make test            тесты: pytest (api) + vitest (web)"
 	@echo "    make test-api        pytest для apps/api"
+	@echo "    make test-web        vitest run для apps/web"
 	@echo "    make build-web       vite build для apps/web"
+	@echo "    make smoke           playwright-смоук входа против поднятого make up."
+	@echo "                         В make ci НЕ входит: браузеры ставятся отдельно"
+	@echo "                         (npx playwright install chromium), см. цель smoke"
+	@echo "    make types           openapi запущенного api → apps/web/src/api/schema.d.ts."
+	@echo "                         Требует make up (профиль local)"
 	@echo "    make format          ruff format + prettier --write"
 	@echo "    make migrate         alembic upgrade head (в .venv; в контейнере это делает старт api)"
 	@echo "    make revision m=\"…\"  новая alembic-миграция (autogenerate)"
 	@echo "    make downgrade       откат на шаг назад, make downgrade to=base"
 	@echo "    make help            эта справка"
 	@echo ""
-	@echo "  Ещё не реализованы (падают с подсказкой, в какой задаче появятся):"
-	@echo "    make types           openapi → apps/web/src/api/schema.d.ts       → S0-07"
 	@echo ""
 
 ## ----------------------------------------------------------------------------
@@ -111,7 +115,7 @@ ci: ci-api ci-web
 
 ci-api: lint-api lint-collector lint-hooks test-api
 
-ci-web: lint-web build-web
+ci-web: lint-web test-web build-web
 
 # Гейт на целевой версии Python в контейнере (X-01). Дополняет `make ci`, не заменяет её:
 # вторая равноправная цель рано или поздно разошлась бы с первой. Авторитетный прогон —
@@ -143,14 +147,26 @@ lint-web: guard-web
 lint-hooks: guard-precommit
 	$(PRECOMMIT) run --all-files
 
-test: test-api
-	@echo "тесты web (vitest) появятся в S0-07"
+test: test-api test-web
 
 test-api: guard-python
 	cd $(API_DIR) && $(PYTEST)
 
+test-web: guard-web
+	cd $(WEB_DIR) && $(NPM) run test
+
 build-web: guard-web
 	cd $(WEB_DIR) && $(NPM) run build
+
+# Смоук входа (SPEC.md 13) против поднятого `make up`. Отдельная цель, а не часть `make ci`:
+# браузеры Playwright ставятся сотнями мегабайт и нужны одному тесту, а из набора SPEC.md 13
+# сейчас достижим только вход — остальных экранов ещё нет. Зовётся осознанно.
+smoke: guard-web
+	@test -d "$${PLAYWRIGHT_BROWSERS_PATH:-$$HOME/Library/Caches/ms-playwright}" || \
+	  test -d "$$HOME/.cache/ms-playwright" || { \
+	    echo "Браузеров Playwright нет. Поставь: cd apps/web && npx playwright install chromium"; \
+	    exit 1; }
+	cd $(WEB_DIR) && $(NPM) run smoke
 
 format: guard-python guard-web
 	cd $(API_DIR) && $(RUFF) format .
@@ -183,7 +199,8 @@ revision: guard-python
 	@test -n "$(m)" || { echo 'Нужно описание: make revision m="что меняем"'; exit 1; }
 	cd $(API_DIR) && $(VENV_BIN)/alembic revision --autogenerate -m "$(m)"
 
-types:
-	@echo "make types ещё не реализована — задача S0-07 (openapi-typescript → apps/web/src/api/schema.d.ts)."
-	@echo "Генерировать пока не из чего: эндпоинтов нет до S0-02."
-	@exit 1
+# Типы фронта из OpenAPI запущенного api (S0-07). Схема берётся у живого приложения,
+# а не из файла в репозитории: файл пришлось бы обновлять руками, и он расходился бы
+# с API молча. Профиль обязан быть local — только там объявлен /api/v1/dev/outbox.
+types: guard-web
+	cd $(WEB_DIR) && $(NPM) run gen:types

@@ -1,0 +1,3 @@
+# Артефакты playwright (make smoke). Тесты сами их перезаписывают, в истории им нечего делать.
+playwright-report/
+test-results/

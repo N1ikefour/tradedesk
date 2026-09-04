@@ -1,6 +1,9 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
+import { App } from '@/app';
+import '@/styles/index.css';
+
 const container = document.getElementById('root');
 if (!container) {
   throw new Error('#root not found');
@@ -8,6 +11,6 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <h1>TradeDesk</h1>
+    <App />
   </StrictMode>,
 );
