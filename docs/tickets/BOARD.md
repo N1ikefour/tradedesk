@@ -77,6 +77,7 @@ Updated: 2026-09-03
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
 | X-01 | `make ci-target`: гейт на целевой версии Python | infra | Todo | — |
-| X-02 | Скраб секретов в логах: рекурсия по значениям и пароли БД | backend | In Progress | `fix/X-02-log-scrub` |
+| X-02 | Скраб секретов в логах: рекурсия по значениям и пароли БД | backend | In Review | [PR #4](https://github.com/N1ikefour/tradedesk/pull/4) |
 | X-03 | Формат ошибок в OpenAPI | backend | Todo | — |
 | X-04 | Не-str ключи в логах роняют рендерер | backend | Todo | — |
+| X-05 | Счётчик непросмотренного в логах врёт | backend | Todo | — |
