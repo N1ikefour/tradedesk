@@ -14,6 +14,7 @@ from app.core.errors import register_error_handlers
 from app.core.logging import configure_logging, get_logger
 from app.core.origin import OriginCheckMiddleware
 from app.core.redis import close_redis
+from app.core.security import check_master_key, master_key_scrub_values
 from app.domains.auth.router import router as auth_router
 from app.domains.mail.provider import check_email_provider
 from app.domains.mail.router import router as dev_router
@@ -62,9 +63,15 @@ def create_app() -> FastAPI:
     settings = get_settings()
     # Значения секретов передаются логгеру, чтобы он вырезал их из любого текста,
     # включая traceback: цензура по имени ключа не спасает от текста исключения.
-    configure_logging(secret_values=settings.scrubbable_secret_values())
+    # Мастер-ключ регистрируется и в байтовых написаниях: в коде он живёт как `bytes`,
+    # а скраб ищет подстроку — с base64 из конфига repr(b"...") не совпал бы.
+    configure_logging(
+        secret_values=[*settings.scrubbable_secret_values(), *master_key_scrub_values(settings)]
+    )
     # Отсутствующий провайдер писем — отказ на старте, а не 500 на первом входе.
     check_email_provider(settings)
+    # Битый MASTER_KEY — тоже отказ на старте, а не 500 на первой записи credentials (S1-06).
+    check_master_key(settings)
 
     app = FastAPI(
         title=settings.app_name,

@@ -5,17 +5,22 @@
 копия БД без ключа бесполезна. Единственный законный способ сменить ключ —
 `scripts/rotate_master_key.py`, и до коммита каждой его транзакции смена обратима.
 
-Схема хранения. Пароль шифруется одноразовым `data_key`, а мастер-ключом шифруется только
-сам `data_key`. Смысл — в ротации: она перешифровывает короткий `wrapped_data_key` и **не
-читает и не переписывает `ciphertext` вовсе**. На тысяче счетов это разница между секундами
-и часами и между «обрыв на середине безопасен» и «часть данных перешифрована, часть нет».
+Схема хранения. Пароль шифруется одноразовым `data_key` — своим на каждую запись, — а
+мастер-ключом шифруется только сам `data_key`. Отсюда два свойства. Компрометация одного
+`data_key` стоит один счёт, а не все. И ротация перешифровывает короткий `wrapped_data_key`,
+**не читая и не переписывая `ciphertext` вовсе**: на тысяче счетов это разница между
+секундами и часами и между «обрыв на середине безопасен» и «часть данных перешифрована».
 
     ciphertext        = 0x01 | nonce(12) | AES-256-GCM(data_key, padded_json, aad_credentials)
     wrapped_data_key  = 0x01 | nonce(12) | AES-256-GCM(master_key, data_key, aad_data_key)
 
-Первый байт — версия формата блоба; `key_version` в колонке — версия `MASTER_KEY`, это
-разные вещи. Nonce у каждого блоба свой, из `secrets.token_bytes`, и хранится рядом с
-шифротекстом: выводить его из данных нельзя, повтор nonce на одном ключе разрушает GCM.
+Первый байт — версия формата блоба; колонка `key_version` — **отпечаток мастер-ключа**,
+это разные вещи. Отпечаток вычисляется из самого ключа (`key_fingerprint`), а не назначается
+человеком: значение в колонке физически не может разойтись с тем, чем строка обёрнута,
+и ротации незачем гадать, какой ключ подойдёт.
+
+Nonce у каждого блоба свой, из `secrets.token_bytes`, и хранится рядом с шифротекстом:
+выводить его из данных нельзя, повтор nonce на одном ключе разрушает GCM.
 
 AAD привязывает оба блоба к `account_id` — иначе строку одного счёта можно переставить
 в другой, и она расшифруется. В `SPEC.md` 3.2 этого нет, решение принято в S0-05.
@@ -25,6 +30,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import hmac
 import json
 import secrets
@@ -36,10 +42,7 @@ from uuid import UUID
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from app.core.config import Settings, get_settings
-from app.core.logging import get_logger
-
-log = get_logger(__name__)
+from app.core.config import ConfigError, Settings, get_settings
 
 # Версия формата блоба. Меняется, только если меняется раскладка байт, — не при ротации.
 FORMAT_VERSION = 1
@@ -55,6 +58,12 @@ PAD_BLOCK = 64
 # Префикс с настоящей длиной полезной части, big-endian.
 PAD_HEADER_LENGTH = 4
 
+# Отпечаток мастер-ключа кладётся в `key_version` — колонку `smallint`, то есть знаковый
+# int16. Берём 15 бит: значение всегда неотрицательное и в диапазон помещается с запасом.
+FINGERPRINT_MASK = 0x7FFF
+# Домен персонализации blake2s: отпечаток из этой функции ни с чем другим не совпадёт.
+_FINGERPRINT_PERSON = b"td-mk-fp"
+
 # Домены AAD: один и тот же account_id, но блоб внешнего слоя нельзя подставить во внутренний.
 _AAD_CREDENTIALS = b"tradedesk:credentials:v1:"
 _AAD_DATA_KEY = b"tradedesk:data-key:v1:"
@@ -66,24 +75,46 @@ DECRYPTION_FAILED = "Не удалось расшифровать credentials с
 _MASTER_KEY_FORMAT = "ожидается base64 от 32 случайных байт"
 
 
-class CredentialsKeyError(RuntimeError):
-    """Мастер-ключ отсутствует или задан не в том формате. Значение ключа сюда не попадает."""
+class CredentialsKeyError(ConfigError):
+    """Мастер-ключ отсутствует или задан не в том формате. Значение ключа сюда не попадает.
+
+    Наследник `ConfigError`: непригодный ключ — это отказ конфигурации, и гейт старта
+    обрабатывает его тем же путём, что пустой `SECRET_KEY`.
+    """
 
 
 class CredentialsDecryptionError(RuntimeError):
     """Расшифровка не удалась. Причина наружу не раскрывается — см. DECRYPTION_FAILED."""
 
 
-@dataclass(frozen=True)
-class MasterKey:
-    """Мастер-ключ и его номер версии.
+def key_fingerprint(material: bytes) -> int:
+    """15-битный отпечаток мастер-ключа — то, что лежит в колонке `key_version`.
 
-    `repr=False` у материала обязателен: dataclass печатает поля в `repr`, а `repr`
-    объекта уезжает и в traceback, и в лог через `scrub_unserializable`.
+    Функция от ключа, а не счётчик в руках оператора: колонка не может соврать, какой
+    ключ обернул строку, и весь класс ошибки «версию забыли поднять» исчезает.
+    15 бит от 256-битного случайного ключа сами по себе не приближают к подбору: они
+    говорят «какой из ключей», а не «какой ключ».
+    """
+    digest = hashlib.blake2s(material, digest_size=2, person=_FINGERPRINT_PERSON).digest()
+    return int.from_bytes(digest, "big") & FINGERPRINT_MASK
+
+
+@dataclass(frozen=True, repr=False)
+class MasterKey:
+    """Мастер-ключ. Номер версии не хранится — он вычисляется из материала.
+
+    Свой `__repr__` обязателен: dataclass печатает поля, а `repr` объекта уезжает
+    и в traceback, и в лог через `scrub_unserializable`.
     """
 
-    version: int
     material: bytes = field(repr=False)
+
+    @property
+    def version(self) -> int:
+        return key_fingerprint(self.material)
+
+    def __repr__(self) -> str:
+        return f"MasterKey(version={self.version})"
 
 
 @dataclass(frozen=True)
@@ -98,12 +129,13 @@ class MasterKeyring:
     previous: MasterKey | None = None
 
     def candidates(self, key_version: int) -> tuple[MasterKey, ...]:
-        """Ключи в порядке попытки: сперва тот, чья версия записана в строке.
+        """Ключи в порядке попытки: сперва тот, чей отпечаток записан в строке.
 
-        Остальные пробуются следом. Строка с версией, разошедшейся с реальностью (оператор
-        сменил `MASTER_KEY`, не подняв `MASTER_KEY_VERSION`), иначе стала бы нечитаемой
-        при живом ключе. Перебор безопасен: неверный ключ отсекает тег GCM, и все неудачи
-        неотличимы снаружи.
+        Остальные пробуются следом — на случай, когда значение в колонке испорчено помимо
+        нашего кода: терять строку при живом ключе хуже, чем сделать лишнюю попытку.
+        Перебор безопасен, неверный ключ отсекает тег GCM. Неудачи неотличимы **по тексту**;
+        по времени отличимы (несовпадение версии формата отсекается раньше тега), но
+        блобы приходят только из своей БД, и подавать их в оракул некому.
         """
         known = [key for key in (self.current, self.previous) if key is not None]
         return tuple(sorted(known, key=lambda key: key.version != key_version))
@@ -141,26 +173,55 @@ def master_keyring(settings: Settings | None = None) -> MasterKeyring:
     """Связка ключей из окружения. Бросает `CredentialsKeyError` на непригодной конфигурации."""
     settings = settings or get_settings()
     current = MasterKey(
-        version=settings.master_key_version,
-        material=parse_master_key(settings.master_key.get_secret_value(), variable="MASTER_KEY"),
+        parse_master_key(settings.master_key.get_secret_value(), variable="MASTER_KEY")
     )
     raw_previous = settings.master_key_previous.get_secret_value().strip()
     if not raw_previous:
         return MasterKeyring(current=current)
-    if current.version < 2:
-        raise CredentialsKeyError(
-            "MASTER_KEY_PREVIOUS задан при MASTER_KEY_VERSION=1: у первой версии ключа "
-            "предыдущей не бывает. Ротация поднимает MASTER_KEY_VERSION на единицу."
-        )
-    previous = MasterKey(
-        version=current.version - 1,
-        material=parse_master_key(raw_previous, variable="MASTER_KEY_PREVIOUS"),
-    )
+    previous = MasterKey(parse_master_key(raw_previous, variable="MASTER_KEY_PREVIOUS"))
     if hmac.compare_digest(previous.material, current.material):
         raise CredentialsKeyError(
             "MASTER_KEY_PREVIOUS совпадает с MASTER_KEY: ротировать нечего и не на что."
         )
+    if previous.version == current.version:
+        # 1 случай на 32768. Различить строки двух ключей было бы нечем, поэтому отказ
+        # до начала ротации, а не «как-нибудь разберёмся по ходу».
+        raise CredentialsKeyError(
+            f"Отпечатки MASTER_KEY и MASTER_KEY_PREVIOUS совпали ({current.version}), "
+            "хотя ключи разные: строки двух ключей стали бы неразличимы. "
+            "Сгенерируй другой новый ключ и повтори."
+        )
     return MasterKeyring(current=current, previous=previous)
+
+
+def check_master_key(settings: Settings) -> None:
+    """Гейт старта: в проде непригодный `MASTER_KEY` — отказ грузиться.
+
+    Иначе битый ключ обнаружился бы не при запуске, а 500-й на первой записи credentials.
+    В `local` не мешаем: секреты там появляются по мере надобности (та же логика, что
+    у `check_production_secrets`).
+    """
+    if not settings.is_prod:
+        return
+    master_keyring(settings)
+
+
+def master_key_scrub_values(settings: Settings) -> list[str]:
+    """Написания мастер-ключей, которые логгер должен вырезать из любого текста.
+
+    base64-форму регистрирует `Settings.scrubbable_secret_values`, но в коде ключ живёт
+    как `bytes`, а `scrub_text` ищет подстроку: `repr(b"...")` с base64 не совпадёт.
+    Регистрируются тело `repr` и hex — оба написания, в которых сырой ключ может утечь
+    в лог под несекретным именем.
+    """
+    values: list[str] = []
+    for raw in (settings.master_key, settings.master_key_previous):
+        try:
+            material = parse_master_key(raw.get_secret_value(), variable="MASTER_KEY")
+        except CredentialsKeyError:
+            continue
+        values += [repr(material)[2:-1], material.hex()]
+    return values
 
 
 def encrypt_credentials(
@@ -182,10 +243,8 @@ def encrypt_credentials(
         if not isinstance(value, str):
             raise TypeError(f"credentials[{name!r}]: ожидается str")
     keyring = keyring or master_keyring()
-    # ensure_ascii=True (по умолчанию): пароль приходит из JSON запроса и может содержать
-    # одиночный суррогат вида \ud800. Такую строку .encode() уронил бы UnicodeEncodeError,
-    # а экранированная она проходит и возвращается при расшифровке ровно такой же.
-    payload = json.dumps(dict(credentials), sort_keys=True, separators=(",", ":")).encode()
+    payload = _dump_payload(credentials)
+    # Свой data_key на каждую запись: иначе компрометация одного ключа вскрывает все счета.
     data_key = secrets.token_bytes(DATA_KEY_LENGTH)
     return EncryptedCredentials(
         ciphertext=_seal(data_key, _pad(payload), _aad(_AAD_CREDENTIALS, account_id)),
@@ -205,20 +264,13 @@ def decrypt_credentials(
     """Обратно к `{"password": …}`. Принимает распакованный `EncryptedCredentials`.
 
     Любая неудача — `CredentialsDecryptionError` с одним и тем же текстом: испорченный байт,
-    чужой счёт в `account_id`, потерянный ключ и битый JSON снаружи неотличимы.
+    чужой счёт в `account_id`, потерянный ключ и битый JSON снаружи неотличимы. Ничего
+    не логирует: открытый текст на этом пути в руках, и попасть в лог он не должен никак.
     """
     keyring = keyring or master_keyring()
     data_key, _ = _unwrap_data_key(wrapped_data_key, key_version, account_id, keyring)
     payload = _unpad(_open(data_key, ciphertext, _aad(_AAD_CREDENTIALS, account_id)))
-    try:
-        decoded: Any = json.loads(payload)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        raise CredentialsDecryptionError(DECRYPTION_FAILED) from None
-    if not isinstance(decoded, dict) or not all(
-        isinstance(key, str) and isinstance(value, str) for key, value in decoded.items()
-    ):
-        raise CredentialsDecryptionError(DECRYPTION_FAILED)
-    return decoded
+    return _load_payload(payload)
 
 
 def rewrap_data_key(
@@ -241,6 +293,48 @@ def rewrap_data_key(
         _seal(keyring.current.material, data_key, _aad(_AAD_DATA_KEY, account_id)),
         keyring.current.version,
     )
+
+
+def opening_master_key(
+    wrapped_data_key: bytes,
+    key_version: int,
+    *,
+    account_id: UUID,
+    keyring: MasterKeyring | None = None,
+) -> MasterKey:
+    """Каким из ключей связки открывается обёртка. Сам `data_key` наружу не отдаётся.
+
+    Нужна проверяющему проходу ротации: он сверяет, что строка открывается текущим ключом
+    и что отпечаток в колонке совпадает с открывшим ключом.
+    """
+    keyring = keyring or master_keyring()
+    _, key = _unwrap_data_key(wrapped_data_key, key_version, account_id, keyring)
+    return key
+
+
+def _dump_payload(credentials: Mapping[str, str]) -> bytes:
+    """JSON в UTF-8. `surrogatepass` — на случай одиночного суррогата вида \\ud800:
+
+    он приходит из JSON запроса, обычный `.encode()` уронил бы его UnicodeEncodeError.
+    Экранировать всё подряд (`ensure_ascii=True`) нельзя: не-ASCII раздувается вшестеро,
+    и по размеру блоба становится виден алфавит пароля, а не только длина.
+    """
+    dumped = json.dumps(
+        dict(credentials), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return dumped.encode("utf-8", "surrogatepass")
+
+
+def _load_payload(payload: bytes) -> dict[str, str]:
+    try:
+        decoded: Any = json.loads(payload.decode("utf-8", "surrogatepass"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise CredentialsDecryptionError(DECRYPTION_FAILED) from None
+    if not isinstance(decoded, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in decoded.items()
+    ):
+        raise CredentialsDecryptionError(DECRYPTION_FAILED)
+    return decoded
 
 
 def _aad(scope: bytes, account_id: UUID) -> bytes:
@@ -271,18 +365,9 @@ def _unwrap_data_key(
     aad = _aad(_AAD_DATA_KEY, account_id)
     for key in keyring.candidates(key_version):
         try:
-            data_key = _open(key.material, wrapped_data_key, aad)
+            return _open(key.material, wrapped_data_key, aad), key
         except CredentialsDecryptionError:
             continue
-        if key.version != key_version:
-            # Версия ключа секретом не является, а расхождение — сигнал операционной ошибки.
-            log.warning(
-                "credentials.key_version_mismatch",
-                account_id=str(account_id),
-                stored_key_version=key_version,
-                used_key_version=key.version,
-            )
-        return data_key, key
     raise CredentialsDecryptionError(DECRYPTION_FAILED)
 
 

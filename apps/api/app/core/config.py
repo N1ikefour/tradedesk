@@ -47,11 +47,9 @@ class Settings(BaseSettings):
     otp_pepper: SecretStr = SecretStr("")
     collector_token: SecretStr = SecretStr("")
 
-    # Версия MASTER_KEY: ею помечаются новые строки account_credentials (SPEC.md 3.2).
-    # Поднимается на единицу при ротации ключа, вместе с MASTER_KEY_PREVIOUS.
-    master_key_version: int = 1
     # Предыдущий MASTER_KEY. Пуст в обычной жизни; задаётся только на время ротации, чтобы
     # API читал строки, до которых скрипт ещё не дошёл. Убирается после «осталось: 0».
+    # Номера версии в окружении нет: `key_version` — отпечаток самого ключа (core/security.py).
     master_key_previous: SecretStr = SecretStr("")
 
     # В URL хранилищ есть пароль — они тоже секреты.

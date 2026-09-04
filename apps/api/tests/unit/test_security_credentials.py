@@ -1,8 +1,8 @@
 """Envelope-шифрование credentials (S0-05).
 
-Проверяется поведение наружу: round-trip, неразличимость одинаковых паролей, отказ
-на любой порче байта и на подмене строки между счетами. Раскладка байт зафиксирована
-отдельным тестом — её будет читать `S1-05`.
+Проверяется поведение наружу: round-trip, неразличимость одинаковых паролей, свежесть
+`data_key` на каждую запись, отказ на любой порче байта и на подмене строки между счетами.
+Раскладка байт зафиксирована отдельным тестом — её будет читать `S1-05`.
 """
 
 from __future__ import annotations
@@ -10,9 +10,11 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Callable
+from typing import Literal
 from uuid import UUID
 
 import pytest
+from fastapi import FastAPI
 from pydantic import SecretStr
 
 from app.core.config import Settings
@@ -20,6 +22,7 @@ from app.core.logging import REDACTED, configure_logging, get_logger, register_s
 from app.core.security import (
     _AAD_CREDENTIALS,
     DECRYPTION_FAILED,
+    FINGERPRINT_MASK,
     FORMAT_VERSION,
     NONCE_LENGTH,
     PAD_BLOCK,
@@ -34,19 +37,25 @@ from app.core.security import (
     _pad,
     _seal,
     _unwrap_data_key,
+    check_master_key,
     decrypt_credentials,
     encrypt_credentials,
+    key_fingerprint,
+    master_key_scrub_values,
     master_keyring,
+    opening_master_key,
     parse_master_key,
     rewrap_data_key,
 )
 
 KEY_V1 = bytes(range(32))
 KEY_V2 = bytes(range(100, 132))
+FP_V1 = key_fingerprint(KEY_V1)
+FP_V2 = key_fingerprint(KEY_V2)
 
-KEYRING_V1 = MasterKeyring(current=MasterKey(1, KEY_V1))
-KEYRING_V2 = MasterKeyring(current=MasterKey(2, KEY_V2))
-KEYRING_ROTATING = MasterKeyring(current=MasterKey(2, KEY_V2), previous=MasterKey(1, KEY_V1))
+KEYRING_V1 = MasterKeyring(current=MasterKey(KEY_V1))
+KEYRING_V2 = MasterKeyring(current=MasterKey(KEY_V2))
+KEYRING_ROTATING = MasterKeyring(current=MasterKey(KEY_V2), previous=MasterKey(KEY_V1))
 
 PASSWORD = "investor-пароль"
 CREDENTIALS = {"password": PASSWORD}
@@ -82,6 +91,13 @@ def _decrypt(
     )
 
 
+def _data_key(stored: EncryptedCredentials, account_id: UUID = ACCOUNT) -> bytes:
+    data_key, _ = _unwrap_data_key(
+        stored.wrapped_data_key, stored.key_version, account_id, KEYRING_V1
+    )
+    return data_key
+
+
 def _flip(blob: bytes, index: int) -> bytes:
     changed = bytearray(blob)
     changed[index] ^= 0x01
@@ -99,7 +115,7 @@ def _flip(blob: bytes, index: int) -> bytes:
         "кавычки \"двойные\" и 'одинарные'",
         "обратный\\слеш и \n перевод строки",
         "🙂 emoji и   пробелы",
-        # Одиночный суррогат: JSON такое принимает, а .encode() без экранирования падает.
+        # Одиночный суррогат: JSON такое принимает, обычный .encode() на нём падает.
         "\ud800 битая пара",
         "",
         "x" * 4096,
@@ -130,7 +146,7 @@ def test_result_unpacks_as_tuple() -> None:
 
     assert isinstance(ciphertext, bytes)
     assert isinstance(wrapped_key, bytes)
-    assert key_version == 1
+    assert key_version == FP_V1
 
 
 def test_non_string_value_is_rejected() -> None:
@@ -138,7 +154,7 @@ def test_non_string_value_is_rejected() -> None:
         encrypt_credentials({"password": 42}, account_id=ACCOUNT, keyring=KEYRING_V1)  # type: ignore[dict-item]
 
 
-# --- неразличимость -----------------------------------------------------------------------
+# --- неразличимость и свежесть ключей --------------------------------------------------------
 
 
 def test_same_credentials_encrypt_to_different_blobs() -> None:
@@ -148,6 +164,22 @@ def test_same_credentials_encrypt_to_different_blobs() -> None:
 
     assert first.ciphertext != second.ciphertext
     assert first.wrapped_data_key != second.wrapped_data_key
+
+
+def test_every_row_gets_a_fresh_data_key() -> None:
+    """Ради этого схема и двухслойная: компрометация одного `data_key` стоит один счёт.
+
+    Различие блобов сюда не годится в доказательство — его обеспечивает случайный nonce
+    и при общем на всех `data_key`. Проверяется сам ключ, вынутый из обёртки.
+    """
+    first = _encrypt(ACCOUNT)
+    second = _encrypt(ACCOUNT)
+    other_account = _encrypt(OTHER_ACCOUNT)
+
+    keys = [_data_key(first), _data_key(second), _data_key(other_account, OTHER_ACCOUNT)]
+
+    assert len(set(keys)) == 3
+    assert all(len(key) == 32 for key in keys)
 
 
 def test_nonces_are_unique_across_encryptions() -> None:
@@ -160,18 +192,27 @@ def test_nonces_are_unique_across_encryptions() -> None:
     assert len(wrap_nonces) == len(blobs)
 
 
-def test_ciphertext_length_hides_password_length() -> None:
-    """Длина GCM равна длине открытого текста: без набивки дамп БД выдавал бы длину пароля."""
-    short = encrypt_credentials({"password": "a"}, account_id=ACCOUNT, keyring=KEYRING_V1)
-    longer = encrypt_credentials({"password": "a" * 20}, account_id=ACCOUNT, keyring=KEYRING_V1)
+@pytest.mark.parametrize(
+    "password",
+    ["", "a" * 20, "я" * 20, "🙂" * 10, "パスワード" * 3],
+    ids=["пусто", "ascii", "кириллица", "emoji", "кана"],
+)
+def test_ciphertext_length_hides_password_length_and_alphabet(password: str) -> None:
+    """Длина GCM равна длине открытого текста: без набивки дамп БД выдавал бы длину пароля.
 
-    assert len(short.ciphertext) == len(longer.ciphertext)
+    Алфавит тоже не должен читаться по размеру: экранирование не-ASCII в `\\uXXXX` раздувало
+    бы кириллический пароль вшестеро и выносило его в другую корзину набивки.
+    """
+    empty = encrypt_credentials({"password": ""}, account_id=ACCOUNT, keyring=KEYRING_V1)
+    stored = encrypt_credentials({"password": password}, account_id=ACCOUNT, keyring=KEYRING_V1)
+
+    assert len(stored.ciphertext) == len(empty.ciphertext)
 
 
 def test_blob_layout_is_stable() -> None:
     """Раскладку читает S1-05: версия формата, nonce, шифротекст с тегом."""
     stored = _encrypt()
-    payload = json.dumps(CREDENTIALS, separators=(",", ":")).encode()
+    payload = json.dumps(CREDENTIALS, ensure_ascii=False, separators=(",", ":")).encode()
     padded = -(-(len(payload) + PAD_HEADER_LENGTH) // PAD_BLOCK) * PAD_BLOCK
 
     assert stored.ciphertext[0] == FORMAT_VERSION
@@ -269,8 +310,28 @@ def test_payload_that_is_not_a_string_map_is_rejected(payload: bytes) -> None:
     разбора JSON осталась бы непроверенной.
     """
     stored = _encrypt()
-    data_key, _ = _unwrap_data_key(stored.wrapped_data_key, 1, ACCOUNT, KEYRING_V1)
-    forged = _seal(data_key, _pad(payload), _aad(_AAD_CREDENTIALS, ACCOUNT))
+    forged = _seal(_data_key(stored), _pad(payload), _aad(_AAD_CREDENTIALS, ACCOUNT))
+
+    with pytest.raises(CredentialsDecryptionError):
+        _decrypt(stored._replace(ciphertext=forged))
+
+
+@pytest.mark.parametrize(
+    "padded",
+    [
+        b"",
+        b"\x00\x01",
+        (9999).to_bytes(4, "big") + "короткое тело".encode(),
+        # Тело — валидный JSON нужной формы: если длину из заголовка «подрезать» вместо
+        # отказа, расшифровка успешно вернёт credentials, и ветка останется непроверенной.
+        (9999).to_bytes(4, "big") + b'{"password":"x"}',
+    ],
+    ids=["пусто", "нет заголовка", "длина больше тела", "длина врёт, тело валидное"],
+)
+def test_broken_padding_is_rejected(padded: bytes) -> None:
+    """Набивка аутентифицирована GCM, но заголовку длины всё равно нельзя верить на слово."""
+    stored = _encrypt()
+    forged = _seal(_data_key(stored), padded, _aad(_AAD_CREDENTIALS, ACCOUNT))
 
     with pytest.raises(CredentialsDecryptionError):
         _decrypt(stored._replace(ciphertext=forged))
@@ -295,6 +356,32 @@ def test_every_failure_reports_the_same_text() -> None:
     assert messages == {DECRYPTION_FAILED}
 
 
+# --- отпечаток ключа -------------------------------------------------------------------------
+
+
+def test_fingerprint_is_a_function_of_the_key() -> None:
+    """Колонка `key_version` не может соврать: значение выводится из самого ключа."""
+    assert key_fingerprint(KEY_V1) == key_fingerprint(bytes(range(32)))
+    assert key_fingerprint(KEY_V1) != key_fingerprint(KEY_V2)
+
+
+def test_fingerprint_fits_signed_smallint() -> None:
+    """Колонка — `smallint`, знаковый int16. Значение обязано быть неотрицательным."""
+    fingerprints = {key_fingerprint(index.to_bytes(32, "big")) for index in range(2000)}
+
+    assert min(fingerprints) >= 0
+    assert max(fingerprints) <= FINGERPRINT_MASK == 32767
+    # Отпечатки размазаны по диапазону, а не жмутся к нулю.
+    assert len(fingerprints) > 1900
+
+
+def test_key_version_of_a_row_is_the_fingerprint_of_its_key() -> None:
+    assert _encrypt().key_version == key_fingerprint(KEY_V1)
+    assert encrypt_credentials(
+        CREDENTIALS, account_id=ACCOUNT, keyring=KEYRING_V2
+    ).key_version == key_fingerprint(KEY_V2)
+
+
 # --- версии ключа и ротация ----------------------------------------------------------------
 
 
@@ -305,20 +392,42 @@ def test_previous_key_still_reads_rows_during_rotation() -> None:
 
     assert _decrypt(old, keyring=KEYRING_ROTATING) == CREDENTIALS
     assert _decrypt(new, keyring=KEYRING_ROTATING) == CREDENTIALS
-    assert new.key_version == 2
+    assert new.key_version == FP_V2
 
 
-def test_stale_key_version_column_still_decrypts(capsys: pytest.CaptureFixture[str]) -> None:
-    """Оператор сменил MASTER_KEY, не подняв версию: строка читается, расхождение — в лог."""
+def test_lying_key_version_column_still_decrypts(capsys: pytest.CaptureFixture[str]) -> None:
+    """Колонку могли испортить помимо нашего кода — строка всё равно читается, молча.
+
+    Логировать расхождение на каждом чтении нельзя: коллектор ходит по расписанию, и одна
+    строка дала бы бесконечный поток warning. Расхождения ищет проверяющий проход ротации.
+    """
     configure_logging()
     stored = encrypt_credentials(CREDENTIALS, account_id=ACCOUNT, keyring=KEYRING_ROTATING)
 
-    decrypted = _decrypt(stored._replace(key_version=1), keyring=KEYRING_ROTATING)
+    decrypted = _decrypt(stored._replace(key_version=FP_V1), keyring=KEYRING_ROTATING)
 
-    output = capsys.readouterr().out
     assert decrypted == CREDENTIALS
-    assert "credentials.key_version_mismatch" in output
-    assert PASSWORD not in output
+    assert capsys.readouterr().out == ""
+
+
+def test_opening_master_key_names_the_key_without_leaking_data_key() -> None:
+    stored = _encrypt()
+
+    key = opening_master_key(
+        stored.wrapped_data_key, stored.key_version, account_id=ACCOUNT, keyring=KEYRING_ROTATING
+    )
+
+    assert key.version == FP_V1
+    assert repr(key) == f"MasterKey(version={FP_V1})"
+
+
+def test_opening_master_key_rejects_a_row_of_another_key() -> None:
+    stored = _encrypt()
+
+    with pytest.raises(CredentialsDecryptionError):
+        opening_master_key(
+            stored.wrapped_data_key, stored.key_version, account_id=ACCOUNT, keyring=KEYRING_V2
+        )
 
 
 def test_rewrap_changes_only_the_wrapper() -> None:
@@ -329,7 +438,7 @@ def test_rewrap_changes_only_the_wrapper() -> None:
         stored.wrapped_data_key, stored.key_version, account_id=ACCOUNT, keyring=KEYRING_ROTATING
     )
 
-    assert fresh.key_version == 2
+    assert fresh.key_version == FP_V2
     assert fresh.wrapped_data_key != stored.wrapped_data_key
     # Строка после ротации читается уже одним новым ключом, без предыдущего.
     rotated = EncryptedCredentials(stored.ciphertext, fresh.wrapped_data_key, fresh.key_version)
@@ -393,13 +502,18 @@ def test_parse_master_key_rejects_bad_values(raw: str) -> None:
 
 def _settings(
     *,
-    key_version: int = 2,
+    app_env: Literal["local", "prod"] = "local",
+    master_key: str | None = None,
     previous: str | None = None,
 ) -> Settings:
     return Settings(
-        app_env="local",
-        master_key=SecretStr(base64.b64encode(KEY_V2).decode()),
-        master_key_version=key_version,
+        app_env=app_env,
+        secret_key=SecretStr("test-secret-key"),
+        otp_pepper=SecretStr("test-otp-pepper"),
+        collector_token=SecretStr("test-collector-token"),
+        master_key=SecretStr(
+            base64.b64encode(KEY_V2).decode() if master_key is None else master_key
+        ),
         master_key_previous=SecretStr(
             base64.b64encode(KEY_V1).decode() if previous is None else previous
         ),
@@ -409,20 +523,16 @@ def _settings(
 def test_keyring_from_settings_reads_both_keys() -> None:
     keyring = master_keyring(_settings())
 
-    assert keyring.current == MasterKey(2, KEY_V2)
-    assert keyring.previous == MasterKey(1, KEY_V1)
+    assert keyring.current == MasterKey(KEY_V2)
+    assert keyring.previous == MasterKey(KEY_V1)
+    assert (keyring.current.version, keyring.previous.version) == (FP_V2, FP_V1)
 
 
 def test_keyring_without_previous_key() -> None:
-    keyring = master_keyring(_settings(key_version=1, previous=""))
+    keyring = master_keyring(_settings(previous=""))
 
     assert keyring.previous is None
-    assert keyring.current == MasterKey(1, KEY_V2)
-
-
-def test_keyring_rejects_previous_key_at_version_one() -> None:
-    with pytest.raises(CredentialsKeyError):
-        master_keyring(_settings(key_version=1))
+    assert keyring.current == MasterKey(KEY_V2)
 
 
 def test_keyring_rejects_previous_equal_to_current() -> None:
@@ -430,15 +540,89 @@ def test_keyring_rejects_previous_equal_to_current() -> None:
         master_keyring(_settings(previous=base64.b64encode(KEY_V2).decode()))
 
 
+def _colliding_key(other: bytes) -> bytes:
+    """Другой ключ с тем же 15-битным отпечатком. Перебор ~32768 вариантов, доли секунды."""
+    target = key_fingerprint(other)
+    for index in range(1, 1 << 21):
+        candidate = other[:28] + index.to_bytes(4, "big")
+        if candidate != other and key_fingerprint(candidate) == target:
+            return candidate
+    raise AssertionError("коллизия отпечатка не найдена")
+
+
+def test_keyring_rejects_fingerprint_collision() -> None:
+    """1 случай на 32768: строки двух ключей стали бы неразличимы — отказ до ротации."""
+    twin = _colliding_key(KEY_V2)
+
+    with pytest.raises(CredentialsKeyError) as excinfo:
+        master_keyring(_settings(previous=base64.b64encode(twin).decode()))
+
+    message = str(excinfo.value)
+    assert "тпечатк" in message
+    assert base64.b64encode(twin).decode() not in message
+
+
+def test_start_gate_rejects_broken_master_key_in_prod() -> None:
+    """Битый ключ — отказ грузиться, а не 500 на первой записи credentials в S1-06."""
+    with pytest.raises(CredentialsKeyError):
+        check_master_key(_settings(app_env="prod", master_key="не-base64", previous=""))
+
+
+def test_start_gate_stays_out_of_the_way_locally() -> None:
+    """В local секреты появляются по мере надобности — как и у check_production_secrets."""
+    check_master_key(_settings(master_key="", previous=""))
+
+
+def test_start_gate_accepts_a_valid_key() -> None:
+    check_master_key(_settings(app_env="prod"))
+
+
+def test_app_refuses_to_start_in_prod_with_broken_master_key(
+    local_env: pytest.MonkeyPatch, make_app: Callable[[], FastAPI]
+) -> None:
+    """Гейт стоит на пути сборки приложения, а не только в скрипте ротации."""
+    local_env.setenv("APP_ENV", "prod")
+    local_env.setenv("MASTER_KEY", "не-base64")
+
+    with pytest.raises(CredentialsKeyError):
+        make_app()
+
+
+def test_app_starts_in_prod_with_a_valid_master_key(
+    local_env: pytest.MonkeyPatch, make_app: Callable[[], FastAPI]
+) -> None:
+    local_env.setenv("APP_ENV", "prod")
+
+    assert make_app() is not None
+
+
 # --- ничего из открытого текста в логах -----------------------------------------------------
 
 
 def test_key_material_never_reaches_repr() -> None:
     """repr объекта уезжает и в traceback, и в лог через `scrub_unserializable`."""
-    keyring = MasterKeyring(current=MasterKey(2, KEY_V2), previous=MasterKey(1, KEY_V1))
+    keyring = MasterKeyring(current=MasterKey(KEY_V2), previous=MasterKey(KEY_V1))
 
     assert str(KEY_V2) not in repr(keyring)
-    assert repr(keyring.current) == "MasterKey(version=2)"
+    assert repr(keyring.current) == f"MasterKey(version={FP_V2})"
+
+
+def test_raw_key_bytes_are_scrubbed_from_logs(capsys: pytest.CaptureFixture[str]) -> None:
+    """В коде ключ живёт как `bytes`: скраб ищет подстроку, и base64 из конфига не спасёт."""
+    settings = _settings()
+    configure_logging(
+        secret_values=[*settings.scrubbable_secret_values(), *master_key_scrub_values(settings)]
+    )
+
+    get_logger("test").info("probe", material=KEY_V2, hex_form=KEY_V1.hex())
+
+    # Сверка по разобранной записи, а не по сырой строке: JSON экранирует обратные слеши
+    # из repr(bytes), и наивный поиск подстроки не нашёл бы даже неотскрабленный ключ.
+    line = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+    assert repr(KEY_V2)[2:-1] not in line["material"]
+    assert REDACTED in line["material"]
+    assert line["hex_form"] == REDACTED
 
 
 def test_master_key_value_is_scrubbed_from_logs(capsys: pytest.CaptureFixture[str]) -> None:
