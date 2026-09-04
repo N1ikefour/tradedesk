@@ -19,7 +19,7 @@ Updated: 2026-09-03
 | S0-03 | Миграция ядра | backend | **Done** | [PR #3](https://github.com/N1ikefour/tradedesk/pull/3) |
 | S0-04 | Auth | backend | **Done** | [PR #5](https://github.com/N1ikefour/tradedesk/pull/5) |
 | S0-05 | Шифрование credentials | backend | **Done** | [PR #6](https://github.com/N1ikefour/tradedesk/pull/6) |
-| S0-06 | Docker Compose local/prod | infra | In Review | [PR #7](https://github.com/N1ikefour/tradedesk/pull/7) |
+| S0-06 | Docker Compose local/prod | infra | **Done** | [PR #7](https://github.com/N1ikefour/tradedesk/pull/7) |
 | S0-07 | Web-скелет | frontend | Backlog | — |
 | S0-08 | Settings | backend + frontend | Backlog | — |
 | S0-09 | SETUP.md черновик | infra | Backlog | — |
@@ -76,12 +76,12 @@ Updated: 2026-09-03
 
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
-| X-01 | `make ci-target`: гейт на целевой версии Python | infra | **Закрыт в S0-06** | [PR #7](https://github.com/N1ikefour/tradedesk/pull/7) |
+| X-01 | `make ci-target`: гейт на целевой версии Python | infra | **Done** | [PR #7](https://github.com/N1ikefour/tradedesk/pull/7) |
 | X-02 | Скраб секретов в логах: рекурсия по значениям и пароли БД | backend | **Done** | [PR #4](https://github.com/N1ikefour/tradedesk/pull/4) |
-| X-03 | Формат ошибок в OpenAPI | backend | Todo | — |
+| X-03 | Формат ошибок в OpenAPI | backend | In Progress | `fix/X-03-openapi-errors` |
 | X-04 | Не-str ключи в логах роняют рендерер | backend | Todo | — |
 | X-05 | Счётчик непросмотренного в логах врёт | backend | Todo | — |
-| X-06 | Лимит по IP за прокси общий на всех | infra + backend | **Закрыт частично в S0-06** | [PR #7](https://github.com/N1ikefour/tradedesk/pull/7) |
+| X-06 | Лимит по IP за прокси общий на всех | infra + backend | **Done** (частично, ограничение в итоге S0-06) | [PR #7](https://github.com/N1ikefour/tradedesk/pull/7) |
 | X-07 | Sentry получает исключение мимо защиты логов | backend | Todo | — |
 | X-08 | Вторая ротация до окончания первой уничтожает данные | backend | Todo | — |
 | X-09 | Приложение собирается на импорте `app.main` | backend | Todo | — |
