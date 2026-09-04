@@ -20,9 +20,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Версия не дублируется здесь строкой: и CI, и `make ci-target`, и apps/api/Dockerfile
+      # берут её из .python-version. Расхождение этих чисел — тот класс багов, ради
+      # которого заведена ci-target (X-01); совпадение проверяет test_python_version.py.
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version-file: .python-version
           cache: pip
           cache-dependency-path: |
             apps/api/pyproject.toml

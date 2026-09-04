@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     database_url: SecretStr = SecretStr("postgresql+asyncpg://td:td@postgres:5432/td")
     redis_url: SecretStr = SecretStr("redis://redis:6379/0")
 
+    # Адреса прокси, чьему X-Forwarded-For можно верить (X-06). Пусто — заголовок не
+    # читается вовсе и лимит считается по адресу соединения. Разбор — core/client_ip.py.
+    trusted_proxies: str = ""
+
     email_provider: Literal["console", "resend"] = "console"
     resend_api_key: SecretStr = SecretStr("")
     email_from: str = "TradeDesk <no-reply@example.com>"

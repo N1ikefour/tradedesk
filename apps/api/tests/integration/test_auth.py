@@ -34,6 +34,8 @@ API_DIR = Path(__file__).resolve().parents[2]
 
 ORIGIN = "http://test"
 CLIENT_IP = "203.0.113.10"
+# Адрес «прокси» в тестах X-06: тот же смысл, что у web/caddy в docker-compose.yml.
+PROXY_IP = "10.87.0.10"
 EMAIL = "trader@example.test"
 
 _CODE_RE = re.compile(r"\b\d{6}\b")
@@ -116,6 +118,22 @@ def make_client(
         app=app, client=(ip, 51234), raise_app_exceptions=raise_app_exceptions
     )
     return AsyncClient(transport=transport, base_url=ORIGIN, headers={"origin": ORIGIN})
+
+
+def proxied_app(live_env: pytest.MonkeyPatch, make_app: Callable[[], FastAPI]) -> FastAPI:
+    """Приложение, которому разрешено верить X-Forwarded-For от `PROXY_IP` (X-06)."""
+    live_env.setenv("TRUSTED_PROXIES", PROXY_IP)
+    # Конфиг — синглтон, а движок и Redis уже созданы фикстурой clean_state на старых
+    # настройках. Хранилища в них те же, меняется только TRUSTED_PROXIES.
+    get_settings.cache_clear()
+    return make_app()
+
+
+def make_proxied_client(app: FastAPI, ip: str) -> AsyncClient:
+    """Браузер с адресом `ip`, ходящий через доверенный прокси, — топология профиля local."""
+    client = make_client(app, ip=PROXY_IP)
+    client.headers["x-forwarded-for"] = ip
+    return client
 
 
 async def kill_redis(live_env: pytest.MonkeyPatch) -> None:
@@ -496,13 +514,133 @@ async def test_rate_limit_per_ip(client: AsyncClient) -> None:
     assert len(await fetch_all("select id from otp_codes")) == IP_LIMIT
 
 
-async def test_email_limit_does_not_spend_the_ip_limit(client: AsyncClient) -> None:
-    """Порядок проверок: упёршись в лимит по адресу, клиент не выжигает лимит по IP."""
-    for _ in range(5):
-        await request_code(client)
+# --- X-06: лимит по IP за прокси ---------------------------------------------
 
-    for index in range(IP_LIMIT - EMAIL_LIMIT):
-        assert (await request_code(client, f"other{index}@example.test")).status_code == 202, index
+
+async def test_proxy_does_not_merge_users_into_one_limit(
+    live_env: pytest.MonkeyPatch, make_app: Callable[[], FastAPI]
+) -> None:
+    """Ровно прогон ревью S0-04: 12 пользователей через один прокси — и ни одного 429.
+
+    До X-06 все они приходили с адреса прокси, лимит становился общим на установку,
+    и блокировался одиннадцатый **пользователь**.
+    """
+    app = proxied_app(live_env, make_app)
+
+    for index in range(12):
+        async with make_proxied_client(app, ip=f"203.0.113.{index + 1}") as browser:
+            response = await request_code(browser, f"user{index}@example.test")
+        assert response.status_code == 202, index
+
+    assert len(await fetch_all("select id from otp_codes")) == 12
+
+
+async def test_forged_forwarded_for_does_not_move_the_limit(
+    live_env: pytest.MonkeyPatch, make_app: Callable[[], FastAPI]
+) -> None:
+    """Заголовок от недоверенного источника — просто текст: лимит считается по соединению."""
+    app = proxied_app(live_env, make_app)
+    forger = "198.51.100.66"
+
+    for index in range(IP_LIMIT):
+        # Каждый запрос представляется новым адресом — без проверки источника это давало бы
+        # свежий лимит на каждый запрос.
+        async with make_client(app, ip=forger) as direct:
+            direct.headers["x-forwarded-for"] = f"203.0.113.{index + 1}"
+            assert (await request_code(direct, f"forged{index}@example.test")).status_code == 202
+
+    async with make_client(app, ip=forger) as direct:
+        direct.headers["x-forwarded-for"] = "203.0.113.200"
+        response = await request_code(direct, "one-too-many@example.test")
+
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "rate_limited"
+
+
+async def test_concurrent_burst_cannot_outrun_the_request_limit(client: AsyncClient) -> None:
+    """⚠️ Прогон ревью S0-06: 60 одновременных запросов кода на один адрес.
+
+    Реализация «прочитать счётчики, потом увеличить» проходит все последовательные
+    проверки этого файла и при этом пропускает бёрст целиком: между чтением и инкрементом
+    два await-а. Ревью получило 60 из 60 — шестьдесят кодов и шестьдесят писем на один
+    адрес, оба лимита не сработали ни разу. Барьер обязателен: без него корутины
+    расходятся по времени и гонки не видно.
+    """
+    burst = 60
+    barrier = asyncio.Barrier(burst)
+
+    async def attempt() -> Response:
+        await barrier.wait()
+        return await request_code(client)
+
+    responses = await asyncio.gather(*(attempt() for _ in range(burst)))
+
+    accepted = [response for response in responses if response.status_code == 202]
+    assert len(accepted) == EMAIL_LIMIT, f"пропущено {len(accepted)} из {burst}"
+    assert {response.status_code for response in responses} == {202, 429}
+    # Ни лишнего кода, ни лишнего письма: и то и другое стоит денег и репутации домена.
+    assert len(await fetch_all("select id from otp_codes")) == EMAIL_LIMIT
+    assert len(await fetch_all("select id from dev_outbox")) == EMAIL_LIMIT
+    # Часовой бюджет по адресу тоже не растрачен отбитыми запросами.
+    spent = int(await get_redis().get(f"rl:auth:request_code:ip:{CLIENT_IP}"))
+    assert spent == EMAIL_LIMIT
+
+
+async def test_impatient_user_does_not_burn_the_shared_ip_budget(
+    live_env: pytest.MonkeyPatch, make_app: Callable[[], FastAPI]
+) -> None:
+    """Отбитый лимитом по почте запрос не платит по часовому бюджету адреса.
+
+    Сценарий тикета: тестировщик десять раз жмёт «прислать код» на свой же адрес.
+    Пока отбитые запросы инкрементировали счётчик по IP, семь лишних нажатий съедали
+    часовой бюджет установки, и следующий пользователь получал 429 на час.
+    """
+    app = proxied_app(live_env, make_app)
+    ip = "203.0.113.77"
+    presses = 10
+
+    codes = []
+    for _ in range(presses):
+        async with make_proxied_client(app, ip=ip) as impatient:
+            codes.append((await request_code(impatient, "impatient@example.test")).status_code)
+
+    assert codes == [202] * EMAIL_LIMIT + [429] * (presses - EMAIL_LIMIT)
+
+    async with make_proxied_client(app, ip=ip) as neighbour:
+        assert (await request_code(neighbour, "neighbour@example.test")).status_code == 202
+
+    # Счётчик по адресу вырос ровно на пропущенные запросы: три письма плюс письмо соседа.
+    spent = int(await get_redis().get(f"rl:auth:request_code:ip:{ip}"))
+    assert spent == EMAIL_LIMIT + 1
+
+
+async def test_ip_limit_does_not_spend_the_email_limit(
+    live_env: pytest.MonkeyPatch, make_app: Callable[[], FastAPI]
+) -> None:
+    """Порядок проверок: отбитый общим лимитом запрос не жжёт личную квоту пользователя.
+
+    Соседи по адресу выбирают лимит по IP; жертва упирается в него, ничего не сделав.
+    Её три запроса в 10 минут обязаны остаться нетронутыми — проверяем с другого адреса.
+    """
+    app = proxied_app(live_env, make_app)
+    crowded = "203.0.113.50"
+    victim = "victim@example.test"
+
+    for index in range(IP_LIMIT):
+        async with make_proxied_client(app, ip=crowded) as neighbour:
+            response = await request_code(neighbour, f"neighbour{index}@example.test")
+        assert response.status_code == 202, index
+
+    for _ in range(5):
+        async with make_proxied_client(app, ip=crowded) as blocked:
+            assert (await request_code(blocked, victim)).status_code == 429
+
+    async with make_proxied_client(app, ip="203.0.113.51") as elsewhere:
+        codes = [
+            (await request_code(elsewhere, victim)).status_code for _ in range(EMAIL_LIMIT + 1)
+        ]
+
+    assert codes == [202] * EMAIL_LIMIT + [429]
 
 
 # --- логи --------------------------------------------------------------------

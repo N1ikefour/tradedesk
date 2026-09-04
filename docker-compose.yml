@@ -1,0 +1,161 @@
+# TradeDesk — SPEC.md 11.1. Два профиля: `local` (разработка и тестировщик) и `prod`.
+#
+# Отступления от SPEC.md 11.1, оба осознанные (docs/tickets/S0-06.md, развилки 2 и 3):
+#   * сервиса `worker` нет — arq в проекте не заведён (решение S0-04). Контейнер, который
+#     сразу падает, хуже отсутствующего: он читается как сломанная установка;
+#   * сервиса `minio` нет — до S2-04 (вложения) им никто не пользуется, а интеграционные
+#     тесты поднимают свой через testcontainers. Появится вместе с потребителем.
+#
+# Имя проекта задано явно: контейнеры и volume не должны пересекаться с чужими проектами
+# на той же машине. Подсеть тоже своя и не из диапазона 172.16/12, который Docker раздаёт
+# по умолчанию, — иначе `make up` может отобрать адреса у соседнего compose.
+name: tradedesk
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["local", "prod"]
+    environment:
+      POSTGRES_USER: td
+      POSTGRES_DB: td
+      # Пароль генерирует `make init` и кладёт в .env — он же внутри DATABASE_URL.
+      # Не `${...:?}`: интерполяция срабатывает и на `docker compose down`, и установка
+      # с испорченным .env оказалась бы без способа погасить собственный стек.
+      # Непустоту проверяет infra/scripts/start.sh — до запуска, с внятным сообщением.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      - td_pgdata:/var/lib/postgresql/data
+    # Только на loopback: база не должна торчать в локальную сеть ни в одном профиле.
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      # Без этого api начинает миграции раньше, чем postgres готов принимать соединения.
+      test: ["CMD-SHELL", "pg_isready -U td -d td"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["local", "prod"]
+    # Volume нет намеренно: в Redis живут только счётчики лимитов. Сессии и коды — в Postgres,
+    # поэтому перезапуск Redis не разлогинивает и ничего не теряет.
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    profiles: ["local", "prod"]
+    # Весь .env целиком: и секреты приложения, и TRUSTED_PROXIES, из которого
+    # docker-entrypoint.sh собирает `uvicorn --forwarded-allow-ips` (X-06).
+    env_file: [.env]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request,sys;
+          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/version').status==200
+          else 1)"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  # Профиль local: vite с hot reload, прокси /api -> api:8000 (SPEC.md 11.1).
+  web:
+    image: node:22-alpine
+    profiles: ["local"]
+    working_dir: /srv/apps/web
+    environment:
+      # Куда vite проксирует /api. На хосте (`npm run dev` без docker) это localhost:8000.
+      VITE_API_TARGET: http://api:8000
+    # npm ci ставится в volume, а не в bind-mount: node_modules с macOS/Windows внутрь
+    # linux-контейнера не годятся. Повторный запуск переустановку не делает.
+    command:
+      - sh
+      - -c
+      - '[ -x node_modules/.bin/vite ] || npm ci; exec npm run dev -- --host 0.0.0.0'
+    volumes:
+      - ./apps/web:/srv/apps/web
+      - td_web_node_modules:/srv/apps/web/node_modules
+    depends_on: [api]
+    ports:
+      - "127.0.0.1:${WEB_PORT:-5173}:5173"
+    healthcheck:
+      # Без этого `make up` печатает ссылку раньше, чем vite начал слушать. На холодном
+      # старте (а на Windows с bind-mount npm ci идёт минутами) человек открывает
+      # свежесообщённый адрес и видит ошибку. start_period покрывает установку зависимостей.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5173/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 600s
+    networks:
+      default:
+        # Статический адрес, а не подсеть: api доверяет X-Forwarded-For ровно от него.
+        # Доверять всей подсети означало бы доверять и шлюзу, то есть любому запросу
+        # с хоста напрямую в api — а такой запрос заголовок и подделывает (X-06).
+        ipv4_address: 10.87.0.10
+    restart: unless-stopped
+
+  # Профиль prod: собранный фронт в nginx (SPEC.md 11.1). Наружу не публикуется — только caddy.
+  web-static:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    profiles: ["prod"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["prod"]
+    environment:
+      # Обязательность DOMAIN проверяет start.sh при PROFILE=prod, а не `${DOMAIN:?}`:
+      # интерполяция срабатывает и на `docker compose down`, и без домена нельзя было бы
+      # даже погасить локальное окружение — команда `down` перечисляет оба профиля.
+      DOMAIN: ${DOMAIN:-}
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - td_caddy_data:/data
+      - td_caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on: [api, web-static]
+    networks:
+      default:
+        ipv4_address: 10.87.0.11
+    restart: unless-stopped
+
+volumes:
+  td_pgdata:
+  td_web_node_modules:
+  td_caddy_data:
+  td_caddy_config:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.87.0.0/24

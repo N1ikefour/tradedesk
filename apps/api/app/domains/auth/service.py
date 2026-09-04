@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.core.errors import ApiError
 from app.core.ids import uuid7
-from app.core.rate_limit import RateLimit, RateLimiterUnavailableError, hit
+from app.core.rate_limit import RateLimit, RateLimiterUnavailableError, hit_all
 from app.domains.auth import models
 from app.domains.auth.cookies import SESSION_TTL_DAYS
 from app.domains.auth.security import (
@@ -86,7 +86,21 @@ def _rate_limited(retry_after: int) -> ApiError:
 
 
 async def _check_rate_limits(redis: Redis, settings: Settings, email: str, ip: str | None) -> None:
-    """Порядок важен: исчерпанный лимит по адресу не должен тратить лимит по адресу IP.
+    """Оба счётчика проверяются и увеличиваются одной атомарной операцией (X-06).
+
+    Инкремент до решения ломается в обе стороны, каким бы ни был порядок проверок.
+    Инкремент по почте первым — и запрос, отбитый общим лимитом по IP, дополнительно
+    выжигает личную квоту: за прокси пользователь, ничего не сделавший, терял бы и общий
+    лимит, и свой. Инкремент по IP первым — и один нетерпеливый пользователь, десять раз
+    нажавший «прислать код» на свой же адрес, выбирает часовой бюджет по IP и блокирует
+    установку для соседей.
+
+    Развести проверку и инкремент двумя вызовами из питона нельзя: между ними два await-а,
+    и бёрст произвольного размера проходит целиком (см. `core/rate_limit.py`). Поэтому
+    решение и оба инкремента живут в одном серверном скрипте.
+
+    Лимит по IP идёт первым: когда исчерпаны оба, `retry_after` должен называть более
+    длинное окно, иначе ответ обещает клиенту меньше, чем ему на самом деле ждать.
 
     Недоступный Redis закрывает отправку, а не открывает её (fail-closed). Счётчик
     попыток в `otp_codes` ограничивает пять догадок **на код**, а не общий их бюджет:
@@ -99,12 +113,12 @@ async def _check_rate_limits(redis: Redis, settings: Settings, email: str, ip: s
     """
     pepper = settings.otp_pepper.get_secret_value()
     subject = hash_rate_limit_subject(email, pepper)
+    counters = []
+    if ip:
+        counters.append((f"rl:auth:request_code:ip:{ip}", REQUEST_CODE_IP_LIMIT))
+    counters.append((f"rl:auth:request_code:email:{subject}", REQUEST_CODE_EMAIL_LIMIT))
     try:
-        retry_after = await hit(
-            redis, f"rl:auth:request_code:email:{subject}", REQUEST_CODE_EMAIL_LIMIT
-        )
-        if retry_after is None and ip:
-            retry_after = await hit(redis, f"rl:auth:request_code:ip:{ip}", REQUEST_CODE_IP_LIMIT)
+        retry_after = await hit_all(redis, counters)
     except RateLimiterUnavailableError as exc:
         raise _rate_limited(RATE_LIMITER_DOWN_RETRY_AFTER) from exc
     if retry_after is not None:
