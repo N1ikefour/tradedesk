@@ -130,8 +130,17 @@ def describe_database_error(exc: BaseException) -> dict[str, str] | None:
     не убирается `hide_parameters`. В обоих случаях наружу поехало бы содержимое строки:
     код входа, адрес почты, а позже расшифрованные credentials счёта.
 
-    Взамен берётся то, что значений не содержит: тип, SQLSTATE, имя ограничения и SQL
-    с плейсхолдерами. Traceback теряется — место падения показывают `path` и `method`.
+    Взамен берётся то, что значений не содержит: тип, SQLSTATE и SQL с плейсхолдерами.
+    Traceback теряется — место падения показывают `path` и `method`.
+
+    Точная классификация — по `db_sqlstate` (23505 unique_violation, 23514 check_violation):
+    `db_error_type` через asyncpg-обёртку SQLAlchemy схлопывается до `IntegrityError`
+    и настоящего `UniqueViolationError` не показывает. Имя ограничения не берём вовсе:
+    на `exc.orig` этой обёртки доступен только `sqlstate`.
+
+    `db_statement` безопасен ровно потому, что SQLAlchemy параметризует запросы и в тексте
+    остаются плейсхолдеры (`$1::UUID`). Сырой `text()` с подставленными в строку значениями
+    приедет в лог как есть — такие запросы писать нельзя.
     """
     if not isinstance(exc, DBAPIError):
         return None
@@ -140,10 +149,9 @@ def describe_database_error(exc: BaseException) -> dict[str, str] | None:
     statement = exc.statement or ""
     if statement:
         described["db_statement"] = statement[:MAX_LOGGED_STATEMENT_LENGTH]
-    for attribute, key in (("sqlstate", "db_sqlstate"), ("constraint_name", "db_constraint")):
-        value = getattr(origin, attribute, None)
-        if value:
-            described[key] = str(value)
+    sqlstate = getattr(origin, "sqlstate", None)
+    if sqlstate:
+        described["db_sqlstate"] = str(sqlstate)
     return described
 
 

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-import logging
+import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -25,6 +25,7 @@ from testcontainers.community.postgres import PostgresContainer
 from alembic import command
 from app.core.db import Base, get_engine
 from app.core.ids import uuid7
+from app.core.logging import configure_logging, get_logger
 from app.domains.accounts.models import TradingAccount
 from app.domains.auth.models import User
 from app.domains.ingest.models import Position
@@ -362,19 +363,33 @@ def test_upgrade_and_downgrade_run_twice_without_cleanup(alembic_config: Config)
     command.downgrade(alembic_config, "base")
 
 
-def test_migrations_do_not_silence_application_logging(alembic_config: Config) -> None:
-    """`fileConfig` по умолчанию гасит все логгеры, которых нет в alembic.ini.
+def test_migrations_keep_application_logging_intact(
+    alembic_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Логи приложения переживают миграцию: тот же поток, тот же уровень, тот же формат.
 
-    В одном процессе с приложением (тесты, вызов alembic из кода) после первой же
-    миграции логи `app.*` замолкали бы целиком — вместе с проверками на утечку секретов,
-    которые тогда зеленеют на пустом выводе.
+    Проверяется реальный вывод, а не флаг `disabled`: настройка логов из alembic.ini
+    переустанавливает root целиком (WARNING + stderr + plain), и тогда `INFO` от `app.*`
+    после миграции исчезает совсем. Тест, читающий stdout ради «секрета в выводе нет»,
+    в таком состоянии зеленеет на пустом буфере — то есть перестаёт что-либо проверять.
     """
-    probe = logging.getLogger("app.probe.migrations")
+    configure_logging()
+    probe = get_logger("app.probe.migrations")
+    probe.info("probe.before_migration")
 
     command.upgrade(alembic_config, "head")
     command.downgrade(alembic_config, "base")
 
-    assert probe.disabled is False
+    probe.info("probe.after_migration")
+
+    captured = capsys.readouterr()
+    events = [
+        json.loads(line).get("event") for line in captured.out.splitlines() if line.startswith("{")
+    ]
+    # Контроль: до миграции запись видна — значит проверка ниже про миграцию, а не про сетап.
+    assert "probe.before_migration" in events
+    assert "probe.after_migration" in events
+    assert "probe.after_migration" not in captured.err
 
 
 async def test_downgrade_leaves_no_tables(rolled_back: None) -> None:

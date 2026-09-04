@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from logging.config import fileConfig
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from alembic import context
 from app.core.config import get_settings
 from app.core.db import Base, create_engine
+from app.core.logging import configure_logging
 
 # Импорт ради побочного эффекта: без него модели не зарегистрированы в Base.metadata
 # и autogenerate предложит удалить все таблицы. Новый домен с моделями — новая строка здесь.
@@ -21,11 +21,15 @@ from app.domains.mail import models as mail_models  # noqa: F401
 
 config = context.config
 
-if config.config_file_name is not None:
-    # disable_existing_loggers=False: по умолчанию fileConfig гасит все логгеры, которых
-    # нет в alembic.ini, — то есть все `app.*`. В одном процессе с приложением (тесты,
-    # `alembic upgrade` из кода) после миграции приложение замолкало бы целиком.
-    fileConfig(config.config_file_name, disable_existing_loggers=False)
+# Логи миграций идут через общую настройку приложения, а не через `[logger_*]` секции
+# alembic.ini: `fileConfig` переустанавливает root целиком (`level = WARNING`, handler
+# в stderr, plain-формат), и в одном процессе с приложением — тесты, вызов alembic из
+# кода — это глушит INFO всего приложения и ломает единственный формат логов.
+#
+# Секции alembic.ini при этом не теряются: `sqlalchemy` SQLAlchemy сама пинует в WARNING
+# при импорте (log.py), а INFO самого alembic проходит по уровню root. Проверено, а не
+# предположено: см. тест test_migrations_keep_application_logging_intact.
+configure_logging(secret_values=get_settings().scrubbable_secret_values())
 
 target_metadata = Base.metadata
 
