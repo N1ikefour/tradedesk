@@ -52,9 +52,11 @@ class OtpCode(Base):
 
 class Session(Base):
     __tablename__ = "sessions"
+    # Сессии пользователя читаются на каждом запросе через user_id (S0-04).
+    __table_args__ = (Index("ix_sessions_user_id", "user_id"),)
 
-    # Значение cookie. Генератор задаёт S0-04: uuid7 раскрывает время создания, и для
-    # секрета сессии это плохой выбор — здесь default намеренно не проставлен.
+    # Значение cookie. Генератор — `security.new_session_id()` (uuid4): uuid7 раскрывает
+    # время создания, и для секрета сессии это плохой выбор. Здесь default не проставлен.
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     user_id: Mapped[UUID] = mapped_column(Uuid, ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

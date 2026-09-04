@@ -54,6 +54,8 @@ class TradingAccount(Base):
             unique=True,
             postgresql_where=text("platform = 'mt5'"),
         ),
+        # Счета пользователя — фильтр всех пользовательских списков (CLAUDE.md, S0-04).
+        Index("ix_trading_accounts_user_id", "user_id"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)

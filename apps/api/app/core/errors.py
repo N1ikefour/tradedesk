@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ExceptionHandler
 
+from app.core.db import describe_database_error
 from app.core.logging import get_logger
 
 log = get_logger(__name__)
@@ -59,12 +60,15 @@ class ApiError(Exception):
         *,
         status_code: int = 400,
         details: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
         self.details = details or {}
+        # Часть кодов описана не только телом: 429 несёт стандартный `Retry-After`.
+        self.headers = headers or {}
 
 
 def error_payload(code: str, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -76,12 +80,17 @@ def error_response(
     code: str,
     message: str,
     details: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
-    return JSONResponse(status_code=status_code, content=error_payload(code, message, details))
+    return JSONResponse(
+        status_code=status_code,
+        content=error_payload(code, message, details),
+        headers=headers,
+    )
 
 
 async def api_error_handler(_request: Request, exc: ApiError) -> JSONResponse:
-    return error_response(exc.status_code, exc.code, exc.message, exc.details)
+    return error_response(exc.status_code, exc.code, exc.message, exc.details, exc.headers)
 
 
 async def http_exception_handler(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
@@ -105,12 +114,21 @@ async def validation_error_handler(_request: Request, exc: RequestValidationErro
 
 
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Наружу — ничего, кроме кода: текст исключения может содержать секреты."""
-    log.exception(
+    """Наружу — ничего, кроме кода: текст исключения может содержать секреты.
+
+    В лог — тоже. Ошибка БД несёт содержимое упавшей строки и в тексте SQLAlchemy,
+    и в `DETAIL` самого Postgres, поэтому вместо traceback печатается структурный
+    портрет из `describe_database_error`. Для остальных исключений traceback остаётся:
+    без него причина 500 не находится.
+    """
+    database = describe_database_error(exc)
+    log.error(
         "api.unhandled_exception",
         error_type=type(exc).__name__,
         path=request.url.path,
         method=request.method,
+        exc_info=database is None,
+        **(database or {}),
     )
     return error_response(500, FALLBACK_CODE, FALLBACK_MESSAGE)
 

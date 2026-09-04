@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -34,6 +35,8 @@ pytestmark = pytest.mark.integration
 API_DIR = Path(__file__).resolve().parents[2]
 
 # SPEC.md 3 целиком, кроме daily_stats: она создаётся в S2-05.
+# dev_outbox в SPEC.md 3 не описана: её требуют раздел 4 и DoD S0-04, схема — из
+# docs/tickets/S0-04.md.
 EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
     "account_credentials": {
         "account_id": "uuid not null",
@@ -75,6 +78,14 @@ EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
         "raw": "jsonb not null",
         "source": "text not null",
         "ingested_at": "timestamptz not null",
+    },
+    "dev_outbox": {
+        "id": "uuid not null",
+        "to_email": "text not null",
+        "subject": "text not null",
+        "body_text": "text not null",
+        "body_html": "text null",
+        "created_at": "timestamptz not null",
     },
     "journal_entries": {
         "position_id": "uuid not null",
@@ -210,6 +221,7 @@ EXPECTED_INDEXES: dict[str, set[str]] = {
         "ix_deals_account_id_position_id",
         "ix_deals_account_id_time_utc",
     },
+    "dev_outbox": {"pk_dev_outbox", "ix_dev_outbox_created_at"},
     "journal_entries": {"pk_journal_entries"},
     "otp_codes": {"pk_otp_codes", "ix_otp_codes_email_created_at"},
     "positions": {
@@ -219,11 +231,15 @@ EXPECTED_INDEXES: dict[str, set[str]] = {
         "ix_positions_account_id_symbol_norm",
     },
     "reflections": {"pk_reflections"},
-    "sessions": {"pk_sessions"},
+    "sessions": {"pk_sessions", "ix_sessions_user_id"},
     "symbols": {"pk_symbols", "uq_symbols_raw"},
     "sync_runs": {"pk_sync_runs", "ix_sync_runs_account_id"},
     "tags": {"pk_tags", "uq_tags_user_id_name"},
-    "trading_accounts": {"pk_trading_accounts", "uq_trading_accounts_mt5_identity"},
+    "trading_accounts": {
+        "pk_trading_accounts",
+        "uq_trading_accounts_mt5_identity",
+        "ix_trading_accounts_user_id",
+    },
     "users": {"pk_users", "uq_users_email"},
 }
 
@@ -262,6 +278,7 @@ EXPECTED_SERVER_DEFAULTS: dict[tuple[str, str], str] = {
     ("deals", "swap"): "0",
     ("deals", "fee"): "0",
     ("deals", "ingested_at"): "now()",
+    ("dev_outbox", "created_at"): "now()",
     ("journal_entries", "tags"): "'{}'::text[]",
     ("otp_codes", "attempts"): "0",
     ("otp_codes", "created_at"): "now()",
@@ -343,6 +360,21 @@ def test_upgrade_and_downgrade_run_twice_without_cleanup(alembic_config: Config)
 
     command.upgrade(alembic_config, "head")
     command.downgrade(alembic_config, "base")
+
+
+def test_migrations_do_not_silence_application_logging(alembic_config: Config) -> None:
+    """`fileConfig` по умолчанию гасит все логгеры, которых нет в alembic.ini.
+
+    В одном процессе с приложением (тесты, вызов alembic из кода) после первой же
+    миграции логи `app.*` замолкали бы целиком — вместе с проверками на утечку секретов,
+    которые тогда зеленеют на пустом выводе.
+    """
+    probe = logging.getLogger("app.probe.migrations")
+
+    command.upgrade(alembic_config, "head")
+    command.downgrade(alembic_config, "base")
+
+    assert probe.disabled is False
 
 
 async def test_downgrade_leaves_no_tables(rolled_back: None) -> None:

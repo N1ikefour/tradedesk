@@ -17,11 +17,15 @@ from app.domains.accounts import models as accounts_models  # noqa: F401
 from app.domains.auth import models as auth_models  # noqa: F401
 from app.domains.ingest import models as ingest_models  # noqa: F401
 from app.domains.journal import models as journal_models  # noqa: F401
+from app.domains.mail import models as mail_models  # noqa: F401
 
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: по умолчанию fileConfig гасит все логгеры, которых
+    # нет в alembic.ini, — то есть все `app.*`. В одном процессе с приложением (тесты,
+    # `alembic upgrade` из кода) после миграции приложение замолкало бы целиком.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
