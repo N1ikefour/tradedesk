@@ -5,15 +5,10 @@ import { LoginPage } from '@/routes/login-page';
 import { NotFoundPage } from '@/routes/not-found-page';
 import { RequireAuth } from '@/routes/require-auth';
 import { RootLayout } from '@/routes/root-layout';
+import { AccountPage } from '@/routes/account-page';
+import { AccountsPage } from '@/routes/accounts-page';
 import { SettingsPage } from '@/routes/settings-page';
-import {
-  AccountPage,
-  AccountsPage,
-  CalendarPage,
-  DashboardPage,
-  JournalPage,
-  PositionPage,
-} from '@/routes/stub-pages';
+import { CalendarPage, DashboardPage, JournalPage, PositionPage } from '@/routes/stub-pages';
 import { DEV_OUTBOX_AVAILABLE } from '@/lib/env';
 
 /**

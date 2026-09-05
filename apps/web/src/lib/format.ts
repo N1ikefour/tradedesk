@@ -10,6 +10,7 @@
 import { format, parseISO, subDays } from 'date-fns';
 import { formatInTimeZone } from 'date-fns-tz';
 
+import { t } from '@/i18n';
 import { browserTimeZone, isKnownTimeZone } from '@/lib/time-zones';
 
 const DATE_TIME_PATTERN = 'dd.MM.yyyy HH:mm';
@@ -58,4 +59,33 @@ export function formatTradingDay(at: Date, timeZone: string, boundaryHour: numbe
   // длятся 24 часа, а нужен именно предыдущий день календаря.
   const start = parseISO(day);
   return format(hour < boundaryHour ? subDays(start, 1) : start, DAY_PATTERN);
+}
+
+const SECONDS_IN_MINUTE = 60;
+const SECONDS_IN_HOUR = 60 * SECONDS_IN_MINUTE;
+const SECONDS_IN_DAY = 24 * SECONDS_IN_HOUR;
+
+/**
+ * «2 мин назад» для статусов — SPEC.md 9.4. Слова берутся из словаря, здесь только выбор
+ * единицы: склонения и сами формулировки живут в `i18n`, а не расползаются по экранам.
+ *
+ * Момент из будущего — не ошибка данных, а рассинхрон часов браузера и сервера на
+ * несколько секунд. Он читается как «только что»: отрицательный возраст показывать нечем.
+ */
+export function formatRelativePast(iso: string, now: Date): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) {
+    return iso;
+  }
+  const seconds = Math.floor((now.getTime() - at.getTime()) / 1000);
+  if (seconds < SECONDS_IN_MINUTE) {
+    return t.time.justNow;
+  }
+  if (seconds < SECONDS_IN_HOUR) {
+    return t.time.minutesAgo(Math.floor(seconds / SECONDS_IN_MINUTE));
+  }
+  if (seconds < SECONDS_IN_DAY) {
+    return t.time.hoursAgo(Math.floor(seconds / SECONDS_IN_HOUR));
+  }
+  return t.time.daysAgo(Math.floor(seconds / SECONDS_IN_DAY));
 }

@@ -31,6 +31,16 @@ export function messageForError(error: unknown): string {
       return t.errors.forbiddenOrigin;
     case ERROR_CODE.notFound:
       return t.errors.notFound;
+    case ERROR_CODE.accountNotFound:
+      return t.errors.accountNotFound;
+    case ERROR_CODE.accountAlreadyExists:
+      return t.errors.accountAlreadyExists;
+    case ERROR_CODE.accountArchived:
+      return t.errors.accountArchived;
+    case ERROR_CODE.accountPaused:
+      return t.errors.accountPaused;
+    case ERROR_CODE.notMt5Account:
+      return t.errors.notMt5Account;
     default:
       return t.errors.unknown;
   }
