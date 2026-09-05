@@ -20,8 +20,8 @@ Updated: 2026-09-03
 | S0-04 | Auth | backend | **Done** | [PR #5](https://github.com/N1ikefour/tradedesk/pull/5) |
 | S0-05 | Шифрование credentials | backend | **Done** | [PR #6](https://github.com/N1ikefour/tradedesk/pull/6) |
 | S0-06 | Docker Compose local/prod | infra | **Done** | [PR #7](https://github.com/N1ikefour/tradedesk/pull/7) |
-| S0-07 | Web-скелет | frontend | In Review | [PR #9](https://github.com/N1ikefour/tradedesk/pull/9) |
-| S0-08 | Settings | backend + frontend | Backlog | — |
+| S0-07 | Web-скелет | frontend | **Done** | [PR #9](https://github.com/N1ikefour/tradedesk/pull/9) |
+| S0-08 | Settings | backend + frontend | In Progress | `feat/S0-08-settings` |
 | S0-09 | SETUP.md черновик | infra | Backlog | — |
 
 ## Этап 1 — Коллектор MT5 и ингест
