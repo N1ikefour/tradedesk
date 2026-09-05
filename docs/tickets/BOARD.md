@@ -93,3 +93,4 @@ Updated: 2026-09-05
 | X-15 | Линтер ловит кнопку без `type` | frontend | In Review | [PR #11](https://github.com/N1ikefour/tradedesk/pull/11) |
 | X-16 | Уход на страницу писем сбрасывает форму входа | frontend | Todo | — |
 | X-17 | На Windows нет `init.bat` | infra | Todo | — |
+| X-18 | Имя джоба в CI скрывает тесты web | infra | Todo | — |
