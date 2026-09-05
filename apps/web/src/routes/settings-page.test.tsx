@@ -4,7 +4,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { t } from '@/i18n';
 import { isKnownTimeZone } from '@/lib/time-zones';
-import { errorResponse, installFetchMock, jsonResponse, type RouteTable } from '@/test/fetch-mock';
+import {
+  errorResponse,
+  installFetchMock,
+  jsonResponse,
+  type MockedCall,
+  type RouteTable,
+} from '@/test/fetch-mock';
 import { renderApp, TEST_USER } from '@/test/render';
 
 const SESSION = 'GET /api/v1/auth/me';
@@ -59,6 +65,26 @@ function nameField(): HTMLInputElement {
 
 function saveButton(): HTMLButtonElement {
   return screen.getByRole('button', { name: t.settings.save }) as HTMLButtonElement;
+}
+
+/** Запросы одного маршрута; ключ — тот же, что в таблице моков. */
+function callsTo(calls: MockedCall[], route: string): MockedCall[] {
+  return calls.filter((call) => `${call.method} ${call.path}` === route);
+}
+
+/** Список зон упал один раз, со второй попытки приходит. */
+function flakyTimeZones(): RouteTable {
+  let attempt = 0;
+  return {
+    ...authorized,
+    [SAVE]: () => jsonResponse(200, { ...TEST_USER, display_name: 'Ник' }),
+    [TIME_ZONES]: () => {
+      attempt += 1;
+      return attempt === 1
+        ? errorResponse(500, 'internal_error', 'Внутренняя ошибка')
+        : jsonResponse(200, { items: SERVER_TIME_ZONES });
+    },
+  };
 }
 
 afterEach(() => {
@@ -360,16 +386,7 @@ describe('/settings', () => {
   });
 
   it('сбой списка зон гасит одно поле, остальные настройки остаются рабочими', async () => {
-    let attempt = 0;
-    installFetchMock({
-      ...authorized,
-      [TIME_ZONES]: () => {
-        attempt += 1;
-        return attempt === 1
-          ? errorResponse(500, 'internal_error', 'Внутренняя ошибка')
-          : jsonResponse(200, { items: SERVER_TIME_ZONES });
-      },
-    });
+    const { calls } = installFetchMock(flakyTimeZones());
     const user = userEvent.setup();
 
     const timezone = await openSettings();
@@ -391,6 +408,27 @@ describe('/settings', () => {
     expect(optionValues(timezone).length).toBe(SERVER_TIME_ZONES.length);
     // Введённое во время сбоя не потеряно.
     expect(nameField()).toHaveValue('Ник');
+    // «Повторить» перезапрашивает список и только его. Кнопка стоит внутри формы, и без
+    // явного type она была бы submit: сохранение профиля, которого человек не просил.
+    expect(callsTo(calls, SAVE)).toHaveLength(0);
+  });
+
+  it('Enter в поле имени сохраняет профиль, а не жмёт «Повторить»', async () => {
+    // Форма отправляется первой submit-кнопкой в разметке. Пока «Повторить» не объявляла
+    // type, первой была она — и Enter уходил в перезагрузку списка зон.
+    const { calls } = installFetchMock(flakyTimeZones());
+    const user = userEvent.setup();
+
+    await openSettings();
+    await screen.findByRole('button', { name: t.common.retry });
+
+    await user.type(nameField(), 'Ник{Enter}');
+
+    await waitFor(() => {
+      expect(callsTo(calls, SAVE)).toHaveLength(1);
+    });
+    expect(callsTo(calls, SAVE)[0]?.body).toEqual({ display_name: 'Ник' });
+    expect(callsTo(calls, TIME_ZONES)).toHaveLength(1);
   });
 
   it('сохранённая зона вне ответа сервера остаётся выбранной и не подменяется', async () => {

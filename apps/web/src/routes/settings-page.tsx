@@ -251,6 +251,7 @@ function SettingsForm({ user }: { user: Profile }) {
                   {t.settings.timezoneListFailed} {messageForError(timeZones.error)}
                 </Alert>
                 <Button
+                  type="button"
                   variant="outline"
                   size="sm"
                   disabled={timeZones.isFetching}
