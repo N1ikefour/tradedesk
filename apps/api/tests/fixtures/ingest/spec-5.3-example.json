@@ -1,0 +1,16 @@
+{
+  "account_id": "uuid",
+  "source": "collector",
+  "server_utc_offset_minutes": 180,
+  "account_info": {"currency": "USD", "margin_mode": "hedging", "balance": 10000.0, "equity": 10012.5},
+  "deals": [
+    {
+      "ticket": 123456789, "order": 123456700, "position_id": 123456700,
+      "symbol": "EURUSD.m", "type": 0, "entry": 0, "reason": 3,
+      "volume": 0.10, "price": 1.08543, "profit": 0.0, "commission": -0.35, "swap": 0.0, "fee": 0.0,
+      "time_server": "2026-09-02T14:03:11", "time_msc": 1788357791123,
+      "comment": "", "magic": 0
+    }
+  ],
+  "open_positions": [ { "position_id": 1, "symbol": "XAUUSD", "type": 0, "volume": 0.5, "price_open": 2410.1, "time_server": "…", "sl": 2400.0, "tp": 2450.0, "profit": 12.3 } ]
+}

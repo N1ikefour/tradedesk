@@ -1,0 +1,404 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TradeDesk — батч ингеста сделок MT5",
+  "additionalProperties": false,
+  "description": "Тело POST /ingest/deals (SPEC.md 5.3). Собирается из pydantic-моделей apps/api/app/domains/ingest/schemas.py — руками не правится. Денежные поля и объёмы принимаются числом или строкой; строка предпочтительна, она доезжает до Decimal вообще без float. ЧЕГО ЭТОТ ФАЙЛ НЕ ПРОВЕРЯЕТ. Тело, прошедшее валидацию по нему, всё ещё может получить отказ: пять правил сервера этот файл не выражает, и вот они целиком. (1) Батч не длиннее 5000 сделок, иначе HTTP 413. maxItems здесь нет намеренно: 413 про объём работы, а не про форму документа, и один документ не может быть одновременно кривым и слишком большим. (2) Границы numeric(18,2) и numeric(18,8) и запрет отрицательных объёмов и цен выражены только для числовой ветки: сравнить строку с числом JSON Schema не умеет, поэтому переполнение и минус в строке отсекает уже сервер. (3) time_msc и time_server описывают один момент и обязаны совпадать с точностью до секунды: сравнить два поля между собой draft-07 не может. (4) Шаблон time_server описывает форму, но не календарь: «2026-13-45T14:03:11» файл пропускает, сервер отвергает. (5) format: uuid в draft-07 — аннотация, и валидатор вправе её не проверять; account_id не в форме UUID сервер отвергает.",
+  "properties": {
+    "account_id": {
+      "description": "Счёт, которому принадлежит батч",
+      "format": "uuid",
+      "type": "string"
+    },
+    "source": {
+      "description": "Кто прислал батч",
+      "enum": [
+        "collector",
+        "ea",
+        "csv"
+      ],
+      "type": "string"
+    },
+    "server_utc_offset_minutes": {
+      "description": "Смещение часов сервера брокера от UTC в минутах, кратное 15 (SPEC.md 6.3): все реальные зоны кратны, и некратное значение означает, что в поле уехали не минуты. `time_utc = time_server − offset`",
+      "maximum": 840,
+      "minimum": -720,
+      "multipleOf": 15,
+      "type": "integer"
+    },
+    "account_info": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/IngestAccountInfo"
+        }
+      ],
+      "description": "Состояние счёта на момент батча"
+    },
+    "deals": {
+      "description": "Сделки окна синхронизации; перекрытие с прошлым батчем — норма. Не больше 5000 штук: батч большего размера сервер отвергает с HTTP 413",
+      "items": {
+        "$ref": "#/definitions/IngestDeal"
+      },
+      "type": "array"
+    },
+    "open_positions": {
+      "description": "Все открытые позиции счёта на момент батча; пустой список — открытых нет",
+      "items": {
+        "$ref": "#/definitions/IngestOpenPosition"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "account_id",
+    "source",
+    "server_utc_offset_minutes",
+    "account_info",
+    "deals",
+    "open_positions"
+  ],
+  "type": "object",
+  "definitions": {
+    "IngestAccountInfo": {
+      "additionalProperties": false,
+      "description": "`mt5.account_info()` в терминах API (SPEC.md 6.1).",
+      "properties": {
+        "currency": {
+          "description": "Валюта счёта, ISO 4217. Не-USD принимается и разбирается доменом (S1-06)",
+          "pattern": "^[A-Z]{3}$",
+          "type": "string"
+        },
+        "margin_mode": {
+          "description": "Режим счёта: MT5 `ACCOUNT_MARGIN_MODE` (0 netting, 1 exchange, 2 hedging)",
+          "enum": [
+            "netting",
+            "exchange",
+            "hedging"
+          ],
+          "type": "string"
+        },
+        "balance": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 10000000000000000,
+              "exclusiveMinimum": -10000000000000000,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "description": "Баланс счёта в валюте счёта"
+        },
+        "equity": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 10000000000000000,
+              "exclusiveMinimum": -10000000000000000,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "description": "Средства счёта в валюте счёта"
+        }
+      },
+      "required": [
+        "currency",
+        "margin_mode",
+        "balance",
+        "equity"
+      ],
+      "type": "object"
+    },
+    "IngestDeal": {
+      "additionalProperties": false,
+      "description": "Одна сделка из `mt5.history_deals_get()` как есть, без нормализации (SPEC.md 6.1).",
+      "properties": {
+        "ticket": {
+          "description": "Тикет сделки, уникален в пределах счёта",
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "order": {
+          "description": "Тикет ордера; 0, если ордера нет",
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "position_id": {
+          "description": "Идентификатор позиции MT5; 0 у balance/credit",
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "symbol": {
+          "description": "Символ как у брокера, с суффиксом: 'EURUSD.m'",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "type": "string"
+        },
+        "type": {
+          "description": "MT5 `DEAL_TYPE_*`. Неизвестный код нормализуется в 'other' (SPEC.md 6.2)",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "entry": {
+          "description": "MT5 `DEAL_ENTRY_*`: 0 in, 1 out, 2 inout, 3 out_by",
+          "maximum": 3,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "description": "MT5 `DEAL_REASON_*`. Неизвестный код нормализуется в 'other'",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "volume": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 10000000000,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "description": "Объём сделки в лотах"
+        },
+        "price": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 10000000000,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "description": "Цена исполнения"
+        },
+        "profit": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 10000000000000000,
+              "exclusiveMinimum": -10000000000000000,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "description": "Финансовый результат сделки, знак как у брокера"
+        },
+        "commission": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 10000000000000000,
+              "exclusiveMinimum": -10000000000000000,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "description": "Комиссия, знак как у брокера"
+        },
+        "swap": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 10000000000000000,
+              "exclusiveMinimum": -10000000000000000,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "description": "Своп, знак как у брокера"
+        },
+        "fee": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 10000000000000000,
+              "exclusiveMinimum": -10000000000000000,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "description": "Сбор, знак как у брокера"
+        },
+        "time_server": {
+          "description": "Время сервера брокера, без часового пояса (SPEC.md 6.3)",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?$",
+          "type": "string"
+        },
+        "time_msc": {
+          "description": "Тот же момент в миллисекундах эпохи по часам сервера брокера. Обязан совпадать с `time_server` с точностью до секунды",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "comment": {
+          "description": "Комментарий брокера, может быть пустым",
+          "maxLength": 255,
+          "pattern": "^[^\\x00-\\x1f\\x7f]*$",
+          "type": "string"
+        },
+        "magic": {
+          "description": "Magic number советника; 0 у ручной торговли",
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ticket",
+        "order",
+        "position_id",
+        "symbol",
+        "type",
+        "entry",
+        "reason",
+        "volume",
+        "price",
+        "profit",
+        "commission",
+        "swap",
+        "fee",
+        "time_server",
+        "time_msc",
+        "comment",
+        "magic"
+      ],
+      "type": "object"
+    },
+    "IngestOpenPosition": {
+      "additionalProperties": false,
+      "description": "Открытая позиция из `mt5.positions_get()` (SPEC.md 5.3, пункт 5).",
+      "properties": {
+        "position_id": {
+          "description": "Идентификатор позиции MT5",
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "symbol": {
+          "description": "Символ",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "type": "string"
+        },
+        "type": {
+          "description": "MT5 `POSITION_TYPE_*`: 0 buy, 1 sell",
+          "enum": [
+            0,
+            1
+          ],
+          "type": "integer"
+        },
+        "volume": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 10000000000,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "description": "Текущий объём позиции в лотах"
+        },
+        "price_open": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 10000000000,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "description": "Средняя цена входа"
+        },
+        "time_server": {
+          "description": "Время открытия по часам сервера брокера",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?$",
+          "type": "string"
+        },
+        "sl": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 10000000000,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "description": "Stop Loss; 0 — не выставлен"
+        },
+        "tp": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 10000000000,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "description": "Take Profit; 0 — не выставлен"
+        },
+        "profit": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 10000000000000000,
+              "exclusiveMinimum": -10000000000000000,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "description": "Текущий незафиксированный результат"
+        }
+      },
+      "required": [
+        "position_id",
+        "symbol",
+        "type",
+        "volume",
+        "price_open",
+        "time_server",
+        "sl",
+        "tp",
+        "profit"
+      ],
+      "type": "object"
+    }
+  }
+}
