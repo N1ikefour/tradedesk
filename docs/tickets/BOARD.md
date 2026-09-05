@@ -22,13 +22,13 @@ Updated: 2026-09-05
 | S0-06 | Docker Compose local/prod | infra | **Done** | [PR #7](https://github.com/N1ikefour/tradedesk/pull/7) |
 | S0-07 | Web-скелет | frontend | **Done** | [PR #9](https://github.com/N1ikefour/tradedesk/pull/9) |
 | S0-08 | Settings | backend + frontend | **Done** | [PR #10](https://github.com/N1ikefour/tradedesk/pull/10) |
-| S0-09 | SETUP.md черновик | infra | In Review | [PR #12](https://github.com/N1ikefour/tradedesk/pull/12) |
+| S0-09 | SETUP.md черновик | infra | **Done** | [PR #12](https://github.com/N1ikefour/tradedesk/pull/12) |
 
 ## Этап 1 — Коллектор MT5 и ингест
 
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
-| S1-01 | JSON Schema ингеста | backend | Backlog | — |
+| S1-01 | JSON Schema ингеста | backend | In Progress | `feat/S1-01-ingest-schema` |
 | S1-02 | Нормализатор deals | backend | Backlog | — |
 | S1-03 | Сборщик позиций | backend | Backlog | — |
 | S1-04 | `POST /ingest/deals` | backend | Backlog | — |
@@ -90,7 +90,7 @@ Updated: 2026-09-05
 | X-12 | Том postgres переживает worktree, `make up` умирает на пароле | infra | Todo | — |
 | X-13 | Приостановленный запрос выглядит как вечная загрузка | frontend | Todo | — |
 | X-14 | Новая npm-зависимость не доезжает до контейнера `web` | infra | Todo | — |
-| X-15 | Линтер ловит кнопку без `type` | frontend | In Review | [PR #11](https://github.com/N1ikefour/tradedesk/pull/11) |
+| X-15 | Линтер ловит кнопку без `type` | frontend | **Done** | [PR #11](https://github.com/N1ikefour/tradedesk/pull/11) |
 | X-16 | Уход на страницу писем сбрасывает форму входа | frontend | Todo | — |
 | X-17 | На Windows нет `init.bat` | infra | Todo | — |
 | X-18 | Имя джоба в CI скрывает тесты web | infra | Todo | — |
