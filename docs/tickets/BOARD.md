@@ -96,5 +96,5 @@ Updated: 2026-09-05
 | X-18 | Имя джоба в CI скрывает тесты web | infra | Todo | — |
 | X-19 | Релизный zip-артефакт | infra | Todo | — |
 | X-20 | Кэш `get_settings` отравляет соседние модули тестов | backend | Todo | — |
-| X-21 | `sync_runs.error` может вынести пароль наружу | backend + collector | Todo | — |
+| X-21 | Свободный текст коллектора может вынести пароль наружу | backend + collector | Todo | — |
 | X-22 | Комиссии с тремя знаками ломают сверку | backend | Todo | — |
