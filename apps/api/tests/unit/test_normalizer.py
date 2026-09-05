@@ -2,8 +2,9 @@
 
 Проверяется то, что молчит: маппинги перечислений, перевод времени сервера брокера в UTC
 и роль сделки в сборке позиции. Ошибка в любом из трёх не роняет ингест — она пишет в
-базу не то число, поэтому здесь каждая строка таблицы §6.2 проверена отдельно, а чистота
-функций доказана, а не заявлена.
+базу не то число, поэтому здесь каждая строка таблицы §6.2 проверена отдельно. Чистота
+при этом остаётся требованием, а не доказанным свойством: проверены четыре конкретные
+вещи, а не все возможные обходы.
 """
 
 from __future__ import annotations
@@ -555,6 +556,19 @@ IMPURE_NAMES = frozenset(
     }
 )
 
+# `_bound_names` не различает области видимости, поэтому любое связывание имени в модуле
+# вычёркивает его из `_external_names` целиком. Параметр `open` (цена открытия — имя в этом
+# домене естественное) снял бы охрану с `open(...)` во всём файле, и ни один тест бы не
+# заметил. Динамические точки входа добавлены сюда же: их нет в `IMPURE_NAMES`, но именно
+# через них белый список обходится, а `flake8-builtins` в `select` не включён.
+GUARDED = (
+    ALLOWED_BUILTINS
+    | IMPURE_NAMES
+    | frozenset(
+        {"getattr", "eval", "exec", "__import__", "globals", "locals", "vars", "compile", "input"}
+    )
+)
+
 # Три обхода, каждый из которых прошлая версия этого теста пропускала. Держатся здесь как
 # образцы для `test_purity_check_is_not_vacuous`: тест, который не ловит их, бесполезен.
 IMPURE_SNIPPETS = {
@@ -640,9 +654,13 @@ def test_normalizer_takes_nothing_from_outside_beyond_imports_and_plain_builtins
 
 
 def test_normalizer_never_reaches_for_clock_environment_or_io() -> None:
-    assert _leaks(_module_tree()) == set()
+    tree = _module_tree()
+    assert _leaks(tree) == set()
     # Иначе дыру можно открыть, дописав `now` в белый список, и оба теста останутся зелёными.
     assert ALLOWED_BUILTINS.isdisjoint(IMPURE_NAMES)
+    assert _bound_names(tree).isdisjoint(GUARDED), (
+        "модуль затеняет имя, на котором держится проверка"
+    )
 
 
 @pytest.mark.parametrize("case", sorted(IMPURE_SNIPPETS))
