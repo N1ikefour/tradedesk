@@ -24,6 +24,7 @@ from pydantic import ValidationError
 from app.core.errors import register_error_handlers
 from app.domains.ingest.schema_export import REPO_ROOT
 from app.domains.ingest.schemas import (
+    MAX_BIGINT,
     MAX_DEALS_PER_BATCH,
     IngestDeal,
     IngestDealsBatch,
@@ -178,6 +179,38 @@ def test_values_outside_column_bounds_are_rejected(field: str, value: str) -> No
     with pytest.raises(ValidationError) as error:
         IngestDeal.model_validate(deal(**{field: value}))
     assert field in locations(error.value)
+
+
+@pytest.mark.parametrize("field", ["ticket", "order", "position_id", "magic"])
+@pytest.mark.parametrize("value", [2**63, 10**30])
+def test_integers_outside_bigint_are_rejected(field: str, value: int) -> None:
+    """Целые едут в bigint (`models.py`), и знаковый предел у него тот же, что здесь.
+
+    Без верхней границы такое значение проходило бы валидацию и падало на вставке:
+    пятисотка вместо 400 с именем поля — ровно то, от чего берегут MONEY_LIMIT и
+    QUANTITY_LIMIT. Довод «производитель один и он наш» тут не работает: контракт сам
+    объявляет `source: "ea" | "csv"`, то есть отправителей, которых мы не писали.
+    """
+    with pytest.raises(ValidationError) as error:
+        IngestDeal.model_validate(deal(**{field: value}))
+    assert field in locations(error.value)
+
+
+def test_the_largest_bigint_is_still_a_valid_ticket() -> None:
+    """Граница включающая: предельное значение колонки — валидный тикет, а не отказ."""
+    parsed = IngestDeal.model_validate(deal(ticket=MAX_BIGINT))
+
+    assert parsed.ticket == MAX_BIGINT
+
+
+def test_open_position_id_outside_bigint_is_rejected() -> None:
+    """`positions.position_id` — та же bigint-колонка, что у сделки."""
+    body = filled_spec_example()["open_positions"][0]
+    body["position_id"] = 2**63
+
+    with pytest.raises(ValidationError) as error:
+        IngestOpenPosition.model_validate(body)
+    assert "position_id" in locations(error.value)
 
 
 # --- время -----------------------------------------------------------------------

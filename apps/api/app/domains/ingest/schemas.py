@@ -28,6 +28,12 @@ from pydantic_core.core_schema import ValidationInfo
 # про объём того, что сервер готов обработать, а не про форму документа. Один документ не
 # может быть одновременно «неправильной формы» и «слишком большим»; выбран второй ответ,
 # потому что его требует спека.
+#
+# Считать сделки можно только по разобранной модели: их числа в Content-Length нет. Значит
+# батч из 5001 сделки будет провалидирован целиком и отвергнут уже после этого — «отклоняет,
+# не разбирая» контракт не обещает. Потолок на размер тела до парсинга эту проверку не
+# заменяет и нужен S1-04 отдельно: иначе любой отправитель заставляет сервер разобрать тело
+# произвольного объёма, и никакой лимит по числу сделок от этого не спасает.
 MAX_DEALS_PER_BATCH = 5000
 
 # Границы колонок из SPEC.md 2.2: деньги — numeric(18,2), цены и объёмы — numeric(18,8).
@@ -35,13 +41,16 @@ MAX_DEALS_PER_BATCH = 5000
 # Postgres и вернулось пользователю пятисоткой вместо 400 с именем поля.
 MONEY_LIMIT = 10**16
 QUANTITY_LIMIT = 10**10
+# То же самое для целых: тикеты, `position_id` и `magic` лежат в bigint (`models.py`),
+# а bigint знаковый. Верхняя граница здесь — единственное, что отделяет 400 с именем поля
+# от пятисотки на вставке.
+MAX_BIGINT = 2**63 - 1
 
 SERVER_TIME_ERROR = (
     "Время сервера брокера передаётся без часового пояса, "
     "в формате YYYY-MM-DDTHH:MM:SS (см. SPEC.md 6.3)"
 )
 TIME_MSC_ERROR = "time_msc и time_server описывают разные моменты"
-OFFSET_STEP_ERROR = "Смещение сервера кратно 15 минутам (см. SPEC.md 6.3)"
 
 # Ровно одна каноническая форма: дата, `T`, время, необязательные доли секунды.
 # Ни `Z`, ни `+03:00`, ни пробела вместо `T`. Суффикс зоны отвергается, а не
@@ -83,6 +92,24 @@ def _parse_server_time(value: object) -> object:
 Money = Annotated[Decimal, Field(allow_inf_nan=False, gt=-MONEY_LIMIT, lt=MONEY_LIMIT)]
 # Объёмы, цены, уровни SL/TP: отрицательных не бывает, 0 — «не задано».
 Quantity = Annotated[Decimal, Field(allow_inf_nan=False, ge=0, lt=QUANTITY_LIMIT)]
+# Целое, которое доезжает до колонки bigint: тикеты, `position_id`, `magic`. `le`, а не
+# `lt`: в опубликованный файл уходит `maximum` с самим предельным значением, и читатель
+# видит границу колонки, а не соседнее с ней число.
+Bigint = Annotated[int, Field(ge=0, le=MAX_BIGINT)]
+
+# Кратность 15 выражена `multiple_of`, а не проверкой в коде: правило обязано доехать до
+# опубликованного файла. Контракт объявляет `source: "ea" | "csv"`, то есть отправителей
+# вне Python; советник, сверившийся с файлом, прислал бы offset 7 и получил 400 за то,
+# чего файл не запрещал. Цена — английский текст pydantic в `details.fields` вместо своего;
+# у соседних `ge`/`le` он и так английский, а правило по-русски остаётся в `description`.
+ServerUtcOffsetMinutes = Annotated[
+    int,
+    Field(
+        ge=MIN_SERVER_UTC_OFFSET_MINUTES,
+        le=MAX_SERVER_UTC_OFFSET_MINUTES,
+        multiple_of=SERVER_UTC_OFFSET_STEP_MINUTES,
+    ),
+]
 
 # WithJsonSchema, а не format: date-time: RFC 3339 требует смещения, а мы его как раз
 # запрещаем. Опубликованный контракт обязан описывать то, что принимает сервер, поэтому
@@ -128,9 +155,9 @@ class IngestAccountInfo(IngestBase):
 class IngestDeal(IngestBase):
     """Одна сделка из `mt5.history_deals_get()` как есть, без нормализации (SPEC.md 6.1)."""
 
-    ticket: int = Field(ge=0, description="Тикет сделки, уникален в пределах счёта")
-    order: int = Field(ge=0, description="Тикет ордера; 0, если ордера нет")
-    position_id: int = Field(ge=0, description="Идентификатор позиции MT5; 0 у balance/credit")
+    ticket: Bigint = Field(description="Тикет сделки, уникален в пределах счёта")
+    order: Bigint = Field(description="Тикет ордера; 0, если ордера нет")
+    position_id: Bigint = Field(description="Идентификатор позиции MT5; 0 у balance/credit")
     symbol: str = Field(
         min_length=1,
         max_length=64,
@@ -169,7 +196,7 @@ class IngestDeal(IngestBase):
         pattern=COMMENT_PATTERN,
         description="Комментарий брокера, может быть пустым",
     )
-    magic: int = Field(ge=0, description="Magic number советника; 0 у ручной торговли")
+    magic: Bigint = Field(description="Magic number советника; 0 у ручной торговли")
 
     @field_validator("time_msc")
     @classmethod
@@ -193,7 +220,7 @@ class IngestDeal(IngestBase):
 class IngestOpenPosition(IngestBase):
     """Открытая позиция из `mt5.positions_get()` (SPEC.md 5.3, пункт 5)."""
 
-    position_id: int = Field(ge=0, description="Идентификатор позиции MT5")
+    position_id: Bigint = Field(description="Идентификатор позиции MT5")
     symbol: str = Field(min_length=1, max_length=64, pattern=SYMBOL_PATTERN, description="Символ")
     # Здесь ENUM_POSITION_TYPE, а не DEAL_TYPE: других значений у открытой позиции нет,
     # и код вне 0/1 означает, что коллектор перепутал перечисления.
@@ -221,12 +248,12 @@ class IngestDealsBatch(IngestBase):
     # POST /journal/positions/manual (SPEC.md 5.4) и помечаются `positions.is_manual`.
     # Приняв `manual` здесь, мы дали бы обойти этот флаг.
     source: Literal["collector", "ea", "csv"] = Field(description="Кто прислал батч")
-    server_utc_offset_minutes: int = Field(
-        ge=MIN_SERVER_UTC_OFFSET_MINUTES,
-        le=MAX_SERVER_UTC_OFFSET_MINUTES,
+    server_utc_offset_minutes: ServerUtcOffsetMinutes = Field(
         description=(
             "Смещение часов сервера брокера от UTC в минутах, кратное "
-            f"{SERVER_UTC_OFFSET_STEP_MINUTES}. `time_utc = time_server − offset`"
+            f"{SERVER_UTC_OFFSET_STEP_MINUTES} (SPEC.md 6.3): все реальные зоны кратны, "
+            "и некратное значение означает, что в поле уехали не минуты. "
+            "`time_utc = time_server − offset`"
         ),
     )
     account_info: IngestAccountInfo = Field(description="Состояние счёта на момент батча")
@@ -234,22 +261,12 @@ class IngestDealsBatch(IngestBase):
         description=(
             "Сделки окна синхронизации; перекрытие с прошлым батчем — норма. "
             f"Не больше {MAX_DEALS_PER_BATCH} штук: батч большего размера сервер "
-            "отклоняет с HTTP 413, не разбирая"
+            "отвергает с HTTP 413"
         )
     )
     open_positions: list[IngestOpenPosition] = Field(
         description="Все открытые позиции счёта на момент батча; пустой список — открытых нет"
     )
-
-    @field_validator("server_utc_offset_minutes")
-    @classmethod
-    def _offset_is_quarter_hour(cls, value: int) -> int:
-        """SPEC.md 6.3: коллектор округляет смещение до 15 минут, и все реальные зоны
-        кратны 15. Некратное значение — признак того, что в поле уехали не минуты.
-        """
-        if value % SERVER_UTC_OFFSET_STEP_MINUTES != 0:
-            raise PydanticCustomError("server_utc_offset_minutes", OFFSET_STEP_ERROR)
-        return value
 
 
 def batch_json_schema() -> dict[str, Any]:

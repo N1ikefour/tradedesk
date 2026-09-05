@@ -27,11 +27,17 @@ from app.domains.ingest.schema_export import (
     check_draft_07,
     render,
 )
-from app.domains.ingest.schemas import ServerTime, batch_json_schema
+from app.domains.ingest.schemas import (
+    MAX_BIGINT,
+    ServerTime,
+    ServerUtcOffsetMinutes,
+    batch_json_schema,
+)
 
 REGENERATE = "cd apps/api && python -m app.domains.ingest.schema_export"
 
 server_time = TypeAdapter(ServerTime)
+offset_minutes = TypeAdapter(ServerUtcOffsetMinutes)
 
 
 @pytest.fixture
@@ -294,9 +300,65 @@ def test_pattern_cannot_express_the_calendar(document: dict[str, Any]) -> None:
 
     Регулярным выражением календарь не проверить, поэтому «2026-13-45» файл пропускает,
     а сервер отвергает. Зазор записан тестом, чтобы он был решением, а не сюрпризом.
+    Полный перечень таких мест — в `description` корня схемы.
     """
     pattern = document["definitions"]["IngestDeal"]["properties"]["time_server"]["pattern"]
 
     assert re.match(pattern, "2026-13-45T14:03:11") is not None
     with pytest.raises(ValidationError):
         server_time.validate_python("2026-13-45T14:03:11")
+
+
+# --- правила, которые draft-07 выражает, а значит файл обязан их нести -------------
+
+
+@pytest.mark.parametrize(
+    "offset", [-855, -735, -721, -720, -180, 0, 1, 7, 45, 100, 180, 840, 841, 855]
+)
+def test_published_offset_agrees_with_the_model(document: dict[str, Any], offset: int) -> None:
+    """Кратность 15 обязана быть видна отправителю вне Python, а не только серверу.
+
+    `source: "ea" | "csv"` — это чужие отправители: советник на MQL5 сверяется с файлом,
+    и правило, которого в файле нет, приходит к нему как необъяснимый 400.
+    """
+    published = Draft7Validator(document["properties"]["server_utc_offset_minutes"])
+
+    try:
+        offset_minutes.validate_python(offset)
+        accepted_by_model = True
+    except ValidationError:
+        accepted_by_model = False
+
+    assert published.is_valid(offset) == accepted_by_model
+
+
+def test_published_offset_rejects_a_value_off_the_quarter_hour(document: dict[str, Any]) -> None:
+    """Якорь для теста согласия: без него обе стороны могли бы разрешить 7 разом."""
+    published = Draft7Validator(document["properties"]["server_utc_offset_minutes"])
+
+    assert published.is_valid(180)
+    assert not published.is_valid(7)
+
+
+@pytest.mark.parametrize(
+    ("definition", "field"),
+    [
+        ("IngestDeal", "ticket"),
+        ("IngestDeal", "order"),
+        ("IngestDeal", "position_id"),
+        ("IngestDeal", "magic"),
+        ("IngestOpenPosition", "position_id"),
+    ],
+)
+def test_published_integers_stop_at_the_bigint_column(
+    document: dict[str, Any], definition: str, field: str
+) -> None:
+    """Верхняя граница целых выражается в draft-07, значит зазору здесь взяться неоткуда.
+
+    Модель отвергает `2**63` (см. `test_ingest_schemas.py`), и ровно то же самое должен
+    отвергать читатель файла — иначе он узнает о границе колонки из пятисотки.
+    """
+    published = document["definitions"][definition]["properties"][field]
+
+    assert published["maximum"] == MAX_BIGINT
+    assert not Draft7Validator(published).is_valid(MAX_BIGINT + 1)
