@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from typing import Any
 
 import pytest
+from jsonschema import Draft7Validator
+from jsonschema.exceptions import SchemaError
 from pydantic import TypeAdapter, ValidationError
 
 from app.domains.ingest import schema_export
@@ -153,6 +156,81 @@ def _collect_objects(node: object, found: list[dict[str, Any]]) -> None:
     elif isinstance(node, list):
         for item in node:
             _collect_objects(item, found)
+
+
+# --- метасхема draft-07 -----------------------------------------------------------
+
+# Метасхема живёт в тесте, а не в `schema_export`: валидатор JSON Schema — dev-зависимость,
+# в рантайм-образ он не едет, тела запросов сервер разбирает pydantic'ом.
+#
+# `pattern` метасхема объявляет строкой формата `regex`, но форматы проверяются только с
+# явным чекером, и его состав зависит от того, что установлено рядом. Без `regex` проверка
+# выродилась бы в пустую молча, поэтому его наличие проверяется отдельным тестом.
+FORMATS = Draft7Validator.FORMAT_CHECKER
+
+Mutation = Callable[[dict[str, Any]], None]
+
+
+def _validate_against_metaschema(schema: dict[str, Any]) -> None:
+    Draft7Validator.check_schema(schema, format_checker=FORMATS)
+
+
+def _string_where_integer_is_required(schema: dict[str, Any]) -> None:
+    schema["definitions"]["IngestDeal"]["properties"]["symbol"]["maxLength"] = "64"
+
+
+def _required_as_a_bare_string(schema: dict[str, Any]) -> None:
+    schema["required"] = "account_id"
+
+
+def _type_outside_the_seven(schema: dict[str, Any]) -> None:
+    schema["properties"]["account_id"]["type"] = "uuid"
+
+
+def _pattern_that_is_not_a_regex(schema: dict[str, Any]) -> None:
+    schema["definitions"]["IngestDeal"]["properties"]["symbol"]["pattern"] = "[A-Z"
+
+
+def test_regex_format_checker_is_installed() -> None:
+    assert "regex" in FORMATS.checkers
+
+
+def test_committed_schema_validates_against_the_metaschema(document: dict[str, Any]) -> None:
+    """Опубликованный файл разбирают чужие валидаторы, и споткнутся о него они.
+
+    Тонко невалидная схема ломается не у нас: у автора советника MQL5 и у импорта CSV
+    (`source: "ea" | "csv"`). Узнать об этом от них — худший из способов.
+    """
+    _validate_against_metaschema(document)
+
+
+def test_build_schema_validates_against_the_metaschema() -> None:
+    _validate_against_metaschema(build_schema())
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        pytest.param(_string_where_integer_is_required, "'64' is not of type 'integer'", id="type"),
+        pytest.param(_required_as_a_bare_string, "is not of type 'array'", id="shape"),
+        pytest.param(_type_outside_the_seven, "'uuid' is not valid under any", id="vocabulary"),
+        pytest.param(_pattern_that_is_not_a_regex, "'[A-Z' is not a 'regex'", id="regex"),
+    ],
+)
+def test_metaschema_catches_what_the_keyword_walk_cannot(mutate: Mutation, message: str) -> None:
+    """Каждая мутация обязана пройти `check_draft_07` и упасть на метасхеме.
+
+    Первая половина утверждения важнее второй и есть причина, по которой зависимость
+    появилась: обход словаря смотрит только на имена ключевых слов и адреса ссылок,
+    поэтому `"maxLength": "64"` для него неотличим от `"maxLength": 64`.
+    """
+    broken = build_schema()
+    mutate(broken)
+
+    check_draft_07(broken)
+
+    with pytest.raises(SchemaError, match=re.escape(message)):
+        _validate_against_metaschema(broken)
 
 
 # --- читаемость контракта ---------------------------------------------------------

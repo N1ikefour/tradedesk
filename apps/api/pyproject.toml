@@ -35,6 +35,10 @@ dev = [
   # 4.15 — раньше не было пакета testcontainers.community.*, из которого
   # интеграционные тесты берут PostgresContainer и RedisContainer.
   "testcontainers>=4.15,<5.0",
+  # Метасхема draft-07 для опубликованного ingest-deals.schema.json (S1-01).
+  # Только dev: файл читают потребители вне Python, а рантайм валидирует тела
+  # запросов pydantic'ом — валидатор JSON Schema самому приложению не нужен.
+  "jsonschema>=4.23,<5",
   # Граница версии живёт здесь одна: Makefile и CI ставят pre-commit этим extra.
   "pre-commit>=3.5,<5",
 ]
@@ -71,9 +75,11 @@ warn_unused_ignores = true
 disallow_untyped_defs = true
 
 # Пакеты без аннотаций перечисляются поимённо: глобальный ignore_missing_imports
-# прячет и настоящие опечатки в импортах.
+# прячет и настоящие опечатки в импортах. jsonschema типов не поставляет; стабы
+# (types-jsonschema) — это ещё один пакет ради двух вызовов в одном тесте, поэтому
+# он здесь в том же ряду, что и testcontainers.
 [[tool.mypy.overrides]]
-module = ["testcontainers.*"]
+module = ["testcontainers.*", "jsonschema.*"]
 ignore_missing_imports = true
 
 # SPEC.md 2.2: strict только для domains/ingest и domains/analytics.

@@ -1,6 +1,6 @@
 # SPEC — техническая спецификация v1 (этапы 0–2 и веха «Первый тест»)
 
-Версия 1.8 — 5 сентября 2026 (v1.1: guard тестовой БД в DoD S0‑02, оговорка про инструментальные зависимости в 2.3; v1.2: домен `mail` в 2.1; v1.3: формат блобов credentials и `key_version` как отпечаток ключа, ADR‑0003; v1.4: инфраструктурные переменные окружения в 11.2; v1.5: словарь кодов ошибок в 5.1 приведён к реальности, ADR‑0004; v1.5.1: уточнено, что 415 фреймворк не порождает; v1.6: `GET /users/timezones` в 5.7 и требование серверного списка зон; v1.7: дистрибуция zip-архивом с релиза вместо `git clone`, `update` в 11.3 переписан, ADR-0005; v1.8: исправлен `time_msc` в примере 5.3 — расходился с `time_server` на год, найдено сверкой в `S1-01`). Дополняет `PLAN.md`. Написана для разработки с AI‑агентами: каждый раздел самодостаточен, решения зафиксированы, неопределённости вынесены в раздел 14.
+Версия 1.9 — 5 сентября 2026 (v1.1: guard тестовой БД в DoD S0‑02, оговорка про инструментальные зависимости в 2.3; v1.2: домен `mail` в 2.1; v1.3: формат блобов credentials и `key_version` как отпечаток ключа, ADR‑0003; v1.4: инфраструктурные переменные окружения в 11.2; v1.5: словарь кодов ошибок в 5.1 приведён к реальности, ADR‑0004; v1.5.1: уточнено, что 415 фреймворк не порождает; v1.6: `GET /users/timezones` в 5.7 и требование серверного списка зон; v1.7: дистрибуция zip-архивом с релиза вместо `git clone`, `update` в 11.3 переписан, ADR-0005; v1.8: исправлен `time_msc` в примере 5.3 — расходился с `time_server` на год, найдено сверкой в `S1-01`; v1.9: `jsonschema` в 2.3 как dev/test-зависимость — опубликованный `ingest-deals.schema.json` читают валидаторы вне Python, и проверять его метасхемой обходом словаря нельзя). Дополняет `PLAN.md`. Написана для разработки с AI‑агентами: каждый раздел самодостаточен, решения зафиксированы, неопределённости вынесены в раздел 14.
 
 Рабочее название продукта: **TradeDesk** (переименовать одной заменой — используется только в UI‑строках и `APP_NAME`).
 
@@ -113,7 +113,7 @@ trading/
 
 ### 2.3 Разрешённые зависимости
 
-**api:** fastapi, uvicorn, sqlalchemy[asyncio] 2.x, asyncpg, alembic, pydantic v2, pydantic-settings, arq, redis, httpx, structlog, sentry-sdk, python-multipart, boto3 (S3), cryptography, pandas (только analytics), pytest, pytest-asyncio, factory-boy, testcontainers (интеграционные тесты с Postgres).
+**api:** fastapi, uvicorn, sqlalchemy[asyncio] 2.x, asyncpg, alembic, pydantic v2, pydantic-settings, arq, redis, httpx, structlog, sentry-sdk, python-multipart, boto3 (S3), cryptography, pandas (только analytics), pytest, pytest-asyncio, factory-boy, testcontainers (интеграционные тесты с Postgres), jsonschema (только dev/test: валидация опубликованного `ingest-deals.schema.json` по метасхеме draft-07; в рантайм-образ не входит).
 
 **web:** react 19, react-router 7, @tanstack/react-query, @tanstack/react-table, @tanstack/react-virtual, openapi-fetch + openapi-typescript, zustand (глобальный переключатель счетов), tailwindcss, shadcn/ui (radix), lucide-react, lightweight-charts, recharts, date-fns + date-fns-tz, zod, vitest, @testing-library/react, playwright (smoke).
 
