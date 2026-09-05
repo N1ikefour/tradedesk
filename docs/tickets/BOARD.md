@@ -28,7 +28,7 @@ Updated: 2026-09-05
 
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
-| S1-01 | JSON Schema ингеста | backend | In Review | [PR #13](https://github.com/N1ikefour/tradedesk/pull/13) |
+| S1-01 | JSON Schema ингеста | backend | **Done** | [PR #13](https://github.com/N1ikefour/tradedesk/pull/13) |
 | S1-02 | Нормализатор deals | backend | Backlog | — |
 | S1-03 | Сборщик позиций | backend | Backlog | — |
 | S1-04 | `POST /ingest/deals` | backend | Backlog | тикет заведён заранее |
@@ -89,7 +89,7 @@ Updated: 2026-09-05
 | X-11 | Заголовки ответов не объявлены в OpenAPI | backend | Todo | — |
 | X-12 | Том postgres переживает worktree, `make up` умирает на пароле | infra | Todo | — |
 | X-13 | Приостановленный запрос выглядит как вечная загрузка | frontend | Todo | — |
-| X-14 | Новая npm-зависимость не доезжает до контейнера `web` | infra | Todo | — |
+| X-14 | Новая зависимость не доезжает до существующего окружения | infra | Todo | — |
 | X-15 | Линтер ловит кнопку без `type` | frontend | **Done** | [PR #11](https://github.com/N1ikefour/tradedesk/pull/11) |
 | X-16 | Уход на страницу писем сбрасывает форму входа | frontend | Todo | — |
 | X-17 | На Windows нет `init.bat` | infra | Todo | — |
