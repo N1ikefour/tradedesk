@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -231,7 +232,9 @@ async def ask_assignments(
 ) -> list[dict[str, Any]]:
     response = await collector.get(ASSIGNMENTS, params={"collector_id": collector_id})
     assert response.status_code == 200, response.text
-    items = response.json()
+    body = response.json()
+    assert isinstance(body, dict) and set(body) == {"items"}, body
+    items = body["items"]
     assert isinstance(items, list)
     return items
 
@@ -348,6 +351,40 @@ async def test_claimed_account_is_not_given_to_another_collector(
     assert (await row_of(account_id))["collector_id"] == COLLECTOR
 
 
+async def test_two_collectors_asking_at_once_never_get_the_same_account(
+    client: AsyncClient,
+) -> None:
+    """Та же гарантия, что выше, но в одновременности — иначе она ничем не закреплена.
+
+    Последовательные запросы прошли бы и на реализации «прочитал, потом записал»: ко
+    второму запросу первый уже записан, и гонки просто нет. Здесь два `issue_assignments`
+    на **разных сессиях** уходят в базу одновременно, и проверяется пустое пересечение
+    выдач. Две мутации, снимающие гарантию, — убрать `WHERE collector_id IS NULL` и
+    заменить один UPDATE на select+update — красят этот тест и никакой другой.
+    """
+    created = {await create_account(client, label=f"Счёт {n}", login=7004000 + n) for n in range(3)}
+
+    factory = get_session_factory()
+    async with factory() as first, factory() as second:
+        # Соединение берётся до гонки намеренно. Без прогрева гонки не будет вовсе:
+        # вторая сессия сначала здоровается с Postgres, а первая за это время успевает
+        # закрепить счета и закоммитить — измерено, «одновременность» оказывалась
+        # последовательностью, и тест был бы ложно зелёным.
+        await asyncio.gather(first.execute(text("select 1")), second.execute(text("select 1")))
+        batches = await asyncio.gather(
+            collector_service.issue_assignments(first, COLLECTOR),
+            collector_service.issue_assignments(second, OTHER_COLLECTOR),
+        )
+    left, right = ({str(item.account.id) for item in batch} for batch in batches)
+
+    assert left & right == set()
+    assert left | right == created
+    for account_id in left:
+        assert (await row_of(account_id))["collector_id"] == COLLECTOR
+    for account_id in right:
+        assert (await row_of(account_id))["collector_id"] == OTHER_COLLECTOR
+
+
 async def test_repeated_request_by_the_same_collector_changes_nothing(
     client: AsyncClient, collector: AsyncClient
 ) -> None:
@@ -434,18 +471,22 @@ async def test_password_reaches_the_collector_but_never_the_log(
 
     Обе половины проверяются вместе. Без первой тест остался бы зелёным, если бы
     журнала доступа не было вовсе, — и перестал бы что-либо доказывать.
+
+    Счетов два намеренно: на одном «запись на счёт» и «запись на запрос» неотличимы, а
+    `issue_assignments` обещает первое — журнал того, что пароль покинул систему, а не
+    счётчик обращений.
     """
-    account_id = await create_account(client)
+    first = await create_account(client, label="Первый", login=7005001)
+    second = await create_account(client, label="Второй", login=7005002)
 
     items = await ask_assignments(collector)
     output = log_stream.getvalue()
 
-    assert items[0]["password"] == INVESTOR_PASSWORD
+    assert [item["password"] for item in items] == [INVESTOR_PASSWORD, INVESTOR_PASSWORD]
     audit = [line for line in log_lines(output) if line["event"] == "collector.credentials_issued"]
-    assert len(audit) == 1
-    assert audit[0]["account_id"] == account_id
-    assert audit[0]["collector_id"] == COLLECTOR
-    assert audit[0]["timestamp"]
+    assert [line["account_id"] for line in audit] == [first, second]
+    assert {line["collector_id"] for line in audit} == {COLLECTOR}
+    assert all(line["timestamp"] for line in audit)
     assert INVESTOR_PASSWORD not in output
 
 

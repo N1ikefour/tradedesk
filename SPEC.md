@@ -464,7 +464,9 @@ CSRF: SPA и API на одном origin (через прокси), `SameSite=Lax
 
 ### 5.6 internal (только сервисный токен коллектора)
 
-- `GET /internal/collector/assignments?collector_id=` → `[{account_id, server, login, password, sync_requested_at, last_sync_at, status}]` для счетов со статусом `pending|connected|needs_attention` и `collector_id in (null, this)`. При выдаче `collector_id` фиксируется за счётом.
+- `GET /internal/collector/assignments?collector_id=` → `{items: [{account_id, server, login, password, sync_requested_at, last_sync_at, status}]}` для счетов со статусом `pending|connected|needs_attention` и `collector_id in (null, this)`. При выдаче `collector_id` фиксируется за счётом.
+
+  Конверт `{items}`, а не голый массив (решено в `S1-05`, до появления потребителя): расширять голый массив некуда, а курсорная пагинация из 5.1 добавляется полем рядом с `items` вместо ломающей правки формы. Та же форма, что у списков в 5.2 и 5.7.
 - Ответ шифруется TLS в проде; локально — localhost. Доступ логируется (`account_id`, `collector_id`, время) без пароля.
 
 ### 5.7 users и system

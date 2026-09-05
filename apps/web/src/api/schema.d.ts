@@ -338,10 +338,10 @@ export interface paths {
      * Assignments
      * @description За какими счетами следить и чем в них входить. **Единственный ответ с паролем.**
      *
-     *     Форма ответа — голый массив, дословно по SPEC.md 5.6, а не конверт `{items}`, каким
-     *     отдаёт список счетов `GET /accounts`. Расхождение осознанное: менять записанную в
-     *     спеке форму контракта — отдельное решение (`CLAUDE.md` §8), а не побочный эффект
-     *     задачи. Потребитель один и внутренний (коллектор, S1-08).
+     *     Форма ответа — конверт `{items}`, как у `GET /accounts`. Голый массив нечем расширить,
+     *     а курсорная пагинация из SPEC.md 5.1 потребовала бы ломающей правки вместо добавления
+     *     поля; потребитель (`S1-08`) ещё не написан, поэтому смена формы сейчас стоит ноль.
+     *     SPEC.md 5.6 обновлена тем же диффом.
      *
      *     `GET`, который пишет: выдача закрепляет `collector_id` за счётом (§5.6). Без этого
      *     два коллектора в одной сети получили бы одни и те же счета и полезли бы в один
@@ -557,6 +557,19 @@ export interface components {
     AccountsResponse: {
       /** Items */
       items: components['schemas']['AccountResponse'][];
+    };
+    /**
+     * AssignmentListResponse
+     * @description Конверт выдачи — SPEC.md 5.6.
+     *
+     *     Не голый массив: в него нечего добавить, не сломав потребителя, а курсорная пагинация
+     *     из SPEC.md 5.1 однажды потребует именно добавления поля рядом с `items`. Потребитель
+     *     (`S1-08`) ещё не написан — момент, когда это стоит ноль. Ту же форму отдаёт
+     *     `GET /accounts`.
+     */
+    AssignmentListResponse: {
+      /** Items */
+      items: components['schemas']['AssignmentResponse'][];
     };
     /**
      * AssignmentResponse
@@ -4749,7 +4762,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          'application/json': components['schemas']['AssignmentResponse'][];
+          'application/json': components['schemas']['AssignmentListResponse'];
         };
       };
       /** @description Ошибка валидации запроса (validation_error) */

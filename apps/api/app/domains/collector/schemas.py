@@ -172,10 +172,16 @@ class AssignmentResponse(BaseModel):
     server: str
     login: int
     password: str = Field(
+        # `repr=False` — то же решение, что у `service.Assignment`, и по той же причине.
+        # Модель собирает роутер, а значит она лежит в кадрах FastAPI при сериализации
+        # ответа: любое исключение оттуда печатает кадр, а `scrub_unserializable` вырезает
+        # только **известные** секреты, и пароля счёта среди них нет. Защита обязана стоять
+        # на обоих объектах пути — асимметрия закреплена тестом.
+        repr=False,
         description=(
             "Пароль инвестора. Единственный ответ API, где он есть; в пользовательские "
             "маршруты не попадает никогда"
-        )
+        ),
     )
     sync_requested_at: UtcDatetime | None = Field(
         description="Просьба пользователя о внеочередном синке (SPEC.md 5.2)"
@@ -202,3 +208,17 @@ class AssignmentResponse(BaseModel):
             last_sync_at=account.last_sync_at,
             status=account.status,  # type: ignore[arg-type]
         )
+
+
+class AssignmentListResponse(BaseModel):
+    """Конверт выдачи — SPEC.md 5.6.
+
+    Не голый массив: в него нечего добавить, не сломав потребителя, а курсорная пагинация
+    из SPEC.md 5.1 однажды потребует именно добавления поля рядом с `items`. Потребитель
+    (`S1-08`) ещё не написан — момент, когда это стоит ноль. Ту же форму отдаёт
+    `GET /accounts`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[AssignmentResponse]

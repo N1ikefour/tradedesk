@@ -63,6 +63,16 @@ def token_matches(presented: str, expected: str) -> bool:
     return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
 
 
+def expected_token(settings: Settings) -> str:
+    """`COLLECTOR_TOKEN` в том же виде, в каком читается присланный: без краевых пробелов.
+
+    Симметрия обязательна. `presented_token` стрипает значение из заголовка, и без такой
+    же обработки ожидаемого случайный пробел в `.env` давал бы токен, который не совпадёт
+    никогда, — а вся диагностика свелась бы к `token_mismatch`.
+    """
+    return settings.collector_token.get_secret_value().strip()
+
+
 async def require_collector_token(
     request: Request, settings: Annotated[Settings, Depends(get_settings)]
 ) -> None:
@@ -73,7 +83,7 @@ async def require_collector_token(
         reason = REASON_NOT_CONFIGURED
     elif presented is None:
         reason = REASON_NO_HEADER
-    elif not token_matches(presented, settings.collector_token.get_secret_value()):
+    elif not token_matches(presented, expected_token(settings)):
         reason = REASON_MISMATCH
     if reason is None:
         return

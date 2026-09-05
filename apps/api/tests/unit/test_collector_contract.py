@@ -7,18 +7,26 @@
 
 Второе — дверь перед ним. Ответы на отсутствующий и на неверный токен обязаны быть
 неразличимы, иначе подбирающий узнаёт, что форма `Bearer …` принята.
+
+Третье — пароль не печатается **ни одним** объектом на этом пути. Их два: `Assignment`
+собирает сервис, `AssignmentResponse` — роутер, и оба попадают в кадры стека. Защита на
+одном из двух ничем не ловится, поэтому проверяются они разом.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 
 from app.core.openapi import JSON_MEDIA_TYPE
+from app.domains.accounts.models import TradingAccount
+from app.domains.collector.schemas import AssignmentResponse
+from app.domains.collector.service import Assignment
 
 API = "/api/v1"
 ASSIGNMENTS = f"{API}/internal/collector/assignments"
@@ -42,6 +50,9 @@ ALLOWED_ASSIGNMENT_FIELDS = frozenset(
 )
 
 SECRET_NAME_MARKERS = ("password", "secret", "credential", "ciphertext", "wrapped", "token")
+
+# Значение, которого нет больше нигде: по нему обыскиваются repr обоих объектов.
+REPR_PROBE_PASSWORD = "repr-probe-pw-4b7e0d"
 
 
 @pytest.fixture
@@ -135,12 +146,84 @@ def test_password_appears_in_exactly_one_success_response(document: dict[str, An
     assert leaking == [f"GET {ASSIGNMENTS}"], f"пароль в ответах: {leaking}"
 
 
+def test_assignments_answer_with_an_items_envelope(document: dict[str, Any]) -> None:
+    """SPEC.md 5.6: конверт, а не голый массив.
+
+    Форма важна не эстетикой: курсорная пагинация из SPEC.md 5.1 добавляется полем рядом
+    с `items`, а к массиву её пришлось бы приделывать ломающей правкой.
+    """
+    operation = document["paths"][ASSIGNMENTS]["get"]
+    schema = _resolve(document, operation["responses"]["200"]["content"][JSON_MEDIA_TYPE]["schema"])
+
+    assert set(schema["properties"]) == {"items"}
+    assert schema["properties"]["items"]["type"] == "array"
+
+
 def test_sync_requested_at_is_part_of_the_assignment(document: dict[str, Any]) -> None:
     """SPEC.md 5.6 требует его в ответе, иначе `POST /accounts/{id}/sync-now` — метка,
     которую никто не читает (требование пришло из ревью S1-06)."""
     model = _component(document, "AssignmentResponse")
 
     assert "sync_requested_at" in model["required"]
+
+
+# --- пароль не печатается ни одним объектом пути ------------------------------
+
+
+def _transient_account() -> TradingAccount:
+    """Счёт в памяти: `repr` от базы не зависит, поднимать Postgres ради него незачем."""
+    return TradingAccount(
+        id=uuid4(),
+        user_id=uuid4(),
+        label="Демо",
+        platform="mt5",
+        is_demo=True,
+        color="#000000",
+        currency="USD",
+        server="FTMO-Demo",
+        login=7001234,
+        status="pending",
+    )
+
+
+def _both_objects_on_the_path() -> list[tuple[str, object]]:
+    """Оба объекта, через которые проходит расшифрованный пароль, — из одного счёта."""
+    account = _transient_account()
+    return [
+        ("Assignment", Assignment(account=account, password=REPR_PROBE_PASSWORD)),
+        ("AssignmentResponse", AssignmentResponse.issued(account, REPR_PROBE_PASSWORD)),
+    ]
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [pytest.param(subject, id=name) for name, subject in _both_objects_on_the_path()],
+)
+def test_neither_object_prints_the_password(subject: object) -> None:
+    """`repr` кадра стека — путь, по которому пароль уходит в лог и в Sentry.
+
+    `scrub_unserializable` вырезает только **известные** секреты, а пароль счёта зашифрован
+    и подстроки для скраба взять неоткуда (`CLAUDE.md` §5). Значит защита стоит на самих
+    объектах — и обязана стоять на обоих: асимметрия ничем другим не ловится.
+    """
+    assert REPR_PROBE_PASSWORD not in repr(subject)
+    assert REPR_PROBE_PASSWORD not in str(subject)
+
+
+def test_password_still_travels_inside_both_objects() -> None:
+    """Обратная половина: спрятать поле из `repr` — не то же, что убрать его из ответа.
+
+    Без этой проверки «починка» вида `exclude=True` оставила бы тест выше зелёным и
+    отправила бы коллектору задание без пароля.
+    """
+    by_name = dict(_both_objects_on_the_path())
+    assignment = by_name["Assignment"]
+    response = by_name["AssignmentResponse"]
+
+    assert isinstance(assignment, Assignment)
+    assert isinstance(response, AssignmentResponse)
+    assert assignment.password == REPR_PROBE_PASSWORD
+    assert response.model_dump()["password"] == REPR_PROBE_PASSWORD
 
 
 # --- дверь перед ним ---------------------------------------------------------
@@ -195,6 +278,27 @@ async def test_unconfigured_token_closes_the_route(
         ]
 
     assert [response.status_code for response in responses] == [401, 401]
+
+
+async def test_configured_token_with_stray_whitespace_still_opens_the_door(
+    unreachable_env: pytest.MonkeyPatch, make_app: Callable[[], FastAPI]
+) -> None:
+    """Присланный токен стрипается — ожидаемый обязан читаться так же.
+
+    Иначе случайный пробел в `.env` даёт токен, который не совпадёт никогда, а вся
+    диагностика сводится к `token_mismatch` в логе. Пустой heartbeat выбран потому, что
+    до базы он не доходит: проверяется ровно дверь.
+    """
+    unreachable_env.setenv("COLLECTOR_TOKEN", f"  {TOKEN}\n")
+    transport = ASGITransport(app=make_app())
+    async with AsyncClient(transport=transport, base_url=ORIGIN) as opened:
+        response = await opened.post(
+            HEARTBEAT,
+            json={"collector_id": "desk-01", "accounts": []},
+            headers={"authorization": f"Bearer {TOKEN}"},
+        )
+
+    assert response.status_code == 200, response.text
 
 
 async def test_token_is_never_echoed(client: AsyncClient) -> None:

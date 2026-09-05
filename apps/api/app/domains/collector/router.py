@@ -1,7 +1,7 @@
 """Маршруты коллектора — SPEC.md 5.3 и 5.6.
 
 POST /api/v1/ingest/heartbeat                -> 200 {accepted, ignored}
-GET  /api/v1/internal/collector/assignments  -> 200 [Assignment]  ⚠️ отдаёт пароль
+GET  /api/v1/internal/collector/assignments  -> 200 {items}       ⚠️ отдаёт пароль
 
 Авторизация объявлена на роутере, а не на маршрутах: маршрут, забывший зависимость,
 открыл бы наружу пароли счетов, и полагаться тут на внимательность нельзя. Любой
@@ -23,6 +23,7 @@ from app.domains.collector import service
 from app.domains.collector.dependencies import require_collector_token
 from app.domains.collector.schemas import (
     COLLECTOR_ID_MAX_LENGTH,
+    AssignmentListResponse,
     AssignmentResponse,
     CollectorId,
     HeartbeatRequest,
@@ -45,7 +46,7 @@ async def heartbeat(payload: HeartbeatRequest, session: Session) -> HeartbeatRes
     return HeartbeatResponse(accepted=result.accepted, ignored=result.ignored)
 
 
-@router.get("/internal/collector/assignments", response_model=list[AssignmentResponse])
+@router.get("/internal/collector/assignments", response_model=AssignmentListResponse)
 async def assignments(
     session: Session,
     collector_id: Annotated[
@@ -57,17 +58,19 @@ async def assignments(
             )
         ),
     ],
-) -> list[AssignmentResponse]:
+) -> AssignmentListResponse:
     """За какими счетами следить и чем в них входить. **Единственный ответ с паролем.**
 
-    Форма ответа — голый массив, дословно по SPEC.md 5.6, а не конверт `{items}`, каким
-    отдаёт список счетов `GET /accounts`. Расхождение осознанное: менять записанную в
-    спеке форму контракта — отдельное решение (`CLAUDE.md` §8), а не побочный эффект
-    задачи. Потребитель один и внутренний (коллектор, S1-08).
+    Форма ответа — конверт `{items}`, как у `GET /accounts`. Голый массив нечем расширить,
+    а курсорная пагинация из SPEC.md 5.1 потребовала бы ломающей правки вместо добавления
+    поля; потребитель (`S1-08`) ещё не написан, поэтому смена формы сейчас стоит ноль.
+    SPEC.md 5.6 обновлена тем же диффом.
 
     `GET`, который пишет: выдача закрепляет `collector_id` за счётом (§5.6). Без этого
     два коллектора в одной сети получили бы одни и те же счета и полезли бы в один
     брокерский аккаунт двумя терминалами.
     """
     issued = await service.issue_assignments(session, collector_id)
-    return [AssignmentResponse.issued(item.account, item.password) for item in issued]
+    return AssignmentListResponse(
+        items=[AssignmentResponse.issued(item.account, item.password) for item in issued]
+    )
