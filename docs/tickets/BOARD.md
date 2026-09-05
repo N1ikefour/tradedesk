@@ -1,6 +1,6 @@
 # BOARD — доска задач
 
-Updated: 2026-09-05
+Updated: 2026-09-03
 
 Статусы и переходы — `docs/WORKFLOW.md` §2. Формулировки задач и Definition of Done — **`SPEC.md` §12**, здесь не дублируются. Файл тикета `docs/tickets/<ID>.md` заводится в момент взятия задачи в работу.
 
@@ -21,8 +21,8 @@ Updated: 2026-09-05
 | S0-05 | Шифрование credentials | backend | **Done** | [PR #6](https://github.com/N1ikefour/tradedesk/pull/6) |
 | S0-06 | Docker Compose local/prod | infra | **Done** | [PR #7](https://github.com/N1ikefour/tradedesk/pull/7) |
 | S0-07 | Web-скелет | frontend | **Done** | [PR #9](https://github.com/N1ikefour/tradedesk/pull/9) |
-| S0-08 | Settings | backend + frontend | **Done** | [PR #10](https://github.com/N1ikefour/tradedesk/pull/10) |
-| S0-09 | SETUP.md черновик | infra | In Progress | `docs/S0-09-setup` |
+| S0-08 | Settings | backend + frontend | Review | [PR #10](https://github.com/N1ikefour/tradedesk/pull/10) |
+| S0-09 | SETUP.md черновик | infra | Backlog | — |
 
 ## Этап 1 — Коллектор MT5 и ингест
 
@@ -90,6 +90,3 @@ Updated: 2026-09-05
 | X-12 | Том postgres переживает worktree, `make up` умирает на пароле | infra | Todo | — |
 | X-13 | Приостановленный запрос выглядит как вечная загрузка | frontend | Todo | — |
 | X-14 | Новая npm-зависимость не доезжает до контейнера `web` | infra | Todo | — |
-| X-15 | Линтер ловит кнопку без `type` | frontend | Review | [PR #11](https://github.com/N1ikefour/tradedesk/pull/11) |
-| X-16 | Уход на страницу писем сбрасывает форму входа | frontend | Todo | — |
-| X-17 | На Windows нет `init.bat` | infra | Todo | — |
