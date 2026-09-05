@@ -33,7 +33,7 @@ Updated: 2026-09-05
 | S1-03 | Сборщик позиций | backend | Backlog | — |
 | S1-04 | `POST /ingest/deals` | backend | Backlog | — |
 | S1-05 | `POST /ingest/heartbeat` + assignments | backend | Backlog | — |
-| S1-06 | Accounts API | backend | Backlog | — |
+| S1-06 | Accounts API | backend | In Progress | `feat/S1-06-accounts-api` |
 | S1-07 | Символы | backend | Backlog | — |
 | S1-08 | Коллектор: mt5_client + worker | collector | Backlog | — |
 | S1-09 | Коллектор: менеджер процессов, heartbeat | collector | Backlog | — |
