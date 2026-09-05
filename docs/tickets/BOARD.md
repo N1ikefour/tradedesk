@@ -55,7 +55,7 @@ Updated: 2026-09-05
 | S2-08 | UI Скриншоты | frontend | Backlog | — |
 | S2-09 | UI Calendar | frontend | Backlog | — |
 | S2-10 | UI Dashboard v1 | frontend | Backlog | — |
-| S2-11 | Полировка переключателя счетов | frontend | Backlog | — |
+| S2-11 | Переключатель счетов: создание и полировка | frontend | Backlog | перенесён из S1-11 |
 
 ## Веха «Первый тест»
 
