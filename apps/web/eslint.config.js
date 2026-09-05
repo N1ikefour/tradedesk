@@ -24,6 +24,8 @@ export default tseslint.config(
     },
     rules: {
       '@typescript-eslint/no-explicit-any': 'error',
+      // Ячейка одна на весь конфиг, а селекторов в ней может быть много: свой
+      // добавляют элементом в массив, а не заменой существующего.
       'no-restricted-syntax': [
         'error',
         {
@@ -31,6 +33,10 @@ export default tseslint.config(
           // внутри значения чужого атрибута (`title={<Icon type="warn" />}`) и кнопка
           // без типа проходит молча. `asChild` исключён: Slot рендерит ребёнка,
           // и `<button>` в DOM не появляется — тип там осел бы на чужом теге.
+          // Известная граница: имя в селекторе литеральное, поэтому `<Foo.Button>`
+          // (JSXMemberExpression) и переименованный импорт (`import { Button as Btn }`)
+          // проходят мимо; в проекте таких мест нет. Регрессия на сам селектор —
+          // `src/test/eslint-button-type.test.ts`.
           selector:
             'JSXOpeningElement[name.name=/^(button|Button)$/]' +
             ':not(:has(> JSXAttribute[name.name="type"]))' +
