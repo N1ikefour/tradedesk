@@ -428,6 +428,8 @@ describe('/settings', () => {
       expect(callsTo(calls, SAVE)).toHaveLength(1);
     });
     expect(callsTo(calls, SAVE)[0]?.body).toEqual({ display_name: 'Ник' });
+    // Регрессию ловит именно эта строка: с багом форма всё равно отправлялась — «Повторить»
+    // была default-кнопкой и сабмитила её сама, — но список зон перезапрашивался лишним разом.
     expect(callsTo(calls, TIME_ZONES)).toHaveLength(1);
   });
 
