@@ -21,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, delete, func, select
+from sqlalchemy import ColumnElement, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import ApiError
 from app.core.ids import uuid7
 from app.core.security import encrypt_credentials
+from app.core.text import sanitize_external_text
 from app.domains.accounts import models
 from app.domains.accounts.schemas import (
     ACCOUNT_COLORS,
@@ -62,6 +63,18 @@ ACTIVE_STATUSES = (STATUS_PENDING, STATUS_CONNECTED, STATUS_NEEDS_ATTENTION)
 # SPEC.md 9.3 и 10 называют одно и то же число: heartbeat старше 5 минут — коллектор
 # не на связи.
 COLLECTOR_OFFLINE_AFTER = timedelta(minutes=5)
+
+# Состояния счёта в heartbeat коллектора (SPEC.md 5.3).
+HEARTBEAT_STATE_RUNNING = "running"
+HEARTBEAT_STATE_ERROR = "error"
+HEARTBEAT_STATE_STOPPED = "stopped"
+HEARTBEAT_STATES = (HEARTBEAT_STATE_RUNNING, HEARTBEAT_STATE_ERROR, HEARTBEAT_STATE_STOPPED)
+
+# Текст `check_collectors` — дословно из SPEC.md 10.
+COLLECTOR_OFFLINE_MESSAGE = "Коллектор не на связи"
+# `state=error` без `message`: показать «красный без причины» хуже, чем сказать прямо,
+# что причина не пришла.
+COLLECTOR_ERROR_MESSAGE = "Коллектор сообщил об ошибке без подробностей"
 
 PLATFORM_MT5 = "mt5"
 
@@ -407,6 +420,22 @@ def is_collector_online(account: models.TradingAccount, *, now: datetime | None 
     return (now or _now()) - account.last_heartbeat_at <= COLLECTOR_OFFLINE_AFTER
 
 
+def collector_scope(collector_id: str) -> ColumnElement[bool]:
+    """Счета, которые видит этот коллектор: закреплённые за ним и ничьи (SPEC.md 5.6).
+
+    То же правило, по которому assignments решает, что отдать, — но там оно исполняется
+    закреплением: ничей счёт становится своим прямо в выдаче. Здесь закрепления нет,
+    heartbeat ничего не присваивает, поэтому «ничей» остаётся в области видимости.
+
+    Чужой счёт под это условие не подходит ни в одном из двух маршрутов: коллектор,
+    которому счёт не выдавали, не может и переключить ему статус.
+    """
+    return or_(
+        models.TradingAccount.collector_id.is_(None),
+        models.TradingAccount.collector_id == collector_id,
+    )
+
+
 async def request_sync(session: AsyncSession, account: models.TradingAccount) -> datetime:
     """Ставит `sync_requested_at`; синк выполняет коллектор (SPEC.md 5.2, 8.2).
 
@@ -478,3 +507,80 @@ def apply_sync_result(
         return
     account.status = STATUS_CONNECTED
     account.status_message = None
+
+
+def apply_heartbeat(
+    account: models.TradingAccount,
+    *,
+    state: str,
+    message: str | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Что heartbeat коллектора меняет в карточке счёта (SPEC.md 5.3).
+
+    Возвращает `False`, если счёт вне работы: `paused` и `archived` — решения
+    пользователя, и heartbeat не трогает у них **ничего**, включая `last_heartbeat_at`.
+    Эта проверка здесь единственная: продублируй её ещё и в выборке маршрута — и обе
+    станут недоказуемыми, потому что снятие любой из них ничего не сломает.
+
+    **Heartbeat никогда не ставит `connected`.** Каждый переход статуса имеет ровно
+    одного производителя, иначе двое начинают спорить о состоянии счёта:
+
+    | Переход | Кто |
+    |---|---|
+    | → `connected` | `apply_sync_result` — только успешный синк вправе это утверждать |
+    | активный → `needs_attention` по ошибке коллектора | `apply_heartbeat` |
+    | `connected` → `needs_attention` по молчанию | `check_collectors` |
+    | → `pending` | создание, `resume`, смена credentials |
+    | → `paused`, `archived` | пользователь |
+
+    Отсюда же ответ на «кто возвращает счёт из `needs_attention`»: синк, и только он.
+    Живой процесс коллектора доказывает, что процесс жив, а не что счёт синкается, —
+    и не знает о причинах, которые ставил не он. Счёт в евро (`apply_sync_result`)
+    иначе мигал бы между `needs_attention` и `connected` каждую минуту.
+
+    `state='stopped'` статус не меняет: остановленный процесс — это штатное выключение,
+    а не поломка. Молчание такого счёта через пять минут подберёт `check_collectors`.
+
+    Не коммитит: heartbeat обрабатывает весь список счетов одной транзакцией.
+    """
+    if account.status not in ACTIVE_STATUSES:
+        return False
+    account.last_heartbeat_at = now or _now()
+    if state == HEARTBEAT_STATE_ERROR:
+        account.status = STATUS_NEEDS_ATTENTION
+        # X-21: текст пришёл извне и уедет на все экраны через AccountResponse.
+        account.status_message = sanitize_external_text(message) or COLLECTOR_ERROR_MESSAGE
+    return True
+
+
+async def check_collectors(session: AsyncSession, *, now: datetime | None = None) -> list[UUID]:
+    """Счета, чей коллектор замолчал, уводит в `needs_attention` (SPEC.md 10).
+
+    Задача arq по расписанию раз в минуту. Здесь она — обычная async-функция от сессии:
+    планировщика в проекте пока нет (`arq` не установлен, сервиса `worker` в compose
+    нет), а переход статуса существует и обязан быть проверяемым. Регистрация в arq
+    сведётся к обёртке, которая откроет сессию и позовёт это.
+
+    `last_heartbeat_at IS NULL` не попадает под условие, и это важно: счёт, которому
+    коллектор никогда не отвечал, — это CSV или советник (SPEC.md 5.3), и сказать про
+    него «коллектор не на связи» было бы неправдой. SQL отсекает NULL сам, сравнение
+    с ним неистинно; SPEC.md 10 говорит ровно то же словами «с `last_heartbeat_at`
+    старше 5 мин».
+
+    Возвращает идентификаторы затронутых счетов — их печатает вызывающий, и по ним же
+    считается «сколько ушло в offline» без второго запроса.
+    """
+    threshold = (now or _now()) - COLLECTOR_OFFLINE_AFTER
+    statement = (
+        update(models.TradingAccount)
+        .where(
+            models.TradingAccount.status == STATUS_CONNECTED,
+            models.TradingAccount.last_heartbeat_at < threshold,
+        )
+        .values(status=STATUS_NEEDS_ATTENTION, status_message=COLLECTOR_OFFLINE_MESSAGE)
+        .returning(models.TradingAccount.id)
+    )
+    affected = list((await session.execute(statement)).scalars().all())
+    await session.commit()
+    return affected

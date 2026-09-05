@@ -304,6 +304,58 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/ingest/heartbeat': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Heartbeat
+     * @description Коллектор сообщает, что жив и что происходит с каждым его счётом.
+     *
+     *     Ответ — счётчики, а не ошибка: heartbeat про десять счетов не должен падать целиком
+     *     из-за одного идентификатора, который коллектор запомнил до архивации счёта.
+     */
+    post: operations['heartbeat_api_v1_ingest_heartbeat_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/internal/collector/assignments': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Assignments
+     * @description За какими счетами следить и чем в них входить. **Единственный ответ с паролем.**
+     *
+     *     Форма ответа — конверт `{items}`, как у `GET /accounts`. Голый массив нечем расширить,
+     *     а курсорная пагинация из SPEC.md 5.1 потребовала бы ломающей правки вместо добавления
+     *     поля; потребитель (`S1-08`) ещё не написан, поэтому смена формы сейчас стоит ноль.
+     *     SPEC.md 5.6 обновлена тем же диффом.
+     *
+     *     `GET`, который пишет: выдача закрепляет `collector_id` за счётом (§5.6). Без этого
+     *     два коллектора в одной сети получили бы одни и те же счета и полезли бы в один
+     *     брокерский аккаунт двумя терминалами.
+     */
+    get: operations['assignments_api_v1_internal_collector_assignments_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/dev/outbox': {
     parameters: {
       query?: never;
@@ -506,6 +558,51 @@ export interface components {
       /** Items */
       items: components['schemas']['AccountResponse'][];
     };
+    /**
+     * AssignmentListResponse
+     * @description Конверт выдачи — SPEC.md 5.6.
+     *
+     *     Не голый массив: в него нечего добавить, не сломав потребителя, а курсорная пагинация
+     *     из SPEC.md 5.1 однажды потребует именно добавления поля рядом с `items`. Потребитель
+     *     (`S1-08`) ещё не написан — момент, когда это стоит ноль. Ту же форму отдаёт
+     *     `GET /accounts`.
+     */
+    AssignmentListResponse: {
+      /** Items */
+      items: components['schemas']['AssignmentResponse'][];
+    };
+    /**
+     * AssignmentResponse
+     * @description Задание коллектору на один счёт — SPEC.md 5.6. **Содержит пароль.**
+     */
+    AssignmentResponse: {
+      /**
+       * Account Id
+       * Format: uuid
+       */
+      account_id: string;
+      /** Server */
+      server: string;
+      /** Login */
+      login: number;
+      /**
+       * Password
+       * @description Пароль инвестора. Единственный ответ API, где он есть; в пользовательские маршруты не попадает никогда
+       */
+      password: string;
+      /**
+       * Sync Requested At
+       * @description Просьба пользователя о внеочередном синке (SPEC.md 5.2)
+       */
+      sync_requested_at: string | null;
+      /** Last Sync At */
+      last_sync_at: string | null;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: 'pending' | 'connected' | 'needs_attention' | 'paused' | 'archived';
+    };
     /** HealthResponse */
     HealthResponse: {
       /**
@@ -525,6 +622,63 @@ export interface components {
       redis: 'ok' | 'unavailable';
       /** Version */
       version: string;
+    };
+    /**
+     * HeartbeatAccount
+     * @description Состояние одного счёта в heartbeat.
+     */
+    HeartbeatAccount: {
+      /**
+       * Account Id
+       * Format: uuid
+       */
+      account_id: string;
+      /**
+       * State
+       * @description Состояние процесса, следящего за счётом
+       * @enum {string}
+       */
+      state: 'running' | 'error' | 'stopped';
+      /**
+       * Message
+       * @description Причина при state=error. Показывается пользователю, поэтому обязана быть понятным текстом; хранится урезанной до 200 символов
+       */
+      message?: string | null;
+      /**
+       * Terminal Login
+       * @description Номер счёта, под которым коллектор вошёл в терминал
+       */
+      terminal_login?: number | null;
+    };
+    /**
+     * HeartbeatRequest
+     * @description Тело `POST /ingest/heartbeat` (SPEC.md 5.3).
+     */
+    HeartbeatRequest: {
+      /**
+       * Collector Id
+       * @description Идентификатор установки коллектора
+       */
+      collector_id: string;
+      /**
+       * Accounts
+       * @description Пустой список — коллектор жив, но счетов у него нет
+       */
+      accounts?: components['schemas']['HeartbeatAccount'][];
+    };
+    /**
+     * HeartbeatResponse
+     * @description Сколько счетов heartbeat применил и сколько пропустил.
+     *
+     *     Пропущенные — это чужие, несуществующие и выведенные из работы (`paused`,
+     *     `archived`). Счётчик, а не список: коллектор знает, что отправлял, а расхождение
+     *     ему нужно только как признак «спроси assignments заново».
+     */
+    HeartbeatResponse: {
+      /** Accepted */
+      accepted: number;
+      /** Ignored */
+      ignored: number;
     };
     /** OutboxEntry */
     OutboxEntry: {
@@ -4270,6 +4424,413 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'account_not_found' | 'not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  heartbeat_api_v1_ingest_heartbeat_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['HeartbeatRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HeartbeatResponse'];
+        };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  assignments_api_v1_internal_collector_assignments_get: {
+    parameters: {
+      query: {
+        /** @description Идентификатор установки коллектора: латиница, цифры и . _ - : @, не длиннее 64 символов */
+        collector_id: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['AssignmentListResponse'];
+        };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'not_found';
               message: string;
               details: {
                 [key: string]: unknown;
