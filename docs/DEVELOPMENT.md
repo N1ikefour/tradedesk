@@ -1,43 +1,109 @@
 # DEVELOPMENT — локальная разработка
 
-Updated: 2026-09-03
+Updated: 2026-09-05
 
----
+Этот документ — для того, кто **правит код**: чем ставится окружение разработки, как гоняются линтеры и тесты, где искать грабли.
 
-## Статус: окружение ещё не собрано
+Поднять приложение и войти в него — `SETUP.md`. Здесь это не повторяется.
 
-`Makefile`, `docker-compose.yml` и приложения создаются в задачах `S0-01` (скелет, линтеры, CI) и `S0-06` (Docker Compose, `make init`). До их мержа команд ниже **не существует** — это план, а не инструкция.
-
-Пока проверки запускаются напрямую тем инструментом, который есть, и в итоге задачи явно указывается, что именно было запущено.
+Полный список целей `make` с пояснениями — **`make help`**, и он же источник правды по командам: разошёлся с этим документом — прав `make help`.
 
 ---
 
 ## Что понадобится на машине
 
-| Инструмент | Зачем | Проверено на машине принципала (macOS, 2026-09-03) |
+Чтобы просто запустить приложение, хватает Docker и Git (`SETUP.md` §1). Разработке нужно больше: линтеры, тесты и генерация типов гоняются на хосте, а не внутри контейнеров.
+
+| Инструмент | Зачем | Проверено на машине принципала (macOS, 2026-09-05) |
 |---|---|---|
-| Docker + Compose | вся локальная инфраструктура | да, Docker 29.6.1 |
+| Docker + Compose | локальное окружение, интеграционные тесты (testcontainers), `make ci-target` | да, Docker 29.6.1, Compose v5.3.0 |
 | Git | — | да |
-| Node ≥ 20 | `apps/web` | да, v22.23.1 |
-| Python 3.12 | `apps/api` вне контейнера (опционально) | локально 3.14; в контейнере — 3.12 по `SPEC.md` §2.2 |
+| `make` | все цели проекта | да |
+| Node ≥ 22 | `apps/web`: eslint, vitest, `vite build` | да, v22.23.1 |
+| Python 3.12 | `apps/api` и коллектор вне контейнера | локально стоит 3.14 — см. «Прогон на целевой версии Python» |
 | `gh` | PR | да, авторизован |
 
-Windows-машина с MetaTrader 5 нужна только для коллектора (`S1-08`+). На macOS и Linux `MetaTrader5` не работает — это не чинится, см. `CLAUDE.md` §9.
+Целевая версия Python задана один раз в `.python-version`; оттуда её берут `Makefile`, `apps/api/Dockerfile` и GitHub Actions. Совпадение проверяет `apps/api/tests/unit/test_python_version.py`.
+
+Windows-машина с MetaTrader 5 понадобится только для коллектора (`S1-08`+). На macOS и Linux библиотека `MetaTrader5` не работает — это не чинится, см. `CLAUDE.md` §9.
 
 ---
 
-## Команды (появятся в S0-01/S0-06)
+## Установка окружения разработки
 
+```bash
+make install   # .venv + оба python-пакета в режиме -e + npm ci для apps/web
+make hooks     # pre-commit install
 ```
-make init      # .env из .env.example с генерацией секретов
-make up        # docker compose --profile local up -d
-make down
-make test      # pytest (api) + vitest (web)
-make lint      # ruff + mypy + eslint + prettier --check
-make migrate   # alembic upgrade head внутри контейнера api
-make revision m="описание"
-make types     # openapi → apps/web/src/api/schema.d.ts
+
+`make install` — предусловие для всего остального: цели проверяют наличие `.venv` и `apps/web/node_modules` и падают с подсказкой, если их нет.
+
+Приложение в Docker про `.venv` ничего не знает — контейнер `api` ставит зависимости себе сам. Два окружения живут параллельно и не конфликтуют.
+
+---
+
+## Гейт перед PR
+
+```bash
+make ci
 ```
+
+Это **единственная точка правды**: GitHub Actions вызывает те же цели, поэтому локальный и удалённый прогон совпадают по составу.
+
+| Цель | Что внутри |
+|---|---|
+| `make ci-api` | `lint-api` + `lint-collector` + `lint-hooks` + `test-api` |
+| `make ci-web` | `lint-web` + `test-web` + `build-web` |
+
+`make lint && make test` — подмножество: они не собирают web.
+
+⚠️ `make ci` включает `pre-commit run --all-files`, а часть хуков умеет править файлы (`ruff --fix`, форматтеры). Прогон гейта может изменить рабочее дерево — это поведение хуков, а не поломка. После прогона стоит посмотреть `git status`.
+
+`make smoke` в гейт **не входит**: playwright-браузеры ставятся отдельно (`cd apps/web && npx playwright install chromium`), и смоук гоняется против поднятого `make up`.
+
+---
+
+## Быстрые циклы
+
+Гонять весь гейт на каждую правку незачем — есть цели поуже: `make lint-api`, `make lint-web`, `make test-api`, `make test-web` (полный перечень в `make help`).
+
+Ещё уже — вызвать инструмент напрямую из `.venv`, минуя `make`:
+
+```bash
+cd apps/api && ../../.venv/bin/pytest tests/unit -k auth
+cd apps/api && ../../.venv/bin/pytest -m "not integration"   # без Docker
+cd apps/web && npm run test:watch
+```
+
+Перед PR это не заменяет `make ci`.
+
+---
+
+## Схема БД и типы
+
+```bash
+make revision m="что меняем"   # новая alembic-миграция (autogenerate)
+make migrate                   # alembic upgrade head
+make downgrade                 # откат на шаг; make downgrade to=base — до нуля
+make types                     # openapi запущенного api → apps/web/src/api/schema.d.ts
+```
+
+Две вещи, которые ловятся не сразу:
+
+- `make migrate` и `make revision` работают в `.venv` и ходят в базу по `DATABASE_URL` из окружения. **В контейнере миграции применяет сам старт `api`** — при `make up` отдельный шаг не нужен.
+- `make types` берёт схему **у живого приложения**, а не из файла в репозитории, поэтому требует поднятого `make up` с профилем `local`. Файл пришлось бы обновлять руками, и он расходился бы с API молча.
+
+Миграции — только вперёд-совместимые (`SPEC.md` §11.4), и `upgrade`, и `downgrade` проверяются до PR.
+
+---
+
+## Тесты
+
+- **Backend** — `pytest`. Интеграционные помечены маркером `integration` и поднимают настоящие Postgres и Redis через testcontainers, поэтому **требуют Docker**. Без него: `pytest -m "not integration"`. Контейнер `minio` появится вместе с вложениями (`S2-04`) — сейчас его никто не поднимает.
+- **Frontend** — `vitest` + Testing Library (`make test-web`).
+- **Смоук входа** — Playwright, цель `make smoke`, против поднятого окружения. В `make ci` не входит.
+- Тестовая БД защищена guard'ом: имя обязано содержать `_test`, guard падает до первого запроса (`apps/api/tests/unit/test_db_guard.py`).
+- Порог покрытия `domains/ingest` и `domains/analytics` — 90 % (`SPEC.md` §2.2). Мерить пока нечего и нечем: в `domains/ingest` лежат только модели, `domains/analytics` не существует, `pytest-cov` в зависимости не добавлен. Подключается вместе с первым кодом ингеста (`S1-02`).
 
 ---
 
@@ -70,18 +136,21 @@ make types     # openapi → apps/web/src/api/schema.d.ts
 
 ---
 
-## Тесты
-
-- Backend — `pytest`, интеграционные через testcontainers (Postgres, minio).
-- Frontend — `vitest` + Testing Library; smoke — Playwright.
-- Тестовая БД защищена guard'ом: имя обязано содержать `_test`, guard падает до первого запроса.
-- Порог покрытия `domains/ingest` и `domains/analytics` — 90 %.
-
----
-
 ## Entry points — с чего начать задачу типа Y
 
-Заполняется по мере появления кода. Пока: любая задача начинается с `CLAUDE.md` §1 (read order) и своего пункта в `SPEC.md` §12.
+Любая задача начинается с `CLAUDE.md` §1 (read order) и своего пункта в `SPEC.md` §12. Что уже построено — `docs/ARCHITECTURE.md`.
+
+| Куда лезть | Где это |
+|---|---|
+| Новый эндпоинт | `apps/api/app/domains/<домен>/router.py`, схемы рядом в `schemas.py` |
+| Общая обвязка API | `apps/api/app/core/` — config, db, errors, logging, security |
+| Модель данных | `apps/api/app/domains/<домен>/models.py` + ревизия в `apps/api/alembic/versions/` |
+| Экран или маршрут | `apps/web/src/routes/`, регистрация в `routes.tsx` |
+| Строки интерфейса | только `apps/web/src/i18n/ru.ts` |
+| Запросы к API с фронта | `apps/web/src/api/`, типы — `schema.d.ts` из `make types` |
+| Команды, compose, CI | `Makefile`, `docker-compose.yml`, `infra/scripts/`, `.github/workflows/ci.yml` |
+
+Раздел «Что молча ломает флоу X» — в `docs/ARCHITECTURE.md`. Перед правкой пересборки позиций или ингеста читать обязательно.
 
 ---
 
@@ -110,6 +179,6 @@ docker run --rm -v "$PWD":/w -w /w -v td-pipcache:/root/.cache/pip python:3.12-s
 
 Интеграционные тесты так не гоняются: testcontainers не достаёт опубликованный порт из sibling-контейнера. DDL и SQL от версии интерпретатора не зависят.
 
-Это оформлено целью **`make ci-target`** (S0-06): она поднимает контейнер с целевой версией, ставит зависимости в кэшируемый volume и гоняет ruff, mypy и unit-тесты. Повторный прогон быстрый.
+Это оформлено целью **`make ci-target`**: она поднимает контейнер с целевой версией, ставит зависимости в кэшируемый volume и гоняет ruff, mypy и unit-тесты. Повторный прогон быстрый.
 
 `make ci-target` **дополняет** `make ci`, а не заменяет её: интеграционных тестов и pre-commit в ней нет. Гейт перед PR — по-прежнему `make ci`, авторитетная проверка — GitHub Actions.
