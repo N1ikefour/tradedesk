@@ -4,23 +4,32 @@
 и роль сделки в сборке позиции. Ошибка в любом из трёх не роняет ингест — она пишет в
 базу не то число, поэтому здесь каждая строка таблицы §6.2 проверена отдельно. Чистота
 при этом остаётся требованием, а не доказанным свойством: проверены четыре конкретные
-вещи, а не все возможные обходы.
+вещи, а не все возможные обходы. Механизм проверки — `tests/purity.py`, контракт
+нормализатора — `NORMALIZER_PURITY` ниже.
 """
 
 from __future__ import annotations
 
 import ast
-import inspect
 import re
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import fields
 from datetime import UTC, datetime
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 import pytest
+from purity import (
+    IMPURE_NAMES,
+    IMPURE_SNIPPETS,
+    PurityContract,
+    bound_names,
+    external_names,
+    imported_modules,
+    leaks,
+    module_tree,
+)
 
 from app.domains.ingest import normalizer
 from app.domains.ingest.normalizer import (
@@ -504,173 +513,60 @@ def test_symbol_and_broker_fields_pass_through_untouched() -> None:
 
 # --- Чистота: проверено, а не заявлено ----------------------------------------------
 
-# Разбирается **весь исходник модуля** по AST, а не его функции по одной. Обход через
-# `inspect.getmembers(..., isfunction)` не видел ни кода уровня модуля, ни методов классов:
-# `_BUILD_HOUR = datetime.now().hour` рядом с константами и метод на `NormalizedDeal`
-# проходили мимо него незамеченными. Дерево исходника покрывает и то, и другое, и заодно
-# comprehension'ы с лямбдами.
-
-# Ровно то, без чего нормализатор не написать. Любой новый импорт делает тест красным и
-# заставляет объяснить, зачем чистой функции понадобился внешний мир.
-ALLOWED_IMPORTS = frozenset(
-    {
-        "__future__",
-        "app.domains.ingest.schemas",
-        "collections",
-        "collections.abc",
-        "dataclasses",
-        "datetime",
-        "decimal",
-        "typing",
-    }
-)
-
-# Единственные builtins, которыми модулю разрешено пользоваться. Список белый, и в этом
-# суть: блоклист по именам обходится сборкой имени в рантайме — `getattr(datetime,
-# "no" + "w")()` не содержит слова `now` нигде, поэтому мимо блоклиста проходит. Слово
-# `getattr` в исходнике при этом есть, и белому списку его достаточно.
-ALLOWED_BUILTINS = frozenset({"ValueError", "dict", "frozenset", "int", "sorted", "str", "tuple"})
-
-# Имена и атрибуты, обращение к которым означает выход из чистоты: часы машины, окружение,
-# зона ОС, ввод-вывод. Нужны отдельно от белого списка, потому что `datetime` импортировать
-# можно, а `datetime.now()` вызывать нельзя — атрибуты белым списком не покрыть, не
-# перечисляя заодно все поля сделки. `astimezone` и `fromtimestamp` здесь потому, что на
-# наивном времени они молча спрашивают зону процесса.
-IMPURE_NAMES = frozenset(
-    {
-        "astimezone",
-        "commit",
-        "environ",
-        "execute",
-        "fromtimestamp",
-        "getenv",
-        "localtime",
-        "monotonic",
-        "now",
-        "open",
-        "perf_counter",
-        "random",
-        "time",
-        "today",
-        "utcnow",
-    }
-)
-
-# `_bound_names` не различает области видимости, поэтому любое связывание имени в модуле
-# вычёркивает его из `_external_names` целиком. Параметр `open` (цена открытия — имя в этом
-# домене естественное) снял бы охрану с `open(...)` во всём файле, и ни один тест бы не
-# заметил. Динамические точки входа добавлены сюда же: их нет в `IMPURE_NAMES`, но именно
-# через них белый список обходится, а `flake8-builtins` в `select` не включён.
-GUARDED = (
-    ALLOWED_BUILTINS
-    | IMPURE_NAMES
-    | frozenset(
-        {"getattr", "eval", "exec", "__import__", "globals", "locals", "vars", "compile", "input"}
-    )
-)
-
-# Три обхода, каждый из которых прошлая версия этого теста пропускала. Держатся здесь как
-# образцы для `test_purity_check_is_not_vacuous`: тест, который не ловит их, бесполезен.
-IMPURE_SNIPPETS = {
-    "module_level": "from datetime import datetime\n_BUILD_HOUR = datetime.now().hour\n",
-    "class_method": (
-        "from datetime import UTC, datetime\n"
-        "class NormalizedDeal:\n"
-        "    def stamped_at(self) -> datetime:\n"
-        "        return datetime.now(UTC)\n"
+# Механизм разбора исходника живёт в `tests/purity.py` — он общий с S1-07. Здесь остаётся
+# контракт, и это та часть, которую читает ревьюер: ровно то, без чего нормализатор не
+# написать. Любой новый импорт делает тест красным и заставляет объяснить, зачем чистой
+# функции понадобился внешний мир.
+NORMALIZER_PURITY = PurityContract(
+    allowed_imports=frozenset(
+        {
+            "__future__",
+            "app.domains.ingest.schemas",
+            "collections",
+            "collections.abc",
+            "dataclasses",
+            "datetime",
+            "decimal",
+            "typing",
+        }
     ),
-    "name_assembled_at_runtime": (
-        "from datetime import datetime\n"
-        "def to_utc(value: datetime) -> datetime:\n"
-        '    if getattr(datetime, "no" + "w")().year > 2030:\n'
-        "        return value\n"
-        "    return value\n"
+    allowed_builtins=frozenset(
+        {"ValueError", "dict", "frozenset", "int", "sorted", "str", "tuple"}
     ),
-}
-
-
-def _module_tree() -> ast.Module:
-    source = Path(inspect.getsourcefile(normalizer) or "").read_text(encoding="utf-8")
-    return ast.parse(source)
-
-
-def _imported_modules(tree: ast.AST) -> set[str]:
-    modules: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            modules.add(node.module)
-    return modules
-
-
-def _bound_names(tree: ast.AST) -> set[str]:
-    """Всё, что модуль связывает сам: импорты, определения, аргументы, локальные имена."""
-    bound: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
-            bound.add(node.id)
-        elif isinstance(node, ast.arg):
-            bound.add(node.arg)
-        elif isinstance(node, ast.alias):
-            bound.add((node.asname or node.name).split(".")[0])
-        else:
-            # `def`, `class`, `except ... as`, `type`-параметры: у всех имя лежит в `.name`,
-            # и все они вводят имя в область видимости. Перечислять их поимённо не нужно —
-            # достаточно того, что оно вводится.
-            defined = getattr(node, "name", None)
-            if isinstance(defined, str):
-                bound.add(defined)
-    return bound
-
-
-def _external_names(tree: ast.AST) -> set[str]:
-    """Имена, взятые снаружи: не импортированы и не определены здесь — значит builtins."""
-    used = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-    return used - _bound_names(tree)
-
-
-def _attribute_names(tree: ast.AST) -> set[str]:
-    return {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
-
-
-def _leaks(tree: ast.AST) -> set[str]:
-    return (_external_names(tree) - ALLOWED_BUILTINS) | (
-        (_external_names(tree) | _attribute_names(tree)) & IMPURE_NAMES
-    )
+)
 
 
 def test_normalizer_imports_nothing_impure() -> None:
-    assert _imported_modules(_module_tree()) <= ALLOWED_IMPORTS
+    assert imported_modules(module_tree(normalizer)) <= NORMALIZER_PURITY.allowed_imports
 
 
 def test_normalizer_takes_nothing_from_outside_beyond_imports_and_plain_builtins() -> None:
     """Белый список: всё, чего модуль не импортировал и не определил, обязано быть здесь."""
-    tree = _module_tree()
+    tree = module_tree(normalizer)
     assert [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)], (
         "модуль обязан определять функции, иначе тест ничего не проверяет"
     )
-    assert _external_names(tree) <= ALLOWED_BUILTINS
+    assert external_names(tree) <= NORMALIZER_PURITY.allowed_builtins
 
 
 def test_normalizer_never_reaches_for_clock_environment_or_io() -> None:
-    tree = _module_tree()
-    assert _leaks(tree) == set()
+    tree = module_tree(normalizer)
+    assert leaks(tree, NORMALIZER_PURITY) == set()
     # Иначе дыру можно открыть, дописав `now` в белый список, и оба теста останутся зелёными.
-    assert ALLOWED_BUILTINS.isdisjoint(IMPURE_NAMES)
-    assert _bound_names(tree).isdisjoint(GUARDED), (
+    assert NORMALIZER_PURITY.allowed_builtins.isdisjoint(IMPURE_NAMES)
+    assert bound_names(tree).isdisjoint(NORMALIZER_PURITY.guarded), (
         "модуль затеняет имя, на котором держится проверка"
     )
 
 
 @pytest.mark.parametrize("case", sorted(IMPURE_SNIPPETS))
 def test_purity_check_is_not_vacuous(case: str) -> None:
-    """Проверка проверки: три известных обхода обязаны быть красными.
+    """Проверка проверки: три известных обхода обязаны быть красными на этом контракте.
 
     Утверждение «функции чистые» стоит ровно столько, сколько ловит проверка. Прошлая
     версия ловила ноль из трёх и при этом выглядела строгой.
     """
-    assert _leaks(ast.parse(IMPURE_SNIPPETS[case]))
+    assert leaks(ast.parse(IMPURE_SNIPPETS[case]), NORMALIZER_PURITY)
 
 
 @pytest.fixture
