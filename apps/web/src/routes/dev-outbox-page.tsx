@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { t } from '@/i18n';
 import { formatDateTime } from '@/lib/format';
+import { useDisplayTimeZone } from '@/user/profile';
 
 const OUTBOX_LIMIT = 50;
 
@@ -17,6 +18,9 @@ const OUTBOX_LIMIT = 50;
  * именно тому, кто ещё не вошёл.
  */
 export function DevOutboxPage() {
+  // Своего запроса профиля страница не делает: она открыта и до входа (см. тест).
+  // Если сессия уже в кэше, даты идут в зоне пользователя, иначе — в зоне компьютера.
+  const timeZone = useDisplayTimeZone();
   const outbox = useQuery({
     queryKey: ['dev', 'outbox', OUTBOX_LIMIT],
     queryFn: () =>
@@ -69,7 +73,7 @@ export function DevOutboxPage() {
                 <CardTitle className="text-base">{item.subject}</CardTitle>
                 <p className="text-xs text-muted-foreground">
                   {t.outbox.columnTo}: {item.to_email} · {t.outbox.columnCreatedAt}:{' '}
-                  {formatDateTime(item.created_at)}
+                  {formatDateTime(item.created_at, timeZone)}
                 </p>
               </CardHeader>
               <CardContent>

@@ -5,6 +5,7 @@ import { LoginPage } from '@/routes/login-page';
 import { NotFoundPage } from '@/routes/not-found-page';
 import { RequireAuth } from '@/routes/require-auth';
 import { RootLayout } from '@/routes/root-layout';
+import { SettingsPage } from '@/routes/settings-page';
 import {
   AccountPage,
   AccountsPage,
@@ -12,7 +13,6 @@ import {
   DashboardPage,
   JournalPage,
   PositionPage,
-  SettingsPage,
 } from '@/routes/stub-pages';
 import { DEV_OUTBOX_AVAILABLE } from '@/lib/env';
 

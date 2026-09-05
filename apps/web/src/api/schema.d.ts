@@ -104,6 +104,54 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/users/me': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Me */
+    get: operations['read_me_api_v1_users_me_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /**
+     * Update Me
+     * @description Меняет только владельца сессии: чужой идентификатор передать некуда.
+     *
+     *     Без сессии тело не разбирается pydantic и состав полей наружу не уходит. Сам JSON
+     *     при этом FastAPI читает раньше зависимостей, поэтому синтаксически битое тело даёт
+     *     400 и без cookie — по нему видно только то, что запрос не JSON.
+     */
+    patch: operations['update_me_api_v1_users_me_patch'];
+    trace?: never;
+  };
+  '/api/v1/users/timezones': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List Timezones
+     * @description Имена зон, которые принимает `PATCH /users/me`, — из того же набора.
+     *
+     *     Под сессией, как и весь `/users`: анонимного потребителя у списка нет, а открытый
+     *     маршрут — это девять килобайт на неаутентифицированный запрос без лимита.
+     */
+    get: operations['list_timezones_api_v1_users_timezones_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/dev/outbox': {
     parameters: {
       query?: never;
@@ -192,8 +240,22 @@ export interface components {
       status: 'accepted';
     };
     /**
+     * TimezonesResponse
+     * @description Список имён зон, которые принимает `PATCH /users/me`.
+     */
+    TimezonesResponse: {
+      /**
+       * Items
+       * @description Имена таймзон IANA, отсортированы лексикографически
+       */
+      items: string[];
+    };
+    /**
      * UserResponse
      * @description Поля из SPEC.md 4, пункт 5.
+     *
+     *     Общая модель для `/auth/me`, `/auth/verify` и `/users/me` (S0-08): один пользователь
+     *     описывается в схеме одним компонентом. Правка полей здесь меняет ответ всех трёх.
      */
     UserResponse: {
       /**
@@ -209,6 +271,31 @@ export interface components {
       timezone: string;
       /** Day Boundary Hour */
       day_boundary_hour: number;
+    };
+    /**
+     * UserUpdateRequest
+     * @description Частичная правка профиля: отсутствующее поле не трогается.
+     *
+     *     `display_name` — единственное обнуляемое: явный `null` очищает имя, чего отсутствие
+     *     поля не делает. `timezone` и `day_boundary_hour` обнулить нельзя, `null` в них —
+     *     ошибка валидации.
+     */
+    UserUpdateRequest: {
+      /**
+       * Display Name
+       * @description Отображаемое имя, не длиннее 100 символов. null или пустая строка очищают имя
+       */
+      display_name?: string | null;
+      /**
+       * Timezone
+       * @description Имя таймзоны IANA, например Europe/Moscow
+       */
+      timezone?: string;
+      /**
+       * Day Boundary Hour
+       * @description Час начала торгового дня в таймзоне пользователя, 0..23
+       */
+      day_boundary_hour?: number;
     };
     /** VerifyRequest */
     VerifyRequest: {
@@ -1287,6 +1374,617 @@ export interface operations {
         content: {
           'application/json': components['schemas']['UserResponse'];
         };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  read_me_api_v1_users_me_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['UserResponse'];
+        };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  update_me_api_v1_users_me_patch: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['UserUpdateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['UserResponse'];
+        };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  list_timezones_api_v1_users_timezones_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TimezonesResponse'];
+        };
+      };
+      /** @description Список не менялся с версии из If-None-Match */
+      304: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description Ошибка валидации запроса (validation_error) */
       400: {
