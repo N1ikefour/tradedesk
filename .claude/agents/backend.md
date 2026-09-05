@@ -60,7 +60,7 @@ make lint-api                                        # ruff check + ruff format 
 make ci                                              # перед сдачей — весь гейт, как в CI
 ```
 
-Узкий прогон — из `apps/api`, а не сырым `pytest` из корня: ровно это делают цели `Makefile` (`cd apps/api && pytest`), то есть узкий прогон совпадает с тем, что гоняет CI. `make test` и `make lint` — это api **и** web сразу; для своих файлов беру `-api`-варианты.
+Узкий прогон — из `apps/api`, а не сырым `pytest` из корня: ровно это делают цели `Makefile` (`cd apps/api && pytest`), то есть узкий прогон совпадает с тем, что гоняет CI. `make test` — это api и web сразу, `make lint` — api, collector и web; для своих файлов беру `-api`-варианты.
 
 - `mypy --strict` обязателен для `domains/ingest` и `domains/analytics` (набор флагов — в `apps/api/pyproject.toml`). `domains/analytics` пока не существует; правило начнёт действовать вместе с ним.
 - Интеграционные тесты — через testcontainers. Сейчас поднимаются Postgres и Redis; minio добавится с вложениями в `S2-04`. Базу не мокать там, где тестируется SQL.

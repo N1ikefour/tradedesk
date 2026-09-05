@@ -55,7 +55,7 @@ make lint-web                          # eslint + prettier --check + tsc --noEmi
 make ci                                # перед сдачей — весь гейт, как в CI
 ```
 
-Узкий прогон — из `apps/web`: в корне репозитория нет `package.json`, `npx vitest` оттуда не найдёт ни конфиг, ни зависимости. `make test` и `make lint` — это web **и** api сразу; для своих файлов беру `-web`-варианты.
+Узкий прогон — из `apps/web`: в корне репозитория нет `package.json`, `npx vitest` оттуда не найдёт ни конфиг, ни зависимости. `make test` — это web и api сразу, `make lint` — api, collector и web; для своих файлов беру `-web`-варианты.
 
 - Тесты — jsdom/компонентные (`environment: 'jsdom'` в `apps/web/vite.config.ts`); API мокается обёрткой с роутингом по пути, **не порядко-зависимыми моками**.
 - Smoke — Playwright, только ключевые сценарии: цель `make smoke` против поднятого `make up`. В `make ci` она НЕ входит — браузеры ставятся отдельно (`cd apps/web && npx playwright install chromium`).
