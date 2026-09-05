@@ -1,14 +1,15 @@
 import { fileURLToPath, URL } from 'node:url';
 
+import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 
 // Куда dev-сервер проксирует /api. В docker-compose это api:8000 (переменная приходит
 // из compose), при запуске `npm run dev` на хосте — опубликованный порт api.
 const apiTarget = process.env.VITE_API_TARGET ?? 'http://localhost:8000';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
@@ -28,5 +29,15 @@ export default defineConfig({
         xfwd: true,
       },
     },
+  },
+  test: {
+    environment: 'jsdom',
+    environmentOptions: { jsdom: { url: 'http://localhost:5173/' } },
+    globals: false,
+    setupFiles: ['./vitest.setup.ts'],
+    // e2e гоняет playwright отдельной целью (make smoke), vitest туда не заходит.
+    include: ['src/**/*.test.{ts,tsx}'],
+    restoreMocks: true,
+    unstubGlobals: true,
   },
 });
