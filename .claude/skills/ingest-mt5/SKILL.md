@@ -11,7 +11,7 @@ description: Use when working on anything touching MT5 deals ingestion in TradeD
 
 - `SPEC.md` §6 (нормализация: маппинги, время, символы) и §7 (сборщик позиций) — **дословно, это эталон**.
 - `SPEC.md` §3.3 (таблицы `deals`, `positions`, `open_positions`, `sync_runs`) и §5.3 (контракт `/ingest`).
-- `packages/shared-schemas/ingest-deals.schema.json` — контракт батча (появляется в `S1-01`).
+- `packages/shared-schemas/ingest-deals.schema.json` — контракт батча. Файл **сгенерирован** из `apps/api/app/domains/ingest/schemas.py` и руками не правится; форму меняют модели, файл перегенерируется `python -m app.domains.ingest.schema_export`.
 - `docs/fixtures.md` — что описывает каждая фикстура (появляется в `S1-03`).
 - Для задач коллектора дополнительно `SPEC.md` §8.
 
@@ -19,7 +19,7 @@ description: Use when working on anything touching MT5 deals ingestion in TradeD
 
 `apps/api/app/domains/ingest/**` (`normalizer.py`, `position_builder.py`, `router.py`, `schemas.py`), `apps/api/tests/fixtures/deals/**`, `packages/shared-schemas/ingest-deals.schema.json`, часть `apps/collector-mt5/collector/` в части формирования батча.
 
-**Домен ещё не написан.** Сегодня в `domains/ingest/` есть только `models.py` (таблицы ядра из `S0-03`); ни нормализатора, ни сборщика, ни роутера, ни фикстур `tests/fixtures/deals/` пока нет — они появляются на этапе 1 (`S1-01`…`S1-03`). Всё ниже — правила, по которым их писать, а не описание существующего кода.
+**Написана только граница.** Сегодня в `domains/ingest/` есть `models.py` (таблицы ядра из `S0-03`) и контракт батча из `S1-01`: `schemas.py` (pydantic-модели, источник истины формы) и `schema_export.py` (сборка `ingest-deals.schema.json`). Ни нормализатора, ни сборщика, ни роутера, ни фикстур `tests/fixtures/deals/` пока нет — они появляются в `S1-02`…`S1-04`. Всё ниже — правила, по которым их писать, а не описание существующего кода.
 
 ## Domain Rules
 
