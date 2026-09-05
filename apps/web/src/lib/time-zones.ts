@@ -1,60 +1,19 @@
 /**
- * Список таймзон — данные, а не строки интерфейса, поэтому он не в `i18n/ru.ts`.
+ * Подписи, поиск и группировка таймзон. Сам список сюда передают — источник его
+ * серверный, `GET /users/timezones` (`@/user/time-zones`).
  *
- * Источник — сам движок: `Intl.supportedValuesOf('timeZone')` возвращает имена IANA из
- * той же базы, которой пользуется `date-fns-tz` при форматировании, и обновляется вместе
- * с браузером. Свой список в репозитории пришлось бы догонять за tzdata (несколько
- * релизов в год), а серверного списка контракт не отдаёт.
+ * Почему не движок. `Intl.supportedValuesOf('timeZone')` отдаёт набор ICU, а принимает
+ * имена сервер из своей tzdata, и по псевдонимам наборы расходятся: Chrome знает
+ * `Asia/Calcutta` и не знает `Asia/Kolkata`, сервер — ровно наоборот. Для Индии,
+ * Украины, Вьетнама, Непала и ещё нескольких стран единственный пункт меню оказывался
+ * несохраняемым (`400 validation_error`). Список от сервера и приём на сервере — один
+ * набор, расходиться нечему.
  *
- * Набор движка и набор сервера могут не совпадать по псевдонимам (`Europe/Kiev` против
- * `Europe/Kyiv`), поэтому сохранённое значение всегда добавляется в список отдельно —
- * `buildTimeZoneOptions`. Свои имена мы не придумываем: что не из этого списка, того
- * пользователь не выберет, а последнее слово всё равно за валидацией сервера.
+ * Резервного списка в репозитории нет намеренно: любой наш список — это снова догадка
+ * о том, что примет сервер, то есть та же поломка, только реже. Не пришёл список —
+ * зона не меняется, и экран настроек об этом говорит.
  */
 import { getTimezoneOffset } from 'date-fns-tz';
-
-/**
- * Резерв для движков без `supportedValuesOf` (Safari до 15.4). Не «весь мир», а зоны
- * бирж и стран, откуда торгуют: длинный ручной список в резерве устареет молча.
- */
-const FALLBACK_TIME_ZONES = [
-  'UTC',
-  'Europe/London',
-  'Europe/Lisbon',
-  'Europe/Berlin',
-  'Europe/Warsaw',
-  'Europe/Kaliningrad',
-  'Europe/Minsk',
-  'Europe/Kiev',
-  'Europe/Moscow',
-  'Europe/Istanbul',
-  'Africa/Cairo',
-  'Africa/Johannesburg',
-  'Asia/Jerusalem',
-  'Asia/Dubai',
-  'Asia/Baku',
-  'Asia/Tbilisi',
-  'Asia/Karachi',
-  'Asia/Kolkata',
-  'Asia/Tashkent',
-  'Asia/Almaty',
-  'Asia/Yekaterinburg',
-  'Asia/Novosibirsk',
-  'Asia/Krasnoyarsk',
-  'Asia/Irkutsk',
-  'Asia/Bangkok',
-  'Asia/Shanghai',
-  'Asia/Singapore',
-  'Asia/Tokyo',
-  'Asia/Vladivostok',
-  'Australia/Sydney',
-  'Pacific/Auckland',
-  'America/Sao_Paulo',
-  'America/New_York',
-  'America/Chicago',
-  'America/Denver',
-  'America/Los_Angeles',
-] as const;
 
 /** Зона без региона (`UTC`) попадает в группу со своим же именем. */
 const NO_REGION = 'UTC';
@@ -72,23 +31,6 @@ export type TimeZoneGroup = {
   readonly region: string;
   readonly options: readonly TimeZoneOption[];
 };
-
-type SupportedValuesOf = (key: 'timeZone') => string[];
-
-function supportedTimeZones(): readonly string[] {
-  // Метода нет в lib ES2022, а на старых движках нет и в рантайме — одна проверка
-  // закрывает оба случая и обходится без `any`.
-  const supportedValuesOf = (Intl as { supportedValuesOf?: SupportedValuesOf }).supportedValuesOf;
-  if (typeof supportedValuesOf !== 'function') {
-    return FALLBACK_TIME_ZONES;
-  }
-  try {
-    const values = supportedValuesOf('timeZone');
-    return values.length > 0 ? values : FALLBACK_TIME_ZONES;
-  } catch {
-    return FALLBACK_TIME_ZONES;
-  }
-}
 
 /** Зона браузера. Она же значение по умолчанию, пока профиль не загружен. */
 export function browserTimeZone(): string {
@@ -138,15 +80,23 @@ function toOption(name: string, at: Date): TimeZoneOption {
 }
 
 /**
- * Список для выпадающего меню. `ensure` — значение из профиля: оно остаётся выбираемым,
- * даже если движок его не знает, иначе экран молча подменил бы человеку сохранённую зону.
+ * Список для выпадающего меню из имён, которые прислал сервер. Своих имён функция не
+ * добавляет: чего нет в `names`, того сервер и не примет.
+ *
+ * Исключение одно — `ensure`, сохранённое значение профиля. Оно остаётся выбираемым,
+ * даже если его нет ни в ответе сервера, ни у движка: иначе экран молча подменил бы
+ * человеку зону при первом же сохранении.
  */
-export function buildTimeZoneOptions(at: Date, ensure?: string): readonly TimeZoneOption[] {
-  const names = new Set(supportedTimeZones());
+export function buildTimeZoneOptions(
+  names: Iterable<string>,
+  at: Date,
+  ensure?: string,
+): readonly TimeZoneOption[] {
+  const unique = new Set(names);
   if (ensure !== undefined && ensure !== '') {
-    names.add(ensure);
+    unique.add(ensure);
   }
-  return [...names].sort((a, b) => a.localeCompare(b, 'en')).map((name) => toOption(name, at));
+  return [...unique].sort((a, b) => a.localeCompare(b, 'en')).map((name) => toOption(name, at));
 }
 
 /** Пробелы и подчёркивания в поиске равны: «new york» находит `America/New_York`. */

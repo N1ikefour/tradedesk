@@ -7,7 +7,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { api, unwrap } from '@/api/client';
 import type { components } from '@/api/schema';
-import { SESSION_QUERY_KEY, useCachedSessionUser, type SessionUser } from '@/auth/session';
+import {
+  SESSION_QUERY_KEY,
+  useCachedSessionUser,
+  useSession,
+  type SessionUser,
+} from '@/auth/session';
 import { browserTimeZone, isKnownTimeZone } from '@/lib/time-zones';
 
 export type Profile = components['schemas']['UserResponse'];
@@ -40,11 +45,31 @@ export function useUpdateProfile() {
 }
 
 /**
- * Таймзона, в которой показывается время. Профиль — источник правды (SPEC.md 9.4);
- * пока он не загружен или зона незнакома движку, остаётся зона компьютера.
+ * Зона профиля, если движок её знает. Иначе — зона компьютера: наборы имён IANA у
+ * браузера и у сервера расходятся по псевдонимам, и падать на этом нельзя.
  */
-export function useUserTimeZone(): string {
-  const user = useCachedSessionUser();
-  const timeZone = user?.timezone;
+function knownOrBrowserTimeZone(timeZone: string | undefined): string {
   return timeZone !== undefined && isKnownTimeZone(timeZone) ? timeZone : browserTimeZone();
+}
+
+/**
+ * Таймзона показа времени на экранах под `RequireAuth`. Гард рисует их только с
+ * загруженной сессией, поэтому здесь это действительно зона пользователя (SPEC.md 9.4).
+ */
+export function useProfileTimeZone(): string {
+  const { data } = useSession();
+  return knownOrBrowserTimeZone(data?.timezone);
+}
+
+/**
+ * Таймзона показа времени там, где сессии может не быть вовсе: `/dev/outbox` открыт до
+ * входа, и запрос `/auth/me` ради оформления дат там был бы лишним. Смотрит кэш сессии
+ * и ничего не грузит; пустой кэш означает зону компьютера.
+ *
+ * Имя обещает ровно это — зону показа, а не зону пользователя: пустой кэш здесь штатен,
+ * и вызывающий не должен принимать результат за настройку профиля.
+ */
+export function useDisplayTimeZone(): string {
+  const user = useCachedSessionUser();
+  return knownOrBrowserTimeZone(user?.timezone);
 }

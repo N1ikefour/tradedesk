@@ -14,6 +14,12 @@ import {
 // ожидания теста зависимыми от дня прогона.
 const WINTER = new Date('2026-01-15T12:00:00Z');
 
+/**
+ * Игрушечный ответ `GET /users/timezones`. Намеренно не пересекается с тем, что знает
+ * движок «сверх» него: тест обязан ловить любое имя, добавленное мимо сервера.
+ */
+const SERVER_LIST = ['Europe/Moscow', 'Asia/Tokyo', 'Asia/Kolkata', 'Europe/Berlin'] as const;
+
 function names(options: readonly { name: string }[]): string[] {
   return options.map((option) => option.name);
 }
@@ -46,34 +52,49 @@ describe('isKnownTimeZone', () => {
 
 describe('buildTimeZoneOptions', () => {
   it('подпись — имя IANA и смещение: по одному имени зону не выбрать', () => {
-    const options = buildTimeZoneOptions(WINTER);
+    const options = buildTimeZoneOptions(SERVER_LIST, WINTER);
     const moscow = options.find((option) => option.name === 'Europe/Moscow');
 
     expect(moscow?.label).toBe('Europe/Moscow (UTC+3)');
     expect(moscow?.region).toBe('Europe');
   });
 
-  it('список отсортирован и без повторов', () => {
-    const list = names(buildTimeZoneOptions(WINTER));
+  it('в списке ровно переданные имена: движок не источник', () => {
+    // Ровно тот дефект, ради которого маршрут и появился: `Intl.supportedValuesOf`
+    // знает `Asia/Calcutta` и `America/New_York`, а сервер прислал не их. Ни одно
+    // лишнее имя в меню попасть не должно — сервер его отвергнет `400`.
+    const list = names(buildTimeZoneOptions(SERVER_LIST, WINTER));
 
-    expect(list.length).toBeGreaterThan(30);
+    expect(list).toEqual([...SERVER_LIST].sort((a, b) => a.localeCompare(b, 'en')));
+    expect(list).not.toContain('America/New_York');
+    expect(list).not.toContain('Asia/Calcutta');
+    expect(isKnownTimeZone('America/New_York')).toBe(true);
+  });
+
+  it('пустой список даёт пустое меню, а не подстановку своих имён', () => {
+    expect(buildTimeZoneOptions([], WINTER)).toEqual([]);
+  });
+
+  it('список отсортирован и без повторов', () => {
+    const list = names(buildTimeZoneOptions(['Europe/Moscow', ...SERVER_LIST], WINTER));
+
     expect(new Set(list).size).toBe(list.length);
     expect([...list].sort((a, b) => a.localeCompare(b, 'en'))).toEqual(list);
   });
 
-  it('сохранённое значение остаётся выбираемым, даже если движок его не знает', () => {
-    // Псевдонимы у браузера и у сервера расходятся: движок может знать только одно
-    // из двух имён одной зоны, а серверное значение подменять нельзя.
-    const options = buildTimeZoneOptions(WINTER, 'Europe/Kyiv');
+  it('сохранённое значение остаётся выбираемым, даже если сервер его не прислал', () => {
+    // Псевдонимы у браузера и у сервера расходятся: сохранённое значение может
+    // отсутствовать и в ответе сервера, и у движка. Подменять его нельзя.
+    const options = buildTimeZoneOptions(SERVER_LIST, WINTER, 'Europe/Kyiv');
     expect(names(options)).toContain('Europe/Kyiv');
 
-    const unknown = buildTimeZoneOptions(WINTER, 'Mars/Olympus');
+    const unknown = buildTimeZoneOptions(SERVER_LIST, WINTER, 'Mars/Olympus');
     expect(unknown.find((option) => option.name === 'Mars/Olympus')?.label).toBe('Mars/Olympus');
   });
 });
 
 describe('filterTimeZoneOptions', () => {
-  const options = buildTimeZoneOptions(WINTER);
+  const options = buildTimeZoneOptions([...SERVER_LIST, 'America/New_York'], WINTER);
 
   it('пустой запрос ничего не отсекает', () => {
     expect(filterTimeZoneOptions(options, '  ')).toBe(options);
@@ -90,7 +111,7 @@ describe('filterTimeZoneOptions', () => {
 });
 
 describe('withSelectedTimeZone', () => {
-  const options = buildTimeZoneOptions(WINTER);
+  const options = buildTimeZoneOptions(SERVER_LIST, WINTER);
 
   it('возвращает выбранное в список, когда поиск его отсёк', () => {
     const visible = filterTimeZoneOptions(options, 'moscow');
@@ -107,10 +128,9 @@ describe('withSelectedTimeZone', () => {
 
 describe('groupTimeZoneOptions', () => {
   it('делит по первому сегменту имени и сохраняет порядок', () => {
-    // `UTC` задан явно: в наборе движка его может не быть, а группа «имя без региона»
-    // проверяется именно на нём.
-    const options = buildTimeZoneOptions(WINTER, 'UTC').filter((option) =>
-      ['Europe/Moscow', 'Europe/Berlin', 'Asia/Tokyo', 'UTC'].includes(option.name),
+    // `UTC` — единственное имя без региона: группа «имя без региона» проверяется на нём.
+    const options = buildTimeZoneOptions([...SERVER_LIST, 'UTC'], WINTER).filter(
+      (option) => option.name !== 'Asia/Kolkata',
     );
     const groups = groupTimeZoneOptions(options);
 

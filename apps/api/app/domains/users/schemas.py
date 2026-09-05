@@ -1,8 +1,14 @@
-"""Тело запроса на правку профиля (SPEC.md 5.7).
+"""Тело запроса на правку профиля и список таймзон (SPEC.md 5.7).
 
 Ответ у профиля общий с `/auth/me` — `app.domains.auth.schemas.UserResponse`. Второй
 модели здесь намеренно нет: два объявления одного и того же пользователя разъезжаются
 молча, а фронт генерирует типы из схемы и получает два разных типа для одной сущности.
+
+`known_timezones()` — единственный источник имён зон: и то, что принимает `PATCH`, и то,
+что отдаёт `GET /users/timezones`. Раздельные списки уже расходились: меню строилось из
+`Intl.supportedValuesOf` браузера, а он для Индии, Украины и Вьетнама знает только
+legacy-имена (`Asia/Calcutta`, `Europe/Kiev`), которых в tzdata образа нет — выбор такой
+зоны заканчивался неустранимым 400.
 """
 
 from __future__ import annotations
@@ -28,9 +34,18 @@ DAY_BOUNDARY_HOUR_ERROR = (
 )
 DAY_BOUNDARY_HOUR_REQUIRED_ERROR = "Час начала торгового дня не может быть пустым"
 
-# Тот же класс символов, что вырезает `normalize_email`: имя попадает в письма и в UI,
-# и управляющий символ там — заготовка под инъекцию, а не часть имени.
+# Управляющие символы C0/C1 — тот же класс, что отвергает `_EMAIL_RE` в auth: имя
+# попадает в заголовки писем и в UI, а перевод строки там — заготовка под инъекцию.
+# Разделители строк Unicode (U+2028/U+2029) и метки направления (U+200E/U+202E) сюда
+# не входят: заголовок письма ими не разорвать, а имя с ними — валидное имя.
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+# Оба имени лежат в /usr/share/zoneinfo и попадают в `available_timezones()`, но зонами
+# пользователя не являются: `localtime` — ссылка на настройку конкретной машины и меняет
+# смысл вместе с образом, `Factory` в самой tzdata означает «зона не настроена» (-00).
+# Исключение стоит здесь, а не в маршруте: список один на валидацию и на выдачу, второе
+# правило разъехалось бы с первым.
+_NOT_USER_ZONES = frozenset({"Factory", "localtime"})
 
 
 @lru_cache(maxsize=1)
@@ -41,7 +56,27 @@ def known_timezones() -> frozenset[str]:
     файловой системой принимает `europe/moscow`, а в контейнере — нет. Валидация обязана
     решать одинаково везде, иначе локально зелёное значение падает в проде.
     """
-    return frozenset(available_timezones())
+    return frozenset(available_timezones()) - _NOT_USER_ZONES
+
+
+@lru_cache(maxsize=1)
+def sorted_timezones() -> tuple[str, ...]:
+    """Тот же набор в устойчивом порядке — тело `GET /users/timezones`.
+
+    Сортировка на сервере, а не на клиенте: `available_timezones()` отдаёт множество, и
+    порядок обхода меняется от запуска к запуску. Без неё ответ отличался бы побайтно при
+    том же содержимом, и ETag перестал бы что-либо значить.
+
+    Группировки по смещению здесь нет намеренно: смещение зависит от даты (переходы на
+    летнее время), поэтому считать его — дело клиента, который знает, какой день показывает.
+    """
+    return tuple(sorted(known_timezones()))
+
+
+class TimezonesResponse(BaseModel):
+    """Список имён зон, которые принимает `PATCH /users/me`."""
+
+    items: list[str] = Field(description="Имена таймзон IANA, отсортированы лексикографически")
 
 
 class UserUpdateRequest(BaseModel):
@@ -106,6 +141,17 @@ class UserUpdateRequest(BaseModel):
         if name not in known_timezones():
             raise PydanticCustomError("timezone", TIMEZONE_ERROR)
         return name
+
+    @field_validator("day_boundary_hour", mode="before")
+    @classmethod
+    def _day_boundary_hour_is_not_bool(cls, value: object) -> object:
+        """`true` — не «час 1». В Python bool наследует int, и мягкий режим pydantic
+        пропускает его в поле как 1: клиент прислал бы явную ошибку, а получил «сохранено».
+        Строку `"7"` при этом принимаем — она приходит из поля формы.
+        """
+        if isinstance(value, bool):
+            raise PydanticCustomError("day_boundary_hour", DAY_BOUNDARY_HOUR_ERROR)
+        return value
 
     @field_validator("day_boundary_hour")
     @classmethod

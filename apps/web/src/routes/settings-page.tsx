@@ -18,11 +18,15 @@ import {
   withSelectedTimeZone,
 } from '@/lib/time-zones';
 import { useProfile, useUpdateProfile, type Profile, type ProfileUpdate } from '@/user/profile';
+import { useTimeZoneNames } from '@/user/time-zones';
 
 /** Пример времени должен идти сам: замерший на минуте час выглядит сломанным. */
 const CLOCK_TICK_MS = 30_000;
 
 const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
+
+/** Стабильная ссылка: литерал в теле компонента ломал бы мемоизацию списка. */
+const NO_TIME_ZONE_NAMES: readonly string[] = [];
 
 type FormValues = {
   displayName: string;
@@ -115,6 +119,7 @@ function SettingsForm({ user }: { user: Profile }) {
   const [timeZoneQuery, setTimeZoneQuery] = useState('');
   const [now, setNow] = useState<Date>(() => new Date());
   const update = useUpdateProfile();
+  const timeZones = useTimeZoneNames();
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), CLOCK_TICK_MS);
@@ -130,9 +135,18 @@ function SettingsForm({ user }: { user: Profile }) {
     }
   };
 
+  // Имена — только серверные: набор движка расходится с тем, что принимает PATCH.
+  // Пока список не пришёл (или не пришёл вовсе), в меню остаётся одна сохранённая зона —
+  // подменять её на похожую нельзя, а выдумывать соседей неоткуда.
+  const names = timeZones.data ?? NO_TIME_ZONE_NAMES;
+  const listReady = timeZones.isSuccess;
+
   // Смещения зависят от даты (переход на летнее время), но список не должен
   // перестраиваться каждую минуту вслед за часами — берётся момент открытия экрана.
-  const options = useMemo(() => buildTimeZoneOptions(new Date(), user.timezone), [user.timezone]);
+  const options = useMemo(
+    () => buildTimeZoneOptions(names, new Date(), user.timezone),
+    [names, user.timezone],
+  );
   const matches = useMemo(
     () => filterTimeZoneOptions(options, timeZoneQuery),
     [options, timeZoneQuery],
@@ -192,6 +206,7 @@ function SettingsForm({ user }: { user: Profile }) {
                   type="search"
                   value={timeZoneQuery}
                   placeholder={t.settings.timezoneSearchPlaceholder}
+                  disabled={!listReady}
                   onChange={(event) => setTimeZoneQuery(event.target.value)}
                 />
               )}
@@ -207,6 +222,7 @@ function SettingsForm({ user }: { user: Profile }) {
                 <Select
                   {...props}
                   value={values.timezone}
+                  disabled={!listReady}
                   onChange={(event) => change({ timezone: event.target.value })}
                 >
                   {groups.map((group) => (
@@ -222,7 +238,32 @@ function SettingsForm({ user }: { user: Profile }) {
               )}
             </Field>
 
-            {matches.length === 0 ? (
+            {timeZones.isPending ? (
+              <p className="text-sm text-muted-foreground" aria-live="polite">
+                {t.settings.timezoneListLoading}
+              </p>
+            ) : null}
+
+            {/* Сбой списка гасит одно поле, а не экран: имя и час остаются рабочими. */}
+            {timeZones.isError ? (
+              <div className="flex flex-col items-start gap-2">
+                <Alert variant="destructive">
+                  {t.settings.timezoneListFailed} {messageForError(timeZones.error)}
+                </Alert>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={timeZones.isFetching}
+                  onClick={() => {
+                    void timeZones.refetch();
+                  }}
+                >
+                  {t.common.retry}
+                </Button>
+              </div>
+            ) : null}
+
+            {listReady && matches.length === 0 ? (
               <p className="text-sm text-muted-foreground">{t.settings.timezoneSearchEmpty}</p>
             ) : null}
           </div>

@@ -13,6 +13,7 @@ from app.domains.users.schemas import (
     DISPLAY_NAME_MAX_LENGTH,
     UserUpdateRequest,
     known_timezones,
+    sorted_timezones,
 )
 
 
@@ -137,6 +138,59 @@ def test_known_timezones_are_present() -> None:
     assert "UTC+3" not in zones
 
 
+def test_known_timezones_hold_the_canonical_names_of_the_legacy_menu() -> None:
+    """Регресс: меню строилось из `Intl.supportedValuesOf`, и для этих стран браузер знает
+    только legacy-имена (`Asia/Calcutta`, `Europe/Kiev`), которых в tzdata образа нет.
+    Канонические имена обязаны быть на месте — иначе стране нечего предложить вообще.
+    """
+    assert {
+        "Europe/Kyiv",
+        "Asia/Kolkata",
+        "Asia/Ho_Chi_Minh",
+        "America/Argentina/Buenos_Aires",
+        "America/Nuuk",
+        "Pacific/Kanton",
+    } <= known_timezones()
+
+
+def test_machine_local_names_are_not_offered() -> None:
+    """`localtime` есть в zoneinfo образа, но зоной пользователя не является: он меняет
+    смысл вместе с машиной. `Factory` в tzdata означает «зона не настроена».
+    """
+    zones = known_timezones()
+
+    assert "localtime" not in zones
+    assert "Factory" not in zones
+
+
+# --- список для меню ---------------------------------------------------------
+
+
+def test_sorted_timezones_is_the_accepted_set_in_stable_order() -> None:
+    """Ровно то же множество, что принимает валидация, — списку меню разъезжаться не с чем.
+
+    Порядок фиксирован: `available_timezones()` отдаёт множество, и без сортировки тело
+    ответа менялось бы побайтно между запусками при том же содержимом.
+    """
+    listed = sorted_timezones()
+
+    assert set(listed) == known_timezones()
+    assert list(listed) == sorted(listed)
+    assert len(listed) == len(set(listed))
+
+
+def test_every_offered_timezone_passes_validation() -> None:
+    """Тот самый инвариант: имя из меню обязано приниматься `PATCH`.
+
+    Проверка на всём списке, а не на выборке: дыру, из-за которой `Asia/Calcutta`
+    предлагался и отвергался, выборка бы и не заметила.
+    """
+    listed = sorted_timezones()
+
+    assert len(listed) > 400
+    assert [build(timezone=name).timezone for name in listed] == list(listed)
+
+
 # --- day_boundary_hour -------------------------------------------------------
 
 
@@ -147,7 +201,19 @@ def test_day_boundary_hour_accepts_range(raw: int) -> None:
 
 @pytest.mark.parametrize(
     "raw",
-    [DAY_BOUNDARY_HOUR_MIN - 1, DAY_BOUNDARY_HOUR_MAX + 1, 100, -100, 7.5, "07:00", "", None],
+    [
+        DAY_BOUNDARY_HOUR_MIN - 1,
+        DAY_BOUNDARY_HOUR_MAX + 1,
+        100,
+        -100,
+        7.5,
+        "07:00",
+        "",
+        None,
+        # bool наследует int, и мягкий режим pydantic сохранил бы `true` как час 1.
+        True,
+        False,
+    ],
 )
 def test_day_boundary_hour_rejected(raw: object) -> None:
     field, _ = first_error({"day_boundary_hour": raw})

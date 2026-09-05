@@ -20,6 +20,7 @@ API = "/api/v1"
 ORIGIN = "http://test"
 USERS_ME = f"{API}/users/me"
 AUTH_ME = f"{API}/auth/me"
+TIMEZONES = f"{API}/users/timezones"
 
 
 @pytest.fixture
@@ -104,6 +105,24 @@ def test_only_display_name_is_nullable_in_the_schema(document: dict[str, Any]) -
     assert properties["day_boundary_hour"]["type"] == "integer"
 
 
+# --- список таймзон ----------------------------------------------------------
+
+
+def test_timezones_response_is_a_list_of_strings(document: dict[str, Any]) -> None:
+    reference = success_schema(document, TIMEZONES, "get")["$ref"].rsplit("/", 1)[-1]
+    model = document["components"]["schemas"][reference]
+
+    assert model["properties"]["items"]["type"] == "array"
+    assert model["properties"]["items"]["items"]["type"] == "string"
+
+
+def test_timezones_declares_not_modified(document: dict[str, Any]) -> None:
+    """Фронт обязан знать про 304: без объявления сгенерированный клиент считает его
+    неожиданным ответом, а маршрут отдаёт его на каждой ревалидации.
+    """
+    assert "304" in document["paths"][TIMEZONES]["get"]["responses"]
+
+
 # --- доступ ------------------------------------------------------------------
 
 
@@ -117,10 +136,35 @@ async def test_get_without_cookie_is_401(client: AsyncClient) -> None:
 
 
 async def test_patch_without_cookie_is_401(client: AsyncClient) -> None:
-    """Проверка сессии раньше разбора тела: неаутентифицированный не узнаёт даже то,
-    правильно ли он составил запрос.
+    """Валидация pydantic не доходит до неаутентифицированного: состав и правила полей
+    он по ответу не восстановит.
     """
     response = await client.patch(USERS_ME, json={"timezone": "Europe/Moscow"})
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
+async def test_broken_json_without_cookie_is_400_and_names_no_fields(client: AsyncClient) -> None:
+    """Граница гарантии из теста выше: сырое тело FastAPI читает раньше зависимостей,
+    поэтому синтаксически битый JSON даёт 400 и без сессии. Наружу при этом уходит только
+    «тело не разобрано» — ни одного имени поля.
+    """
+    response = await client.patch(
+        USERS_ME, content=b"{not json", headers={"content-type": "application/json"}
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "validation_error"
+    assert not {"timezone", "display_name", "day_boundary_hour"} & set(
+        body["error"]["details"]["fields"]
+    )
+
+
+async def test_timezones_without_cookie_is_401(client: AsyncClient) -> None:
+    """Список — часть ресурса профиля и живёт под сессией, как весь `/users`."""
+    response = await client.get(TIMEZONES)
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthorized"

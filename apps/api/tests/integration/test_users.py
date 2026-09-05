@@ -22,7 +22,7 @@ from testcontainers.community.redis import RedisContainer
 from alembic import command
 from app.core.db import get_engine
 from app.core.redis import get_redis
-from app.domains.users.schemas import DISPLAY_NAME_MAX_LENGTH
+from app.domains.users.schemas import DISPLAY_NAME_MAX_LENGTH, sorted_timezones
 
 pytestmark = pytest.mark.integration
 
@@ -36,6 +36,7 @@ OTHER_EMAIL = "other@example.test"
 
 USERS_ME = f"{API}/users/me"
 AUTH_ME = f"{API}/auth/me"
+TIMEZONES = f"{API}/users/timezones"
 
 # Значения по умолчанию из SPEC.md 3.1 — тест обязан краснеть, если они разошлись с БД.
 DEFAULT_TIMEZONE = "Europe/Moscow"
@@ -304,6 +305,80 @@ async def test_unknown_field_is_400(client: AsyncClient) -> None:
 
     assert response.status_code == 400
     assert await row(EMAIL) == (None, DEFAULT_TIMEZONE, DEFAULT_DAY_BOUNDARY_HOUR)
+
+
+async def test_boolean_day_boundary_hour_is_400(client: AsyncClient) -> None:
+    """`true` — ошибка клиента, а не час 1: bool наследует int, и без явного отказа
+    мягкий режим pydantic сохранил бы его молча.
+    """
+    response = await patch(client, {"day_boundary_hour": True})
+
+    assert response.status_code == 400
+    assert "body.day_boundary_hour" in fields(response)
+    assert await row(EMAIL) == (None, DEFAULT_TIMEZONE, DEFAULT_DAY_BOUNDARY_HOUR)
+
+
+# --- список таймзон ----------------------------------------------------------
+
+
+async def test_timezones_are_sorted_and_carry_the_canonical_names(client: AsyncClient) -> None:
+    """Регресс: меню строилось из `Intl.supportedValuesOf`, где для Украины, Индии и
+    Вьетнама есть только legacy-имена, а в tzdata образа — только канонические.
+    """
+    response = await client.get(TIMEZONES)
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert items == sorted(items)
+    assert {"Europe/Kyiv", "Asia/Kolkata", "Asia/Ho_Chi_Minh", "Europe/Moscow"} <= set(items)
+    assert "localtime" not in items
+
+
+async def test_every_offered_timezone_is_accepted_by_patch(client: AsyncClient) -> None:
+    """Инвариант, который пропустил major: имя из выдачи маршрута обязано сохраняться.
+
+    Проходится весь список, а не выборка: сломанными были 18 имён из четырёхсот, и любая
+    выборка прошла бы мимо. Сверяется ответ `PATCH` — значит, имя прошло и валидацию, и
+    запись, а не просто не упало.
+    """
+    items = (await client.get(TIMEZONES)).json()["items"]
+    assert len(items) > 400
+
+    rejected = []
+    for name in items:
+        response = await patch(client, {"timezone": name})
+        if response.status_code != 200 or response.json()["timezone"] != name:
+            rejected.append((name, response.status_code))
+
+    assert rejected == []
+    assert (await row(EMAIL))[1] == items[-1]
+
+
+async def test_timezones_revalidation_is_cheap(client: AsyncClient) -> None:
+    """Список большой и меняется только с образом: клиент держит его до смены ETag.
+
+    `no-cache` вместо `max-age`: устаревшее меню предложило бы имя, которое сервер уже
+    не принимает, — ровно та поломка, ради которой маршрут появился.
+    """
+    first = await client.get(TIMEZONES)
+
+    assert first.headers["cache-control"] == "private, no-cache"
+    etag = first.headers["etag"]
+    assert etag.startswith('"')
+
+    second = await client.get(TIMEZONES, headers={"if-none-match": etag})
+
+    assert second.status_code == 304
+    assert second.content == b""
+    assert second.headers["etag"] == etag
+    assert (await client.get(TIMEZONES, headers={"if-none-match": '"stale"'})).status_code == 200
+
+
+async def test_timezones_body_matches_the_validated_set(client: AsyncClient) -> None:
+    """Маршрут и валидация читают один набор — разъехаться им негде."""
+    response = await client.get(TIMEZONES)
+
+    assert response.json()["items"] == list(sorted_timezones())
 
 
 # --- границы владельца -------------------------------------------------------
