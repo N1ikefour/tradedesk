@@ -72,6 +72,9 @@ class TradingAccount(Base):
     server_utc_offset_minutes: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(Text, server_default=text("'pending'"))
     status_message: Mapped[str | None] = mapped_column(Text)
+    # Просьба пользователя на внеочередной синк (SPEC.md 5.2). Коллектор читает её через
+    # assignments (5.6) и сравнивает с последним синком (8.2); API её только ставит.
+    sync_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     collector_id: Mapped[str | None] = mapped_column(Text)

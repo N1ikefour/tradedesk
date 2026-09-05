@@ -1,6 +1,6 @@
 # SPEC — техническая спецификация v1 (этапы 0–2 и веха «Первый тест»)
 
-Версия 1.9 — 5 сентября 2026 (v1.1: guard тестовой БД в DoD S0‑02, оговорка про инструментальные зависимости в 2.3; v1.2: домен `mail` в 2.1; v1.3: формат блобов credentials и `key_version` как отпечаток ключа, ADR‑0003; v1.4: инфраструктурные переменные окружения в 11.2; v1.5: словарь кодов ошибок в 5.1 приведён к реальности, ADR‑0004; v1.5.1: уточнено, что 415 фреймворк не порождает; v1.6: `GET /users/timezones` в 5.7 и требование серверного списка зон; v1.7: дистрибуция zip-архивом с релиза вместо `git clone`, `update` в 11.3 переписан, ADR-0005; v1.8: исправлен `time_msc` в примере 5.3 — расходился с `time_server` на год, найдено сверкой в `S1-01`; v1.9: `jsonschema` в 2.3 как dev/test-зависимость — опубликованный `ingest-deals.schema.json` читают валидаторы вне Python, и проверять его метасхемой обходом словаря нельзя). Дополняет `PLAN.md`. Написана для разработки с AI‑агентами: каждый раздел самодостаточен, решения зафиксированы, неопределённости вынесены в раздел 14.
+Версия 1.10 — 5 сентября 2026 (v1.1: guard тестовой БД в DoD S0‑02, оговорка про инструментальные зависимости в 2.3; v1.2: домен `mail` в 2.1; v1.3: формат блобов credentials и `key_version` как отпечаток ключа, ADR‑0003; v1.4: инфраструктурные переменные окружения в 11.2; v1.5: словарь кодов ошибок в 5.1 приведён к реальности, ADR‑0004; v1.5.1: уточнено, что 415 фреймворк не порождает; v1.6: `GET /users/timezones` в 5.7 и требование серверного списка зон; v1.7: дистрибуция zip-архивом с релиза вместо `git clone`, `update` в 11.3 переписан, ADR-0005; v1.8: исправлен `time_msc` в примере 5.3 — расходился с `time_server` на год, найдено сверкой в `S1-01`; v1.9: `jsonschema` в 2.3 как dev/test-зависимость — опубликованный `ingest-deals.schema.json` читают валидаторы вне Python, и проверять его метасхемой обходом словаря нельзя; v1.10: `sync_requested_at` добавлен в DDL 3.2 — его требовали 5.2, 5.6 и 8.2, а в схеме колонки не было; `broker` добавлен в изменяемые поля `PATCH /accounts/{id}` в 5.2). Дополняет `PLAN.md`. Написана для разработки с AI‑агентами: каждый раздел самодостаточен, решения зафиксированы, неопределённости вынесены в раздел 14.
 
 Рабочее название продукта: **TradeDesk** (переименовать одной заменой — используется только в UI‑строках и `APP_NAME`).
 
@@ -179,6 +179,7 @@ trading_accounts (
   status text not null default 'pending'
          check (status in ('pending','connected','needs_attention','paused','archived')),
   status_message text,                        -- человекочитаемая причина needs_attention
+  sync_requested_at timestamptz,              -- ставит POST /accounts/{id}/sync-now (5.2); коллектор читает через assignments (5.6) и сравнивает с последним синком (8.2)
   last_sync_at timestamptz,
   last_heartbeat_at timestamptz,
   collector_id text,                          -- какой коллектор обслуживает
@@ -394,7 +395,7 @@ CSRF: SPA и API на одном origin (через прокси), `SameSite=Lax
 |---|---|---|
 | GET | `/accounts` | Список счетов пользователя с статусом, `last_sync_at`, `last_heartbeat_at`, счётчиком позиций |
 | POST | `/accounts` | Создать. Тело: `{label, is_demo, color, platform, broker?, server?, login?, password?}`. Для `mt5` обязательны `server, login, password`. Пароль сразу шифруется, в ответе отсутствует. Статус `pending` |
-| PATCH | `/accounts/{id}` | `label, is_demo, color, sort_order`; для mt5 — `server, login, password` (пересоздаёт credentials, статус → `pending`) |
+| PATCH | `/accounts/{id}` | `label, is_demo, color, sort_order, broker` (явный `null` очищает брокера); для mt5 — `server, login, password` (пересоздаёт credentials, статус → `pending`) |
 | POST | `/accounts/{id}/pause` / `/resume` | `paused` ↔ `pending` |
 | POST | `/accounts/{id}/archive` | Скрывает из переключателя; credentials удаляются; сделки остаются |
 | DELETE | `/accounts/{id}` | Полное удаление со всеми deals/positions (подтверждение на фронте по имени счёта) |

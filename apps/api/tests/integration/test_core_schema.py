@@ -197,6 +197,7 @@ EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
         "server_utc_offset_minutes": "int4 null",
         "status": "text not null",
         "status_message": "text null",
+        "sync_requested_at": "timestamptz null",
         "last_sync_at": "timestamptz null",
         "last_heartbeat_at": "timestamptz null",
         "collector_id": "text null",

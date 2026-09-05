@@ -45,9 +45,24 @@ EXPECTED_GLOBAL_CODES: dict[int, set[str]] = {
 }
 
 # Доменные коды — поверх общего набора, на своих маршрутах (ADR-0004).
+_ACCOUNT = f"{API}/accounts/{{account_id}}"
+
 EXPECTED_DOMAIN_CODES: dict[tuple[str, str, int], set[str]] = {
     (f"{API}/auth/verify", "post", 422): {"invalid_code", "too_many_attempts"},
     (f"{API}/auth/request-code", "post", 429): {"rate_limited"},
+    (f"{API}/accounts", "post", 409): {"account_already_exists"},
+    (_ACCOUNT, "patch", 404): {"account_not_found"},
+    (_ACCOUNT, "patch", 409): {"account_already_exists"},
+    (_ACCOUNT, "patch", 422): {"account_archived", "not_mt5_account"},
+    (_ACCOUNT, "delete", 404): {"account_not_found"},
+    (f"{_ACCOUNT}/pause", "post", 404): {"account_not_found"},
+    (f"{_ACCOUNT}/pause", "post", 422): {"account_archived"},
+    (f"{_ACCOUNT}/resume", "post", 404): {"account_not_found"},
+    (f"{_ACCOUNT}/resume", "post", 422): {"account_archived"},
+    (f"{_ACCOUNT}/archive", "post", 404): {"account_not_found"},
+    (f"{_ACCOUNT}/sync-now", "post", 404): {"account_not_found"},
+    (f"{_ACCOUNT}/sync-now", "post", 422): {"account_archived", "account_paused"},
+    (f"{_ACCOUNT}/sync-runs", "get", 404): {"account_not_found"},
 }
 
 
@@ -162,21 +177,65 @@ def assert_error_shape(declared: dict[str, Any], where: str) -> None:
     assert error["additionalProperties"] is False, f"{where}: error открыт"
 
 
+_CODES_ELIDED = "<список кодов сверяется отдельно>"
+
+
+def _without_its_codes(declared: dict[str, Any]) -> dict[str, Any]:
+    """Объявление с вырезанным списком кодов — всё остальное сравнимо с общим напрямую.
+
+    Список кодов — единственное, чем доменное объявление вправе отличаться (ADR-0004).
+    Он же дословно попадает в текст описания, поэтому вырезается в обоих местах, иначе
+    описание тянуло бы за собой ту же разницу и сверять было бы нечего.
+
+    Заменяется меткой, а не удаляется: удаление сделало бы неотличимыми объявления,
+    у которых `enum` разный, но одинаково вырезан. Объявление совсем без `enum` при этом
+    падает раньше — на `_code_enum` в ветке описания, `KeyError`, а не ассертом; это
+    защита, но не та, ради которой выбрана замена. Состав кодов сверяет
+    `test_declared_codes_match_the_dictionary_exactly` — здесь он намеренно не проверяется.
+    """
+    elided = deepcopy(declared)
+    schema = elided["content"][JSON_MEDIA_TYPE]["schema"]
+    schema["properties"]["error"]["properties"]["code"]["enum"] = _CODES_ELIDED
+    if "description" in elided:
+        listed = ", ".join(sorted(_code_enum(declared)))
+        elided["description"] = elided["description"].replace(f"({listed})", _CODES_ELIDED)
+    return elided
+
+
 def assert_declaration_is_global(document: dict[str, Any], status_code: int) -> dict[str, Any]:
     """Объявление статуса, общее для всех операций; заодно проверяет, что оно одно.
 
     Нужно для 404 и 405: их производит роутер до операции, и «своей» операции у такого
     ответа нет — сверять его можно только с общим объявлением.
+
+    Операция, добавившая к этому статусу собственный код (ADR-0004), из сверки **не
+    выпадает**: у неё сверяется всё, кроме самого списка кодов, — `details`, описание,
+    форма конверта. Выбрасывать её целиком нельзя: доменный код на 400 или 500 тогда
+    молча уводил бы операцию из-под проверки `VALIDATION_DETAILS` и `EMPTY_DETAILS`,
+    то есть из-под «наружу только код», ради которого объявление и закрыто.
+
+    Возвращается объявление операции без доменных кодов: его `enum` — общий, и именно
+    по нему сверяются тела, которые роутер отдаёт вне какой-либо операции. Что доменное
+    объявление — надмножество общего, проверяет
+    `test_domain_codes_declared_on_their_endpoints`.
     """
-    declarations = [
-        _declared(document, path, method, status_code) for path, method, _ in _operations(document)
-    ]
-    assert declarations, "в схеме нет ни одной операции"
-    assert all(item == declarations[0] for item in declarations), (
-        f"объявление {status_code} различается по операциям"
-    )
-    assert_error_shape(declarations[0], f"общее объявление {status_code}")
-    return declarations[0]
+    plain: list[dict[str, Any]] = []
+    elided: list[tuple[str, str, dict[str, Any]]] = []
+    for path, method, _ in _operations(document):
+        declared = _declared(document, path, method, status_code)
+        elided.append((path, method, _without_its_codes(declared)))
+        if not EXPECTED_DOMAIN_CODES.get((path, method, status_code)):
+            plain.append(declared)
+
+    assert plain, "в схеме нет ни одной операции без доменных кодов на этом статусе"
+    reference = _without_its_codes(plain[0])
+    for path, method, item in elided:
+        assert item == reference, (
+            f"{method.upper()} {path}: объявление {status_code} расходится с общим "
+            f"не только списком кодов"
+        )
+    assert_error_shape(plain[0], f"общее объявление {status_code}")
+    return plain[0]
 
 
 async def test_validation_error_matches_its_declaration(
