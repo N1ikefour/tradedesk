@@ -179,6 +179,7 @@ trading_accounts (
   status text not null default 'pending'
          check (status in ('pending','connected','needs_attention','paused','archived')),
   status_message text,                        -- человекочитаемая причина needs_attention
+  sync_requested_at timestamptz,              -- ставит POST /accounts/{id}/sync-now (5.2); коллектор читает через assignments (5.6) и сравнивает с последним синком (8.2)
   last_sync_at timestamptz,
   last_heartbeat_at timestamptz,
   collector_id text,                          -- какой коллектор обслуживает
@@ -394,7 +395,7 @@ CSRF: SPA и API на одном origin (через прокси), `SameSite=Lax
 |---|---|---|
 | GET | `/accounts` | Список счетов пользователя с статусом, `last_sync_at`, `last_heartbeat_at`, счётчиком позиций |
 | POST | `/accounts` | Создать. Тело: `{label, is_demo, color, platform, broker?, server?, login?, password?}`. Для `mt5` обязательны `server, login, password`. Пароль сразу шифруется, в ответе отсутствует. Статус `pending` |
-| PATCH | `/accounts/{id}` | `label, is_demo, color, sort_order`; для mt5 — `server, login, password` (пересоздаёт credentials, статус → `pending`) |
+| PATCH | `/accounts/{id}` | `label, is_demo, color, sort_order, broker` (явный `null` очищает брокера); для mt5 — `server, login, password` (пересоздаёт credentials, статус → `pending`) |
 | POST | `/accounts/{id}/pause` / `/resume` | `paused` ↔ `pending` |
 | POST | `/accounts/{id}/archive` | Скрывает из переключателя; credentials удаляются; сделки остаются |
 | DELETE | `/accounts/{id}` | Полное удаление со всеми deals/positions (подтверждение на фронте по имени счёта) |

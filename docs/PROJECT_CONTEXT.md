@@ -26,8 +26,8 @@ Updated: 2026-09-05
 
 | Компонент | Что реально есть |
 |---|---|
-| `apps/api` | FastAPI за префиксом `/api/v1`. Эндпоинты: `/health`, `/version`; `/auth/request-code`, `/auth/verify`, `/auth/logout`, `/auth/me`; `/users/me` (GET, PATCH), `/users/timezones`; `/dev/outbox` — есть везде, кроме `APP_ENV=prod`, где маршрут не регистрируется и не попадает в OpenAPI. `app/core`: config, db, redis, structlog со скрабом секретов, формат ошибок, UUID v7, rate-limit, envelope-шифрование и ротация ключа |
-| Схема БД | 14 таблиц, две ревизии Alembic: `b07a46275bbc` — 13 таблиц ядра, `8f4c1d90ae27` — `dev_outbox` и индексы. ER-диаграмма и разбор «что молча ломает» — `docs/ARCHITECTURE.md` |
+| `apps/api` | FastAPI за префиксом `/api/v1`. Эндпоинты: `/health`, `/version`; `/auth/request-code`, `/auth/verify`, `/auth/logout`, `/auth/me`; `/users/me` (GET, PATCH), `/users/timezones`; `/accounts` (GET, POST), `/accounts/{id}` (PATCH, DELETE) и его `pause`/`resume`/`archive`/`sync-now`/`sync-runs`; `/dev/outbox` — есть везде, кроме `APP_ENV=prod`, где маршрут не регистрируется и не попадает в OpenAPI. `app/core`: config, db, redis, structlog со скрабом секретов, формат ошибок, UUID v7, rate-limit, envelope-шифрование и ротация ключа |
+| Схема БД | 14 таблиц, три ревизии Alembic: `b07a46275bbc` — 13 таблиц ядра, `8f4c1d90ae27` — `dev_outbox` и индексы, `c3a91f4d27be` — `sync_requested_at` у счетов. ER-диаграмма и разбор «что молча ломает» — `docs/ARCHITECTURE.md` |
 | `apps/web` | React 19 + TS strict: роутер (`src/routes/routes.tsx`), экран входа, настройки профиля, тёмная тема, TanStack Query, `openapi-fetch` и сгенерированный `src/api/schema.d.ts`. Дашборд, Журнал, Календарь, Счета — `stub-pages.tsx` |
 | `apps/collector-mt5` | **кода нет**: пакет-заглушка `collector/__init__.py` + `collector.env.example`. Забор сделок — `S1-08`, установка на Windows — `S1-10` |
 | Локальный запуск | `docker-compose.yml`: postgres 16, redis 7, api, web (профиль `local`); web-static + Caddy (профиль `prod`). `make init` / `make up` / `make down` работают |
@@ -42,7 +42,7 @@ Updated: 2026-09-05
 - Сервиса `worker` (arq) в compose нет — фоновые задачи не заведены (решение `S0-04`, комментарий в шапке `docker-compose.yml`).
 - Сервиса `minio` в compose нет — S3-хранилищем до вложений (`S2-04`) никто не пользуется.
 - Домена `analytics` в `apps/api/app/domains` нет — он приходит с `S2-05`.
-- У доменов `journal` и `accounts` пока только `models.py`: таблицы есть, кода и роутеров нет. У `ingest` с `S1-01` есть ещё контракт батча — `schemas.py` (pydantic-модели тела `POST /ingest/deals`) и `schema_export.py`, который собирает из них `packages/shared-schemas/ingest-deals.schema.json`. Нормализатора (`S1-02`), сборщика позиций (`S1-03`) и роутера (`S1-04`) нет.
+- У домена `journal` пока только `models.py`: таблицы есть, кода и роутеров нет. У `ingest` с `S1-01` есть контракт батча — `schemas.py` (pydantic-модели тела `POST /ingest/deals`) и `schema_export.py`, который собирает из них `packages/shared-schemas/ingest-deals.schema.json`. Нормализатора (`S1-02`), сборщика позиций (`S1-03`) и роутера (`S1-04`) нет.
 - E2E-смоук (`make smoke`) в `make ci` не входит: браузеры Playwright ставятся отдельной командой.
 
 **Статусы задач и открытый бэклог дефектов (`X-NN`) — `docs/tickets/BOARD.md`.** Формулировки и DoD — `SPEC.md` §12.

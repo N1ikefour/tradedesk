@@ -45,9 +45,24 @@ EXPECTED_GLOBAL_CODES: dict[int, set[str]] = {
 }
 
 # Доменные коды — поверх общего набора, на своих маршрутах (ADR-0004).
+_ACCOUNT = f"{API}/accounts/{{account_id}}"
+
 EXPECTED_DOMAIN_CODES: dict[tuple[str, str, int], set[str]] = {
     (f"{API}/auth/verify", "post", 422): {"invalid_code", "too_many_attempts"},
     (f"{API}/auth/request-code", "post", 429): {"rate_limited"},
+    (f"{API}/accounts", "post", 409): {"account_already_exists"},
+    (_ACCOUNT, "patch", 404): {"account_not_found"},
+    (_ACCOUNT, "patch", 409): {"account_already_exists"},
+    (_ACCOUNT, "patch", 422): {"account_archived", "not_mt5_account"},
+    (_ACCOUNT, "delete", 404): {"account_not_found"},
+    (f"{_ACCOUNT}/pause", "post", 404): {"account_not_found"},
+    (f"{_ACCOUNT}/pause", "post", 422): {"account_archived"},
+    (f"{_ACCOUNT}/resume", "post", 404): {"account_not_found"},
+    (f"{_ACCOUNT}/resume", "post", 422): {"account_archived"},
+    (f"{_ACCOUNT}/archive", "post", 404): {"account_not_found"},
+    (f"{_ACCOUNT}/sync-now", "post", 404): {"account_not_found"},
+    (f"{_ACCOUNT}/sync-now", "post", 422): {"account_archived", "account_paused"},
+    (f"{_ACCOUNT}/sync-runs", "get", 404): {"account_not_found"},
 }
 
 
@@ -167,11 +182,23 @@ def assert_declaration_is_global(document: dict[str, Any], status_code: int) -> 
 
     Нужно для 404 и 405: их производит роутер до операции, и «своей» операции у такого
     ответа нет — сверять его можно только с общим объявлением.
+
+    Операции, добавившие к этому статусу собственный код (ADR-0004), из сверки исключены:
+    у `/accounts/{id}` 404 несёт ещё и `account_not_found`, и требовать от неё побайтного
+    совпадения с общим объявлением значило бы запретить доменные коды вовсе.
+
+    Исключение решает `EXPECTED_DOMAIN_CODES` — таблица самого теста, а не схема. Поэтому
+    расхождение в схеме не может вывести операцию из-под проверки: код, появившийся на
+    маршруте помимо таблицы, оставляет операцию в сверке и роняет её. Что доменное
+    объявление — надмножество общего, проверяет
+    `test_domain_codes_declared_on_their_endpoints`.
     """
     declarations = [
-        _declared(document, path, method, status_code) for path, method, _ in _operations(document)
+        _declared(document, path, method, status_code)
+        for path, method, _ in _operations(document)
+        if not EXPECTED_DOMAIN_CODES.get((path, method, status_code))
     ]
-    assert declarations, "в схеме нет ни одной операции"
+    assert declarations, "в схеме нет ни одной операции без доменных кодов на этом статусе"
     assert all(item == declarations[0] for item in declarations), (
         f"объявление {status_code} различается по операциям"
     )
