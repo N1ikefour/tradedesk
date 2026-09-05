@@ -49,15 +49,17 @@ description: Клиентский код TradeDesk — apps/web. Vite, React 19,
 ## Verification
 
 ```
-npx vitest run <путь к затронутому>   # сначала узко
-make test                              # затем полностью
-make lint                              # eslint + prettier + tsc
+cd apps/web && npx vitest run <путь>   # сначала узко
+make test-web                          # затем весь vitest
+make lint-web                          # eslint + prettier --check + tsc --noEmit
+make ci                                # перед сдачей — весь гейт, как в CI
 ```
 
-- Тесты — jsdom/компонентные; API мокается обёрткой с роутингом по пути, **не порядко-зависимыми моками**.
-- Smoke — Playwright, только ключевые сценарии.
+Узкий прогон — из `apps/web`: в корне репозитория нет `package.json`, `npx vitest` оттуда не найдёт ни конфиг, ни зависимости. `make test` — это web и api сразу, `make lint` — api, collector и web; для своих файлов беру `-web`-варианты.
+
+- Тесты — jsdom/компонентные (`environment: 'jsdom'` в `apps/web/vite.config.ts`); API мокается обёрткой с роутингом по пути, **не порядко-зависимыми моками**.
+- Smoke — Playwright, только ключевые сценарии: цель `make smoke` против поднятого `make up`. В `make ci` она НЕ входит — браузеры ставятся отдельно (`cd apps/web && npx playwright install chromium`).
 - **UI-изменение проверяется в браузере.** Если браузер не запускался — пишу это явно: «в браузере не проверял».
-- Пока `Makefile` не создан (`S0-01`), запускаю инструменты напрямую и пишу в итоге, что именно запускал.
 
 ## Ask First
 

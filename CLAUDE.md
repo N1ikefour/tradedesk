@@ -27,7 +27,7 @@
 
 ## 2. Стек и границы
 
-- **Backend:** Python 3.12, FastAPI, async SQLAlchemy 2, Alembic, arq.
+- **Backend:** Python 3.12, FastAPI, async SQLAlchemy 2, Alembic, arq. `arq`, `boto3` и `pandas` разрешены `SPEC.md` §2.3, но в зависимостях их ещё нет — придут со своими задачами.
 - **Frontend:** Vite + React 19 + TypeScript, TanStack Query/Table, Tailwind, shadcn/ui.
 - **Коллектор:** Python + `MetaTrader5`, только Windows, вне Docker, синхронный код.
 - Список разрешённых зависимостей — `SPEC.md` §2.3. Новая зависимость — только с обоснованием в PR.
@@ -58,30 +58,57 @@ Skills: `.claude/skills/ingest-mt5/` — домен нормализации dea
 
 ## 4. Команды
 
-Полный список с пометками — `make help`.
+Полный список с пояснениями — `make help`, и он же источник правды: разошёлся с этим разделом — прав `make help`. Заглушек среди целей больше нет, все перечисленные работают.
 
-**Работают:**
+**Гейт перед PR:**
 
 ```
-make install   # venv + зависимости обоих python-пакетов + npm ci. Предусловие для всего остального
-make hooks     # pre-commit install
-make ci        # lint + test + build-web. ЭТО гейт перед PR
-make ci-target # тот же линт и unit-тесты, но на ЦЕЛЕВОМ Python 3.12 в контейнере
-make lint      # ruff + mypy (api, collector) + eslint + prettier + tsc (web)
-make test      # pytest
+make ci        # ВЕСЬ гейт: ci-api + ci-web. Ровно тот же состав гоняет GitHub Actions
+make ci-api    # lint-api + lint-collector + lint-hooks + test-api
+make ci-web    # lint-web + test-web + build-web
+make ci-target # ruff + mypy + unit-тесты на ЦЕЛЕВОМ Python 3.12 в контейнере
+```
+
+**Окружение разработки:**
+
+```
+make install   # .venv + зависимости обоих python-пакетов + npm ci. Предусловие для всего остального
+make hooks     # pre-commit install (после make install)
+```
+
+**Локальное окружение в Docker:**
+
+```
+make init      # .env из .env.example с генерацией секретов. Существующий .env НЕ перезаписывает
+make up        # docker compose --profile local up -d --build, ждёт готовности, печатает URL
+make down      # остановка; данные в volume остаются
+```
+
+**Проверки по отдельности:**
+
+```
+make lint      # = lint-api + lint-collector + lint-web
+make lint-api / lint-collector    # ruff check + ruff format --check + mypy
+make lint-web                     # eslint + prettier --check + tsc --noEmit
+make lint-hooks                   # pre-commit run --all-files
+make test      # = test-api (pytest) + test-web (vitest)
 make build-web # vite build
+make smoke     # playwright-смоук входа против поднятого make up. В make ci НЕ входит
 make format    # автоформат
 ```
 
-**Заглушки** — печатают, в какой задаче появятся, и падают с ненулевым кодом:
+**Схема и типы:**
 
 ```
-make init / up / down          # S0-06 (Docker Compose)
-make migrate / revision        # S0-02, S0-03 (Alembic)
-make types                     # S0-07 (openapi → schema.d.ts)
+make migrate           # alembic upgrade head в .venv (в контейнере это делает старт api)
+make revision m="…"    # новая alembic-миграция (autogenerate)
+make downgrade [to=…]  # откат на шаг назад
+make types             # openapi запущенного api → apps/web/src/api/schema.d.ts. Требует make up
 ```
 
-Коллектор: `cd apps/collector-mt5 && run-collector.bat` (Windows).
+Установка и первый запуск для человека, который репозитория не знает, — `SETUP.md`.
+
+Коллектор MT5 ещё не собран: в `apps/collector-mt5/` пока только пакет-заглушка. `run-collector.bat` и `install-service.ps1` появятся в `S1-10`.
 
 ⚠️ `make ci` включает `pre-commit run --all-files`, а часть хуков умеет править файлы (`ruff --fix`, форматтеры). Прогон гейта может изменить рабочее дерево — это не поломка, а поведение хуков.
 
@@ -106,11 +133,11 @@ make types                     # S0-07 (openapi → schema.d.ts)
 
 Обязательны для: `normalizer.py`, `position_builder.py` (фикстуры `tests/fixtures/deals`), идемпотентности `/ingest/deals`, auth‑потока, формул `analytics/metrics.py`.
 
-- Интеграционные тесты — через testcontainers (Postgres, minio). Не мокай базу там, где тестируется SQL.
+- Интеграционные тесты — через testcontainers. Сейчас поднимаются Postgres и Redis; minio добавится с вложениями в `S2-04`. Не мокай базу там, где тестируется SQL.
 - Тестовая БД защищена guard'ом: имя обязано содержать `_test`; guard кидает исключение до первого запроса.
-- Порог покрытия `ingest` и `analytics` — 90 %.
+- Порог покрытия `ingest` и `analytics` — 90 %. **Пока не измеряется:** `pytest-cov` не в зависимостях, а `domains/analytics` не существует. Порог включается вместе с этими доменами.
 - Новый код‑путь = тест. Нет теста — явное «почему нет» в итоге.
-- Перед PR: **`make ci` зелёный**. Это единственная точка правды — CI вызывает те же цели, поэтому локальный гейт и удалённый совпадают. `make lint && make test` — подмножество: они не проверяют сборку web.
+- Перед PR: **`make ci` зелёный**. Это единственная точка правды — CI вызывает те же цели, поэтому локальный гейт и удалённый совпадают. `make lint && make test` — подмножество: мимо них проходят `lint-hooks` (в том числе `detect-private-key`) и `build-web`.
 
 ---
 
@@ -126,7 +153,10 @@ make types                     # S0-07 (openapi → schema.d.ts)
 - [ ] UI‑изменения проверены в браузере (или явное «в браузере не проверял»).
 - [ ] Секреты не попали в код, логи, фикстуры, вывод команд.
 - [ ] Никаких комментариев «что сделано» в коде.
-- [ ] Дифф содержит только файлы задачи.
+- [ ] Дифф содержит только файлы задачи. **Исключение — документ, который стал неверным из-за этой задачи:** его правка законна и обязательна, см. следующий пункт. Ревьюер не считает её выходом за скоуп.
+- [ ] Если задача изменила состояние проекта — появилась команда, заработал компонент, изменилось то, что документы называют «пока не готово», — соответствующий документ поправлен **в том же PR**. Прежде всего `docs/PROJECT_CONTEXT.md` (пункт 2 read order) и §4 этого файла.
+
+⚠️ Последний пункт добавлен по итогам `S0-09`. Документы писались авансом, под будущее состояние, и никто не возвращался их править: `CLAUDE.md` называл заглушками шесть работающих целей и ссылался на несуществующий `run-collector.bat`, `README.md` утверждал «кода ещё нет» при семи влитых задачах, `PROJECT_CONTEXT.md` — «приложения пустые». Ревью диффа такое не ловит: файл не в диффе, значит его не смотрят. Ловит только этот пункт.
 
 ---
 

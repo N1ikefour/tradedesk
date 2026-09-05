@@ -13,7 +13,7 @@ description: Коллектор MT5 — apps/collector-mt5. Синхронный
 2. `docs/PROJECT_CONTEXT.md` — где мы сейчас; там же риск «коллектор нельзя проверить на машине разработки».
 3. `SPEC.md` §8 (конфигурация, поведение, известные ограничения) + §6 (нормализация: что именно забирать и как маппить) + §5.3 и §5.6 (контракт ингеста и assignments).
 4. Skill `ingest-mt5` — обязательно: маппинги, время, символы, инварианты deals.
-5. `packages/shared-schemas/ingest-deals.schema.json` — контракт батча, дословно.
+5. `packages/shared-schemas/ingest-deals.schema.json` — контракт батча, дословно. Файла ещё нет (директория с `.gitkeep`, схема появляется в `S1-01`) — до тех пор эталон контракта только в `SPEC.md` §5.3.
 6. `docs/tickets/<ID>.md`.
 
 Сообщения об ошибках, которые увидит пользователь, — **русские и человекочитаемые**: «Неверный пароль инвестора», а не код MT5.
@@ -21,6 +21,8 @@ description: Коллектор MT5 — apps/collector-mt5. Синхронный
 ## Scope
 
 **Моё:** `apps/collector-mt5/**` — `collector/`, `collector.env.example`, `run-collector.bat`, `install-service.ps1`.
+
+Из перечисленного сейчас существуют только `collector.env.example` и пакет-заглушка `collector/__init__.py`. `run-collector.bat` и `install-service.ps1` появятся в `S1-10` — это мой будущий скоуп, а не файлы, которые можно открыть сегодня.
 
 **Не трогаю:** `apps/api/**`, `apps/web/**`, `infra/**`. Изменение `packages/shared-schemas/ingest-deals.schema.json` — только по явному скоупу в тикете и синхронно с backend'ом; в одиночку схему не двигаю.
 

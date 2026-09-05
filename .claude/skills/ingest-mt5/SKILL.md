@@ -11,13 +11,15 @@ description: Use when working on anything touching MT5 deals ingestion in TradeD
 
 - `SPEC.md` §6 (нормализация: маппинги, время, символы) и §7 (сборщик позиций) — **дословно, это эталон**.
 - `SPEC.md` §3.3 (таблицы `deals`, `positions`, `open_positions`, `sync_runs`) и §5.3 (контракт `/ingest`).
-- `packages/shared-schemas/ingest-deals.schema.json` — контракт батча.
+- `packages/shared-schemas/ingest-deals.schema.json` — контракт батча (появляется в `S1-01`).
 - `docs/fixtures.md` — что описывает каждая фикстура (появляется в `S1-03`).
 - Для задач коллектора дополнительно `SPEC.md` §8.
 
 ## Own
 
 `apps/api/app/domains/ingest/**` (`normalizer.py`, `position_builder.py`, `router.py`, `schemas.py`), `apps/api/tests/fixtures/deals/**`, `packages/shared-schemas/ingest-deals.schema.json`, часть `apps/collector-mt5/collector/` в части формирования батча.
+
+**Домен ещё не написан.** Сегодня в `domains/ingest/` есть только `models.py` (таблицы ядра из `S0-03`); ни нормализатора, ни сборщика, ни роутера, ни фикстур `tests/fixtures/deals/` пока нет — они появляются на этапе 1 (`S1-01`…`S1-03`). Всё ниже — правила, по которым их писать, а не описание существующего кода.
 
 ## Domain Rules
 
@@ -57,7 +59,7 @@ description: Use when working on anything touching MT5 deals ingestion in TradeD
 - два батча с перекрытием не создают дублей `deals` и дают те же позиции, что один общий батч;
 - пользовательский слой переживает пересборку (создать рефлексию → пересобрать → рефлексия на месте).
 
-**Порядок проверок:** unit сборщика и нормализатора → интеграционный тест `/ingest/deals` с Postgres (testcontainers) → `mypy --strict` для `domains/ingest` → полный сьют. Покрытие `ingest` — 90 %.
+**Порядок проверок:** unit сборщика и нормализатора → интеграционный тест `/ingest/deals` с Postgres (testcontainers) → `mypy --strict` для `domains/ingest` → полный сьют. Покрытие `ingest` — 90 %; **пока не измеряется:** `pytest-cov` не в зависимостях, порог включается вместе с доменом.
 
 **Сверка с реальностью (`S1-12`):** Σ `net_pnl` закрытых позиций должна сходиться с Σ `profit + commission + swap + fee` по deals счёта и с отчётом терминала. Расхождение 0,00 — критерий, а не пожелание.
 

@@ -54,16 +54,18 @@ description: Серверный код TradeDesk — apps/api. FastAPI, async SQ
 Порядок: узкие тесты изменённых модулей → полный сьют → линтеры.
 
 ```
-pytest apps/api/tests/<путь к затронутому>   # сначала узко
-make test                                     # затем полностью
-make lint                                     # ruff + mypy
+cd apps/api && ../../.venv/bin/pytest tests/<путь>   # сначала узко
+make test-api                                        # затем весь pytest
+make lint-api                                        # ruff check + ruff format --check + mypy
+make ci                                              # перед сдачей — весь гейт, как в CI
 ```
 
-- `mypy --strict` обязателен для `domains/ingest` и `domains/analytics`.
-- Интеграционные тесты — через testcontainers (Postgres, minio). Базу не мокать там, где тестируется SQL.
+Узкий прогон — из `apps/api`, а не сырым `pytest` из корня: ровно это делают цели `Makefile` (`cd apps/api && pytest`), то есть узкий прогон совпадает с тем, что гоняет CI. `make test` — это api и web сразу, `make lint` — api, collector и web; для своих файлов беру `-api`-варианты.
+
+- `mypy --strict` обязателен для `domains/ingest` и `domains/analytics` (набор флагов — в `apps/api/pyproject.toml`). `domains/analytics` пока не существует; правило начнёт действовать вместе с ним.
+- Интеграционные тесты — через testcontainers. Сейчас поднимаются Postgres и Redis; minio добавится с вложениями в `S2-04`. Базу не мокать там, где тестируется SQL.
 - Тестовая БД: имя обязано содержать `_test`; guard падает до первого запроса. Если guard сработал — это находка, а не помеха.
-- Порог покрытия `ingest` и `analytics` — 90 %.
-- Пока `Makefile` не создан (`S0-01`), запускаю инструменты напрямую и **явно пишу в итоге, что именно запускал**.
+- Порог покрытия `ingest` и `analytics` — 90 %. **Пока не измеряется:** `pytest-cov` не в зависимостях, а `domains/analytics` не существует. Порог включается вместе с этими доменами.
 
 ## Ask First
 

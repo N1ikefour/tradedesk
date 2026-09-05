@@ -1,6 +1,6 @@
 ---
 name: infra
-description: Инфраструктура TradeDesk — docker-compose, Makefile, CI (GitHub Actions), линтеры и pre-commit, скрипты infra/scripts (start/stop/update/backup/restore), инструкции установки SETUP.md.
+description: Инфраструктура TradeDesk — docker-compose, Makefile, CI (GitHub Actions), линтеры и pre-commit, скрипты infra/scripts (сейчас init-env/start/stop/ci-target; update/backup/restore — задача T-02), инструкции установки SETUP.md.
 ---
 
 # Infra Agent
@@ -18,7 +18,7 @@ description: Инфраструктура TradeDesk — docker-compose, Makefile
 
 ## Scope
 
-**Моё:** `docker-compose.yml`, `Makefile`, `.env.example`, `infra/**` (Caddyfile, nginx.conf, `scripts/`), `.github/**`, конфиги линтеров и pre-commit в корне, `SETUP.md`, `README.md`.
+**Моё:** `docker-compose.yml`, `Makefile`, `.env.example`, `infra/**` (`caddy/Caddyfile`, `scripts/`), `.github/**`, конфиги линтеров и pre-commit в корне, `SETUP.md`, `README.md`. Плюс упаковка приложений: `apps/*/Dockerfile` и `apps/web/nginx.conf` (конфиг статики для профиля `prod` лежит рядом с фронтом, а не в `infra/`).
 
 **Не трогаю прикладной код:** `apps/api/app/**`, `apps/web/src/**`, `apps/collector-mt5/collector/**`. Каркас приложения при создании скелета (`S0-01`) — минимальный, чтобы CI был зелёным; наполняют его backend и frontend.
 
@@ -29,11 +29,13 @@ description: Инфраструктура TradeDesk — docker-compose, Makefile
 3. **`MASTER_KEY` после backfill не меняется и не теряется.** Любой скрипт, который его трогает, проговаривает это в выводе.
 4. **`update` снимает бэкап до миграций.** Обновление у тестировщика не имеет права потерять позиции и рефлексии. Бэкап — `pg_dump` в `backups/td-<date>.sql.gz`, хранить последние 14.
 5. **Непроверенный restore считается несуществующим.** Скрипт `restore` пишется вместе с проверкой на копии данных.
+
+   Правила 4–5 — требования к скриптам `update`, `backup` и `restore`, которых **ещё нет**: в `infra/scripts` сейчас `init-env.sh`, `start.{sh,bat}`, `stop.{sh,bat}`, `ci-target.sh`. Пишутся они в `T-02`.
 6. **Коллектор — вне Docker.** Никогда не добавлять его сервисом в compose и не собирать под Linux.
 7. **Тестовая БД защищена guard'ом:** имя обязано содержать `_test`; guard кидает исключение до первого запроса. Тесты запускаются только через скрипты проекта, не сырым раннером из корня.
 8. **Миграции применяет контейнер `api` при старте** (`alembic upgrade head`) — отдельного шага в скриптах нет (`SPEC.md` §11.1, §11.3).
 9. **Идемпотентность скриптов.** Повторный запуск `start`/`update` не ломает состояние. Скрипты есть в двух вариантах: `.bat` для Windows-тестировщика и `.sh` — оба реально нужны.
-10. **CI гоняет то же, что и человек:** `lint + test` для api, `lint + build` для web. Расхождение локальных команд и CI — баг инфраструктуры.
+10. **CI гоняет то же, что и человек:** два джоба зовут `make ci-api` (`lint-api + lint-collector + lint-hooks + test-api`) и `make ci-web` (`lint-web + test-web + build-web`), а `make ci` = оба. Никаких «CI-only» шагов мимо `Makefile`: расхождение локальных команд и CI — баг инфраструктуры.
 
 ## Workflow
 
@@ -46,8 +48,8 @@ description: Инфраструктура TradeDesk — docker-compose, Makefile
 ## Verification
 
 - `docker compose config` — валидность до подъёма.
-- `make init && make up` на чистом состоянии → сервисы поднялись, `/health` отвечает.
-- `make lint && make test` — те же команды, что в CI.
+- `make init && make up` на чистом состоянии → сервисы поднялись, `/api/v1/health` отвечает.
+- `make ci` — весь гейт, ровно тот состав, что гоняет GitHub Actions. `make lint && make test` — подмножество: мимо него проходят `lint-hooks` и `build-web`.
 - Скрипты бэкапа и восстановления проверяются на данных, а не на пустой базе: `backup` → изменить данные → `restore` → сверить счётчики.
 - После проверки — `make down`, состояние машины возвращено.
 

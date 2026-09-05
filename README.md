@@ -8,22 +8,35 @@
 
 ## Статус
 
-**Этап 0 «Фундамент», кода ещё нет.** В репозитории документы и каркас процесса разработки. Запускать пока нечего — локальное окружение собирается в задачах `S0-01` и `S0-06`.
+**Этап 0 «Фундамент».** Приложение поднимается локально одной командой, в него можно войти и открыть настройки. Продуктовых экранов пока нет — за пунктами меню заглушки.
 
-Где мы сейчас — `docs/PROJECT_CONTEXT.md`. Доска задач — `docs/tickets/BOARD.md`.
+| Компонент | Что есть |
+|---|---|
+| `apps/api` | FastAPI: `/health`, `/version`, вход по коду, профиль пользователя, шифрование паролей счетов и ротация ключа. Схема БД — 14 таблиц двумя ревизиями |
+| `apps/web` | React 19 + TypeScript: роутер, экран входа, настройки, тёмная тема, типы из OpenAPI. Дашборд, Журнал, Календарь, Счета — заглушки |
+| `apps/collector-mt5` | **кода нет**, пакет-заглушка. Забор сделок из терминала — `S1-08`, установка на Windows — `S1-10` |
+| Локальный запуск | Docker Compose: postgres, redis, api, web. `make init` / `make up` / `make down` |
+| CI | GitHub Actions гоняет ровно те же цели, что `make ci` локально |
+| Прод | **не существует**, сервера нет — `docs/SERVER_STATE.md` |
+
+Синхронизации с MetaTrader 5 нет ни в каком виде: сделкам сейчас взяться неоткуда.
+
+Задачи и их статусы — `docs/tickets/BOARD.md`. Где мы сейчас и актуальные риски — `docs/PROJECT_CONTEXT.md`.
 
 ---
 
-## Как запустить (появится после S0-06)
+## Запустить у себя
 
 ```bash
-make init     # .env с сгенерированными секретами
-make up       # docker compose --profile local up -d
+make init   # .env из .env.example с генерацией секретов
+make up     # поднять всё в Docker
 ```
 
-Затем `http://localhost:5173`, вход по коду из `/dev/outbox`.
+Дальше — `http://localhost:5173`.
 
-Коллектор MT5 ставится отдельно на Windows-машину — инструкция `SETUP.md` (задача `S0-09`).
+Пошагово, с требованиями к машине, первым входом и разбором случая «порт занят», — **`SETUP.md`**. Полный список команд с пояснениями — `make help`, и он же источник правды по командам.
+
+Править код — `docs/DEVELOPMENT.md`.
 
 ---
 
@@ -31,19 +44,26 @@ make up       # docker compose --profile local up -d
 
 | Файл | Что это |
 |---|---|
+| `SETUP.md` | установка и первый запуск — для того, кто репозитория не знает |
+| `docs/DEVELOPMENT.md` | локальная разработка: инструменты, линтеры, тесты, отладка |
 | `PLAN.md` | этапы разработки и продуктовые решения |
 | `SPEC.md` | техническая спецификация v1; **бэклог задач — §12** |
 | `CLAUDE.md` | манифест проекта для AI-ассистентов: стек, конвенции, DoD, ask-first |
 | `DEVELOPER_MANUAL.md` | как мы работаем: процесс, роли, ревью, релизы |
 | `docs/PROJECT_CONTEXT.md` | живая точка входа: где мы сейчас, риски |
 | `docs/WORKFLOW.md` | тикеты, ветки, worktree, PR в этом репозитории |
-| `docs/ARCHITECTURE.md` | as-built (пока пусто — кода нет) |
-| `docs/DEVELOPMENT.md` | локальная разработка |
+| `docs/tickets/BOARD.md` | доска задач |
+| `docs/ARCHITECTURE.md` | as-built: что реально построено, ER-диаграмма схемы БД |
+| `docs/PRODUCTION_DEPLOY.md` | вынос на сервер, когда он появится |
+| `docs/SERVER_STATE.md` | состояние прода (сейчас: прода нет) |
 | `docs/adr/` | архитектурные решения |
 
 ---
 
 ## Стек
 
-Python 3.12 · FastAPI · PostgreSQL 16 · Redis + arq · React 19 + TypeScript · Tailwind + shadcn/ui · Docker Compose.
+Python 3.12 · FastAPI · async SQLAlchemy 2 · Alembic · PostgreSQL 16 · Redis 7 · React 19 + TypeScript · Vite · TanStack Query · Tailwind + shadcn/ui · Docker Compose.
+
 Коллектор — Python + библиотека `MetaTrader5`, только Windows, вне Docker.
+
+Из разрешённого списка `SPEC.md` §2.3 ещё не подключены `arq` (фоновые задачи), S3-хранилище и `pandas` — каждый придёт со своей задачей.
