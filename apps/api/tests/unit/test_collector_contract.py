@@ -8,9 +8,11 @@
 Второе — дверь перед ним. Ответы на отсутствующий и на неверный токен обязаны быть
 неразличимы, иначе подбирающий узнаёт, что форма `Bearer …` принята.
 
-Третье — пароль не печатается **ни одним** объектом на этом пути. Их два: `Assignment`
-собирает сервис, `AssignmentResponse` — роутер, и оба попадают в кадры стека. Защита на
-одном из двух ничем не ловится, поэтому проверяются они разом.
+Третье — пароль не печатается **ни одним** объектом на этом пути. Их три: `Assignment`
+собирает сервис, `AssignmentResponse` — роутер, `AssignmentListResponse` — конверт вокруг
+него, и все три попадают в кадры стека. У конверта защита производная: его `repr` собран
+из `repr` элементов и держится, пока держится защита внутри. Производная защита проверяется
+наравне с собственной — иначе асимметрия на одном из трёх объектов ничем не ловится.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from httpx import ASGITransport, AsyncClient, Response
 
 from app.core.openapi import JSON_MEDIA_TYPE
 from app.domains.accounts.models import TradingAccount
-from app.domains.collector.schemas import AssignmentResponse
+from app.domains.collector.schemas import AssignmentListResponse, AssignmentResponse
 from app.domains.collector.service import Assignment
 
 API = "/api/v1"
@@ -186,44 +188,52 @@ def _transient_account() -> TradingAccount:
     )
 
 
-def _both_objects_on_the_path() -> list[tuple[str, object]]:
-    """Оба объекта, через которые проходит расшифрованный пароль, — из одного счёта."""
+def _objects_on_the_path() -> list[tuple[str, object]]:
+    """Все объекты, через которые проходит расшифрованный пароль, — из одного счёта."""
     account = _transient_account()
+    issued = AssignmentResponse.issued(account, REPR_PROBE_PASSWORD)
     return [
         ("Assignment", Assignment(account=account, password=REPR_PROBE_PASSWORD)),
-        ("AssignmentResponse", AssignmentResponse.issued(account, REPR_PROBE_PASSWORD)),
+        ("AssignmentResponse", issued),
+        ("AssignmentListResponse", AssignmentListResponse(items=[issued])),
     ]
 
 
 @pytest.mark.parametrize(
     "subject",
-    [pytest.param(subject, id=name) for name, subject in _both_objects_on_the_path()],
+    [pytest.param(subject, id=name) for name, subject in _objects_on_the_path()],
 )
-def test_neither_object_prints_the_password(subject: object) -> None:
+def test_no_object_on_the_path_prints_the_password(subject: object) -> None:
     """`repr` кадра стека — путь, по которому пароль уходит в лог и в Sentry.
 
     `scrub_unserializable` вырезает только **известные** секреты, а пароль счёта зашифрован
     и подстроки для скраба взять неоткуда (`CLAUDE.md` §5). Значит защита стоит на самих
-    объектах — и обязана стоять на обоих: асимметрия ничем другим не ловится.
+    объектах — и обязана стоять на каждом: асимметрия ничем другим не ловится.
+
+    Конверт здесь наравне с элементом намеренно. Своей защиты у него нет — `repr` списка
+    собирается из `repr` элементов, — и ровно поэтому она молча исчезает вместе с чужой.
     """
     assert REPR_PROBE_PASSWORD not in repr(subject)
     assert REPR_PROBE_PASSWORD not in str(subject)
 
 
-def test_password_still_travels_inside_both_objects() -> None:
+def test_password_still_travels_inside_every_object() -> None:
     """Обратная половина: спрятать поле из `repr` — не то же, что убрать его из ответа.
 
     Без этой проверки «починка» вида `exclude=True` оставила бы тест выше зелёным и
     отправила бы коллектору задание без пароля.
     """
-    by_name = dict(_both_objects_on_the_path())
+    by_name = dict(_objects_on_the_path())
     assignment = by_name["Assignment"]
     response = by_name["AssignmentResponse"]
+    envelope = by_name["AssignmentListResponse"]
 
     assert isinstance(assignment, Assignment)
     assert isinstance(response, AssignmentResponse)
+    assert isinstance(envelope, AssignmentListResponse)
     assert assignment.password == REPR_PROBE_PASSWORD
     assert response.model_dump()["password"] == REPR_PROBE_PASSWORD
+    assert envelope.model_dump()["items"][0]["password"] == REPR_PROBE_PASSWORD
 
 
 # --- дверь перед ним ---------------------------------------------------------

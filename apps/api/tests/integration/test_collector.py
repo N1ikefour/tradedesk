@@ -20,6 +20,7 @@ import re
 from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import Any
 from uuid import UUID
 
@@ -28,6 +29,7 @@ from alembic.config import Config
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.redis import RedisContainer
 
@@ -284,6 +286,48 @@ async def run_check_collectors(now: datetime | None = None) -> list[UUID]:
         return await accounts.check_collectors(session, now=now)
 
 
+# Ожидание блокировки строки видно в `pg_locks`: замок запрошен, но ещё не выдан.
+# `pg_stat_activity` для этого не годится — внутри открытой транзакции он отдаёт снимок,
+# сделанный один раз, и опрос в цикле возвращал бы одно и то же значение.
+_LOCK_WAITERS = text(
+    "select distinct pid from pg_locks where not granted and pid in (:first, :second)"
+)
+
+LOCK_WAIT_TIMEOUT_SECONDS = 15.0
+LOCK_WAIT_POLL_SECONDS = 0.02
+
+
+async def backend_pid(session: AsyncSession) -> int:
+    """`pid` бэкенда Postgres, обслуживающего эту сессию.
+
+    Заодно открывает соединение: дальше сессия обязана ходить в базу тем же бэкендом,
+    иначе в `pg_locks` найдётся не она.
+    """
+    pid = await session.scalar(text("select pg_backend_pid()"))
+    assert isinstance(pid, int)
+    return pid
+
+
+async def waiting_for_a_row_lock(
+    watcher: AsyncSession, pids: dict[str, int], running: list[asyncio.Task[Any]]
+) -> set[int]:
+    """Опрашивает `pg_locks`, пока обе сессии из `pids` не встанут в ожидание замка.
+
+    Возвращает то, что удалось увидеть: сравнивать с ожидаемым — дело теста, ассерт про
+    одновременность принадлежит ему, а не помощнику. Опрос обрывается досрочно, если
+    задача успела завершиться, — ждать замка от того, кто уже вернул ответ, бессмысленно.
+    """
+    expected = set(pids.values())
+    deadline = monotonic() + LOCK_WAIT_TIMEOUT_SECONDS
+    seen: set[int] = set()
+    while monotonic() < deadline:
+        seen = set((await watcher.execute(_LOCK_WAITERS, pids)).scalars())
+        if seen == expected or any(task.done() for task in running):
+            break
+        await asyncio.sleep(LOCK_WAIT_POLL_SECONDS)
+    return seen
+
+
 def log_lines(output: str) -> list[dict[str, Any]]:
     lines: list[dict[str, Any]] = []
     for line in output.splitlines():
@@ -357,24 +401,49 @@ async def test_two_collectors_asking_at_once_never_get_the_same_account(
     """Та же гарантия, что выше, но в одновременности — иначе она ничем не закреплена.
 
     Последовательные запросы прошли бы и на реализации «прочитал, потом записал»: ко
-    второму запросу первый уже записан, и гонки просто нет. Здесь два `issue_assignments`
-    на **разных сессиях** уходят в базу одновременно, и проверяется пустое пересечение
-    выдач. Две мутации, снимающие гарантию, — убрать `WHERE collector_id IS NULL` и
-    заменить один UPDATE на select+update — красят этот тест и никакой другой.
+    второму запросу первый уже записан, и гонки просто нет.
+
+    Одновременность тут не подгадывается таймингом, а **проверяется ассертом**. Тест сам
+    держит строки замком, обе выдачи упираются в него, `pg_locks` показывает ждущими обе
+    сессии — и только после этого замок отпускается. Без такого ассерта зелёный результат
+    не означал бы ничего: «гонка была, блокировка сработала» и «гонки не было вовсе» дают
+    один и тот же исход — один коллектор с тремя счетами, второй с нулём. Прогрев
+    соединений, который стоял здесь раньше, держал одновременность на тайминге, а тайминг
+    ничем не закреплён: любая правка, возвращающая уступку управления до первого запроса
+    в базу (ленивое получение сессии, переезд гонки на HTTP-уровень), вернула бы ложную
+    зелень молча.
+
+    Уникально этим тестом ловится замена одного UPDATE на select+update: под ней обе
+    сессии так же ждут замка, ассерт одновременности остаётся зелёным, а выдачи
+    пересекаются. Снятие `WHERE collector_id IS NULL` красит ещё и
+    `test_claimed_account_is_not_given_to_another_collector`: на неё этот тест тоже
+    реагирует, но не он один.
     """
     created = {await create_account(client, label=f"Счёт {n}", login=7004000 + n) for n in range(3)}
 
     factory = get_session_factory()
-    async with factory() as first, factory() as second:
-        # Соединение берётся до гонки намеренно. Без прогрева гонки не будет вовсе:
-        # вторая сессия сначала здоровается с Postgres, а первая за это время успевает
-        # закрепить счета и закоммитить — измерено, «одновременность» оказывалась
-        # последовательностью, и тест был бы ложно зелёным.
-        await asyncio.gather(first.execute(text("select 1")), second.execute(text("select 1")))
-        batches = await asyncio.gather(
-            collector_service.issue_assignments(first, COLLECTOR),
-            collector_service.issue_assignments(second, OTHER_COLLECTOR),
+    async with factory() as gate, factory() as first, factory() as second:
+        pids = {"first": await backend_pid(first), "second": await backend_pid(second)}
+        await gate.execute(
+            select(TradingAccount.id)
+            .where(TradingAccount.id.in_({UUID(account_id) for account_id in created}))
+            .with_for_update()
         )
+        claims = [
+            asyncio.create_task(collector_service.issue_assignments(first, COLLECTOR)),
+            asyncio.create_task(collector_service.issue_assignments(second, OTHER_COLLECTOR)),
+        ]
+        try:
+            waiting = await waiting_for_a_row_lock(gate, pids, claims)
+        finally:
+            # Замок отпускается при любом исходе, иначе обе выдачи останутся висеть в базе.
+            await gate.rollback()
+        batches = await asyncio.gather(*claims)
+
+    assert waiting == set(pids.values()), (
+        f"замка ждали {sorted(waiting)} из {sorted(pids.values())}: обе выдачи не встретились "
+        "на одних строках, и результат ниже ничего не доказывает"
+    )
     left, right = ({str(item.account.id) for item in batch} for batch in batches)
 
     assert left & right == set()
@@ -474,7 +543,9 @@ async def test_password_reaches_the_collector_but_never_the_log(
 
     Счетов два намеренно: на одном «запись на счёт» и «запись на запрос» неотличимы, а
     `issue_assignments` обещает первое — журнал того, что пароль покинул систему, а не
-    счётчик обращений.
+    счётчик обращений. Сравниваются мультимножества, а не списки: одна запись на счёт —
+    обещание журнала, а порядок записей повторяет сортировку выдачи и закреплён отдельно
+    (`test_assignments_are_ordered_deterministically`).
     """
     first = await create_account(client, label="Первый", login=7005001)
     second = await create_account(client, label="Второй", login=7005002)
@@ -484,7 +555,7 @@ async def test_password_reaches_the_collector_but_never_the_log(
 
     assert [item["password"] for item in items] == [INVESTOR_PASSWORD, INVESTOR_PASSWORD]
     audit = [line for line in log_lines(output) if line["event"] == "collector.credentials_issued"]
-    assert [line["account_id"] for line in audit] == [first, second]
+    assert sorted(line["account_id"] for line in audit) == sorted([first, second])
     assert {line["collector_id"] for line in audit} == {COLLECTOR}
     assert all(line["timestamp"] for line in audit)
     assert INVESTOR_PASSWORD not in output
