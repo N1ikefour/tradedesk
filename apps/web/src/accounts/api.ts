@@ -6,7 +6,14 @@
  * единицы и список отдаётся целиком. Поэтому карточка одного счёта читает тот же список,
  * а не заводит свой запрос: два источника одной сущности разошлись бы в кэше.
  */
-import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+  type UseMutationResult,
+} from '@tanstack/react-query';
+import { useCallback } from 'react';
 
 import { api, unwrap, unwrapEmpty } from '@/api/client';
 import type { components } from '@/api/schema';
@@ -61,17 +68,51 @@ function invalidateAccounts(client: QueryClient): Promise<void> {
   return client.invalidateQueries({ queryKey: ACCOUNTS_QUERY_KEY });
 }
 
-export function useCreateAccount() {
+const CREATE_MUTATION_KEY = [...ACCOUNTS_QUERY_KEY, 'create'] as const;
+
+function updateMutationKey(accountId: string) {
+  return [...ACCOUNTS_QUERY_KEY, accountId, 'update'] as const;
+}
+
+/**
+ * Тело запроса переживает сам запрос: `variables` лежат в кэше мутаций, пока их не заберёт
+ * сборщик мусора (`gcTime` — пять минут после размонтирования), а наблюдатель отдаёт ту же
+ * копию наружу как `mutation.variables`. `QueryClient` достижим из дерева компонентов, то
+ * есть достижимы и обе копии, — а в теле создания и правки счёта лежит открытый пароль
+ * инвестора. Поэтому обе стираются сразу после успеха, а не по таймеру.
+ */
+function forgetMutation(client: QueryClient, mutationKey: readonly unknown[]): void {
+  const cache = client.getMutationCache();
+  for (const stored of cache.findAll({ mutationKey, exact: true })) {
+    cache.remove(stored);
+  }
+}
+
+/** Мутация, тело которой нельзя оставлять в памяти страницы. */
+export type SecretMutation<TData, TVariables> = UseMutationResult<TData, Error, TVariables> & {
+  /** Стирает тело запроса из наблюдателя и из кэша мутаций; см. `forgetMutation`. */
+  forget: () => void;
+};
+
+export function useCreateAccount(): SecretMutation<Account, AccountCreate> {
   const client = useQueryClient();
-  return useMutation({
+  const mutation = useMutation({
+    mutationKey: CREATE_MUTATION_KEY,
     mutationFn: (body: AccountCreate) => unwrap(api.POST('/api/v1/accounts', { body })),
     onSuccess: () => invalidateAccounts(client),
   });
+  const { reset } = mutation;
+  const forget = useCallback(() => {
+    reset();
+    forgetMutation(client, CREATE_MUTATION_KEY);
+  }, [client, reset]);
+  return { ...mutation, forget };
 }
 
-export function useUpdateAccount(accountId: string) {
+export function useUpdateAccount(accountId: string): SecretMutation<Account, AccountUpdate> {
   const client = useQueryClient();
-  return useMutation({
+  const mutation = useMutation({
+    mutationKey: updateMutationKey(accountId),
     mutationFn: (body: AccountUpdate) =>
       unwrap(
         api.PATCH('/api/v1/accounts/{account_id}', {
@@ -81,6 +122,12 @@ export function useUpdateAccount(accountId: string) {
       ),
     onSuccess: () => invalidateAccounts(client),
   });
+  const { reset } = mutation;
+  const forget = useCallback(() => {
+    reset();
+    forgetMutation(client, updateMutationKey(accountId));
+  }, [accountId, client, reset]);
+  return { ...mutation, forget };
 }
 
 export function useSetAccountPaused(accountId: string) {

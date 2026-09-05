@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 import { t } from '@/i18n';
 
@@ -14,6 +14,22 @@ import { signIn } from './sign-in';
  * обязан ждать коллектора.
  */
 const INVESTOR_PASSWORD = 'smoke-investor-8f21';
+
+/**
+ * Где пароль может остаться на живой странице. Разметки мало: значение поля живёт в
+ * свойстве `value`, и проверка одного `page.content()` прошла бы над заполненным полем.
+ */
+async function passwordTraces(page: Page, secret: string) {
+  return page.evaluate((value) => {
+    const fields = document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+      'input, textarea',
+    );
+    return {
+      markup: document.documentElement.outerHTML.includes(value),
+      fields: Array.from(fields).filter((field) => field.value.includes(value)).length,
+    };
+  }, secret);
+}
 
 test('счёт добавляется, переживает перезагрузку и удаляется вводом имени', async ({
   page,
@@ -45,12 +61,13 @@ test('счёт добавляется, переживает перезагруз
   // коллектор» стоят ещё и в тексте блока «Коллектор» ниже.
   await expect(page.getByText(t.accounts.statusPending, { exact: true })).toBeVisible();
 
-  // Пароль не возвращается ни в ответе, ни в разметке — проверяется фактом на живой странице.
-  expect(await page.content()).not.toContain(INVESTOR_PASSWORD);
+  // Пароль не возвращается ни в ответе, ни в разметке, ни в полях — проверяется фактом
+  // на живой странице.
+  expect(await passwordTraces(page, INVESTOR_PASSWORD)).toEqual({ markup: false, fields: 0 });
 
   await page.reload();
   await expect(page.getByRole('heading', { name: label })).toBeVisible();
-  expect(await page.content()).not.toContain(INVESTOR_PASSWORD);
+  expect(await passwordTraces(page, INVESTOR_PASSWORD)).toEqual({ markup: false, fields: 0 });
 
   await page.getByRole('button', { name: t.accounts.delete, exact: true }).click();
   const confirm = page.getByRole('dialog');

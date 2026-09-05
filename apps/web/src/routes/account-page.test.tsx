@@ -12,6 +12,7 @@ import {
   type RouteTable,
 } from '@/test/fetch-mock';
 import { renderApp, TEST_USER } from '@/test/render';
+import { findSecret } from '@/test/secret-probe';
 
 const SESSION = 'GET /api/v1/auth/me';
 const LIST = 'GET /api/v1/accounts';
@@ -74,9 +75,10 @@ function callsTo(calls: MockedCall[], route: string): MockedCall[] {
   return calls.filter((call) => `${call.method} ${call.path}` === route);
 }
 
-async function openAccount(): Promise<void> {
-  renderApp([`/accounts/${ACCOUNT_ID}`]);
+async function openAccount(): Promise<ReturnType<typeof renderApp>> {
+  const rendered = renderApp([`/accounts/${ACCOUNT_ID}`]);
   await screen.findByRole('heading', { level: 1 });
+  return rendered;
 }
 
 describe('страница счёта', () => {
@@ -189,8 +191,12 @@ describe('правка счёта', () => {
     expect(await screen.findByLabelText(t.accounts.passwordLabel)).toHaveValue('');
   });
 
-  /** Форма правки остаётся на экране после сохранения — пароль обязан быть стёрт явно. */
-  it('после сохранения пароль не остаётся в разметке страницы', async () => {
+  /**
+   * Форма правки остаётся на экране после сохранения, а её наблюдатель мутации — живым
+   * до ухода со страницы. Значит пароль обязан быть стёрт явно во всех местах сразу: в
+   * поле, в разметке и в теле мутации, — `findSecret` проверяет каждое отдельно.
+   */
+  it('после сохранения пароля нет ни в поле, ни в разметке, ни в кэше мутаций', async () => {
     const user = userEvent.setup();
     const password = 'investor-secret-7712';
     const { calls } = installFetchMock(
@@ -198,10 +204,10 @@ describe('правка счёта', () => {
         [PATCH]: () => jsonResponse(200, account()),
       }),
     );
-    await openAccount();
+    const { client } = await openAccount();
 
     await user.type(await screen.findByLabelText(t.accounts.passwordLabel), password);
-    expect(document.body.innerHTML).toContain(password);
+    expect(findSecret(password, client)).toContain('значение поля account-edit-password');
 
     await user.click(screen.getByRole('button', { name: t.accounts.save }));
 
@@ -212,7 +218,42 @@ describe('правка счёта', () => {
     await waitFor(() => {
       expect(screen.getByLabelText(t.accounts.passwordLabel)).toHaveValue('');
     });
-    expect(document.body.innerHTML).not.toContain(password);
+    expect(findSecret(password, client)).toEqual([]);
+    // Наблюдатель на странице счёта живёт всю сессию: без явного стирания тело запроса
+    // осталось бы в кэше мутаций ровно столько же.
+    expect(client.getMutationCache().getAll()).toHaveLength(0);
+  });
+
+  it('успешное сохранение подтверждается на экране', async () => {
+    const user = userEvent.setup();
+    const state = { current: account() };
+    installFetchMock({
+      [SESSION]: () => jsonResponse(200, TEST_USER),
+      [LIST]: () => jsonResponse(200, { items: [state.current] }),
+      [SYNC_RUNS]: () => jsonResponse(200, { items: [] }),
+      [PATCH]: () => {
+        state.current = account({ label: 'FTMO Real' });
+        return jsonResponse(200, state.current);
+      },
+    });
+    await openAccount();
+
+    const label = await screen.findByLabelText(t.accounts.labelLabel);
+    await user.clear(label);
+    await user.type(label, 'FTMO Real');
+    await user.click(screen.getByRole('button', { name: t.accounts.save }));
+
+    expect(await screen.findByText(t.accounts.saved)).toBeInTheDocument();
+  });
+
+  /** Архивный счёт сервер не правит (`422 account_archived`) — формы у него быть не должно. */
+  it('у архивного счёта формы правки нет, и сказано почему', async () => {
+    installFetchMock(withAccount(account({ status: 'archived' })));
+    await openAccount();
+
+    expect(await screen.findByText(t.account.settingsArchived)).toBeInTheDocument();
+    expect(screen.queryByLabelText(t.accounts.labelLabel)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: t.accounts.save })).not.toBeInTheDocument();
   });
 
   /**

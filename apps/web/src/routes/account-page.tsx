@@ -120,8 +120,12 @@ function AccountDetails({
       <Card>
         <CardContent className="flex flex-col gap-4 p-5">
           <h2 className="text-sm font-medium">{t.account.settingsTitle}</h2>
-          {/* Форма пересоздаётся под другой счёт: чужие значения в полях недопустимы. */}
-          <AccountForm key={account.id} account={account} />
+          {account.status === 'archived' ? (
+            <Alert>{t.account.settingsArchived}</Alert>
+          ) : (
+            /* Форма пересоздаётся под другой счёт: чужие значения в полях недопустимы. */
+            <AccountForm key={account.id} account={account} />
+          )}
         </CardContent>
       </Card>
 

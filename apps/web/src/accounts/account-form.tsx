@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 
 import { messageForError } from '@/api/error-message';
 import { ApiRequestError, ERROR_CODE } from '@/api/errors';
@@ -169,14 +169,25 @@ export function AccountForm({
   const isCreate = editing === null;
   const [values, setValues] = useState<Values>(() => initialValues(editing));
   const [localErrors, setLocalErrors] = useState<FieldErrors>({});
+  // Успех живёт отдельно от статуса мутации: после сохранения мутация стирается целиком
+  // (см. `forget`), и сказать «сохранено» её состоянию уже нечем.
+  const [saved, setSaved] = useState(false);
 
   const create = useCreateAccount();
   const update = useUpdateAccount(editing?.id ?? '');
   const mutation = isCreate ? create : update;
 
+  // Второй путь к тому же телу запроса: если запрос упал, `onSuccess` не выполнится, а
+  // пароль останется в кэше мутаций до сборщика мусора — пять минут после ухода формы с
+  // экрана. Стираем на её уходе. `forget` стабилен, так что это именно размонтирование, и
+  // текст ошибки до него доживает.
+  const { forget } = mutation;
+  useEffect(() => forget, [forget]);
+
   const change = (patch: Partial<Values>) => {
     setValues((previous) => ({ ...previous, ...patch }));
     setLocalErrors({});
+    setSaved(false);
     if (mutation.status !== 'idle') {
       mutation.reset();
     }
@@ -217,6 +228,10 @@ export function AccountForm({
       // Пароль стирается из состояния сразу после успеха: форма правки остаётся на
       // экране, и введённое значение иначе продолжало бы жить в DOM.
       setValues((previous) => ({ ...previous, password: '' }));
+      setSaved(true);
+      // Вторая копия пароля — тело мутации. Форма правки со страницы счёта не уходит,
+      // и размонтирование её не стирает: `variables` жили бы всю сессию.
+      mutation.forget();
       onDone?.();
     };
     if (patch === null) {
@@ -374,7 +389,7 @@ export function AccountForm({
         </Alert>
       ) : null}
 
-      {!isCreate && update.isSuccess && !dirty ? <Alert>{t.accounts.saved}</Alert> : null}
+      {!isCreate && saved && !dirty ? <Alert>{t.accounts.saved}</Alert> : null}
 
       <div className="flex flex-wrap items-center gap-3">
         <Button type="submit" disabled={mutation.isPending || !dirty}>
@@ -392,7 +407,7 @@ export function AccountForm({
             {t.common.cancel}
           </Button>
         )}
-        {!isCreate && !dirty && update.status === 'idle' ? (
+        {!isCreate && !dirty && !saved && update.status === 'idle' ? (
           <span className="text-xs text-muted-foreground">{t.accounts.noChanges}</span>
         ) : null}
       </div>

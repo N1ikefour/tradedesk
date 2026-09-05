@@ -1,3 +1,4 @@
+import type { QueryClient } from '@tanstack/react-query';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
@@ -9,9 +10,11 @@ import {
   installFetchMock,
   jsonResponse,
   type MockedCall,
+  type MockRoute,
   type RouteTable,
 } from '@/test/fetch-mock';
 import { renderApp, TEST_USER } from '@/test/render';
+import { findSecret } from '@/test/secret-probe';
 
 const SESSION = 'GET /api/v1/auth/me';
 const LIST = 'GET /api/v1/accounts';
@@ -62,9 +65,10 @@ function callsTo(calls: MockedCall[], route: string): MockedCall[] {
   return calls.filter((call) => `${call.method} ${call.path}` === route);
 }
 
-async function openAccounts(): Promise<void> {
-  renderApp(['/accounts']);
+async function openAccounts(): Promise<ReturnType<typeof renderApp>> {
+  const rendered = renderApp(['/accounts']);
   await screen.findByRole('heading', { name: t.pages.accounts, level: 1 });
+  return rendered;
 }
 
 describe('список счетов', () => {
@@ -239,6 +243,170 @@ describe('синхронизировать', () => {
   });
 });
 
+describe('пауза и возобновление', () => {
+  const PAUSE = `POST ${ACCOUNT_PATH}/pause`;
+  const RESUME = `POST ${ACCOUNT_PATH}/resume`;
+
+  /** Список после мутации перезапрашивается — статус на кнопке обязан прийти с сервера. */
+  function changingStatus(initial: Account['status']) {
+    const state = { status: initial };
+    const routes: RouteTable = {
+      [SESSION]: () => jsonResponse(200, TEST_USER),
+      [LIST]: () => jsonResponse(200, { items: [account({ status: state.status })] }),
+    };
+    return { state, routes };
+  }
+
+  it('пауза уходит на сервер, и кнопка становится возобновлением', async () => {
+    const user = userEvent.setup();
+    const { state, routes } = changingStatus('connected');
+    const { calls } = installFetchMock({
+      ...routes,
+      [PAUSE]: () => {
+        state.status = 'paused';
+        return jsonResponse(200, account({ status: 'paused' }));
+      },
+    });
+    await openAccounts();
+
+    await user.click(await screen.findByRole('button', { name: t.accounts.pause }));
+
+    await waitFor(() => {
+      expect(callsTo(calls, PAUSE)).toHaveLength(1);
+    });
+    expect(await screen.findByRole('button', { name: t.accounts.resume })).toBeInTheDocument();
+    expect(screen.getByText(t.accounts.statusPaused)).toBeInTheDocument();
+  });
+
+  it('возобновление возвращает счёт в работу', async () => {
+    const user = userEvent.setup();
+    const { state, routes } = changingStatus('paused');
+    const { calls } = installFetchMock({
+      ...routes,
+      [RESUME]: () => {
+        state.status = 'connected';
+        return jsonResponse(200, account({ status: 'connected' }));
+      },
+    });
+    await openAccounts();
+
+    await user.click(await screen.findByRole('button', { name: t.accounts.resume }));
+
+    await waitFor(() => {
+      expect(callsTo(calls, RESUME)).toHaveLength(1);
+    });
+    expect(await screen.findByRole('button', { name: t.accounts.pause })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t.accounts.sync })).toBeEnabled();
+  });
+
+  it('серверная ошибка паузы показана человеку', async () => {
+    const user = userEvent.setup();
+    installFetchMock(
+      withAccounts([account({ status: 'connected' })], {
+        [PAUSE]: () => errorResponse(422, 'account_archived', 'счёт в архиве'),
+      }),
+    );
+    await openAccounts();
+
+    await user.click(await screen.findByRole('button', { name: t.accounts.pause }));
+
+    expect(await screen.findByText(new RegExp(t.accounts.pauseFailed))).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(t.errors.accountArchived))).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t.accounts.pause })).toBeEnabled();
+  });
+});
+
+/**
+ * Архивирование необратимо и удаляет пароль с сервера (SPEC.md 5.2): его исходы стоят
+ * тестов не меньше удаления, хоть журнал и остаётся на месте.
+ */
+describe('архивирование счёта', () => {
+  const ARCHIVE = `POST ${ACCOUNT_PATH}/archive`;
+
+  async function openArchiveDialog(extra: RouteTable): Promise<{ calls: MockedCall[] }> {
+    const user = userEvent.setup();
+    const mock = installFetchMock(withAccounts([account({ status: 'connected' })], extra));
+    await openAccounts();
+    await user.click(await screen.findByRole('button', { name: t.accounts.archive }));
+    await screen.findByRole('dialog');
+    return mock;
+  }
+
+  it('называет цену архива и предлагает паузу как обратимую альтернативу', async () => {
+    await openArchiveDialog({});
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(t.accounts.archiveBody)).toBeInTheDocument();
+    expect(within(dialog).getByText(t.accounts.archiveIrreversible)).toBeInTheDocument();
+  });
+
+  it('подтверждение архивирует счёт и уводит его из списка по умолчанию', async () => {
+    const user = userEvent.setup();
+    let archived = false;
+    const { calls } = installFetchMock({
+      [SESSION]: () => jsonResponse(200, TEST_USER),
+      // Архивные в выдачу по умолчанию не попадают — это делает сервер, не фронт.
+      [LIST]: () =>
+        jsonResponse(200, { items: archived ? [] : [account({ status: 'connected' })] }),
+      [ARCHIVE]: () => {
+        archived = true;
+        return jsonResponse(200, account({ status: 'archived' }));
+      },
+    });
+    await openAccounts();
+
+    await user.click(await screen.findByRole('button', { name: t.accounts.archive }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: t.accounts.archiveConfirm }));
+
+    await waitFor(() => {
+      expect(callsTo(calls, ARCHIVE)).toHaveLength(1);
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    expect(await screen.findByText(t.accounts.empty)).toBeInTheDocument();
+  });
+
+  it('серверная ошибка показана, окно остаётся открытым', async () => {
+    const user = userEvent.setup();
+    const { calls } = await openArchiveDialog({
+      [ARCHIVE]: () => errorResponse(422, 'account_archived', 'уже в архиве'),
+    });
+
+    const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: t.accounts.archiveConfirm }));
+
+    expect(await screen.findByText(new RegExp(t.accounts.archiveFailed))).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(t.errors.accountArchived))).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(callsTo(calls, ARCHIVE)).toHaveLength(1);
+  });
+
+  it('«Отмена» закрывает окно и ничего не отправляет', async () => {
+    const user = userEvent.setup();
+    const { calls } = await openArchiveDialog({});
+
+    const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: t.common.cancel }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    expect(callsTo(calls, ARCHIVE)).toHaveLength(0);
+  });
+
+  it('архивный счёт архивировать и ставить на паузу больше нечем', async () => {
+    installFetchMock(withAccounts([account({ status: 'archived' })]));
+    renderApp(['/accounts?archived=1']);
+
+    expect(await screen.findByText(t.accounts.statusArchived)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: t.accounts.archive })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: t.accounts.pause })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t.accounts.delete })).toBeInTheDocument();
+  });
+});
+
 describe('удаление счёта', () => {
   async function openDeleteDialog(positionsCount = 42): Promise<{ calls: MockedCall[] }> {
     const user = userEvent.setup();
@@ -310,14 +478,13 @@ describe('удаление счёта', () => {
 describe('добавление счёта', () => {
   const PASSWORD = 'investor-secret-9134';
 
-  async function fillCreateForm(): Promise<{ calls: MockedCall[] }> {
+  async function fillCreateForm(
+    createRoute: MockRoute = () =>
+      jsonResponse(201, account({ label: 'Новый', status: 'pending' })),
+  ): Promise<{ calls: MockedCall[]; client: QueryClient }> {
     const user = userEvent.setup();
-    const mock = installFetchMock(
-      withAccounts([], {
-        [CREATE]: () => jsonResponse(201, account({ label: 'Новый', status: 'pending' })),
-      }),
-    );
-    await openAccounts();
+    const { calls } = installFetchMock(withAccounts([], { [CREATE]: createRoute }));
+    const { client } = await openAccounts();
 
     await user.click(screen.getByRole('button', { name: t.accounts.add }));
     const dialog = await screen.findByRole('dialog');
@@ -325,7 +492,7 @@ describe('добавление счёта', () => {
     await user.type(within(dialog).getByLabelText(t.accounts.serverLabel), 'FTMO-Demo');
     await user.type(within(dialog).getByLabelText(t.accounts.loginLabel), '5001234');
     await user.type(within(dialog).getByLabelText(t.accounts.passwordLabel), PASSWORD);
-    return mock;
+    return { calls, client };
   }
 
   it('объясняет, почему нужен именно инвесторский пароль', async () => {
@@ -342,16 +509,16 @@ describe('добавление счёта', () => {
   });
 
   /**
-   * Acceptance тикета: пароль не должен остаться в DOM после сохранения. Проверяется
-   * фактом — поиском значения по разметке страницы, а не рассуждением о том, что форма
-   * размонтирована.
+   * Acceptance тикета: пароль не должен пережить сохранение. Проверяется по всем местам
+   * сразу (`findSecret`), а не по разметке: значение поля живёт в свойстве `value`, а тело
+   * запроса — в кэше мутаций, и «нет в `innerHTML`» не говорит ни о том, ни о другом.
    */
-  it('после сохранения пароль не остаётся в разметке страницы', async () => {
+  it('после сохранения пароля нет ни в поле, ни в разметке, ни в кэше мутаций', async () => {
     const user = userEvent.setup();
-    const { calls } = await fillCreateForm();
+    const { calls, client } = await fillCreateForm();
 
     // До отправки пароль в поле есть — иначе проверка после отправки ничего не значит.
-    expect(document.body.innerHTML).toContain(PASSWORD);
+    expect(findSecret(PASSWORD, client)).toContain('значение поля account-create-password');
 
     await user.click(screen.getByRole('button', { name: t.accounts.create }));
 
@@ -361,7 +528,42 @@ describe('добавление счёта', () => {
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
-    expect(document.body.innerHTML).not.toContain(PASSWORD);
+    expect(findSecret(PASSWORD, client)).toEqual([]);
+    // Мутация стирается целиком, а не ждёт сборщика мусора пять минут.
+    expect(client.getMutationCache().getAll()).toHaveLength(0);
+  });
+
+  /**
+   * Второй путь к тому же телу запроса. Отказ сервера до `onSuccess` не доходит, поэтому
+   * пароль остаётся в кэше мутаций — и остался бы там на пять минут `gcTime`, если человек
+   * просто закрыл окно, не повторив попытку.
+   */
+  it('после отказа и закрытия формы пароля нет в кэше мутаций', async () => {
+    const user = userEvent.setup();
+    const { calls, client } = await fillCreateForm(() =>
+      errorResponse(409, 'account_already_exists', 'уже есть'),
+    );
+
+    await user.click(screen.getByRole('button', { name: t.accounts.create }));
+
+    await waitFor(() => {
+      expect(callsTo(calls, CREATE)).toHaveLength(1);
+    });
+    // Пока форма на экране, человек обязан видеть, что случилось: стирание тела запроса
+    // не имеет права гасить текст ошибки.
+    expect(await screen.findByText(new RegExp(t.accounts.createFailed))).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(t.errors.accountAlreadyExists))).toBeInTheDocument();
+    // И тело запроса на этот момент ещё в кэше — иначе проверка после закрытия пуста.
+    expect(findSecret(PASSWORD, client)).toContain('кэш мутаций');
+
+    const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: t.common.cancel }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    expect(findSecret(PASSWORD, client)).toEqual([]);
+    expect(client.getMutationCache().getAll()).toHaveLength(0);
   });
 
   it('пароль уходит в теле запроса и не попадает в адрес', async () => {
