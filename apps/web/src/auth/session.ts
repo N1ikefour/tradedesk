@@ -44,6 +44,21 @@ export function useSession() {
   });
 }
 
+/**
+ * Пользователь из кэша сессии без собственного запроса: `enabled: false` подписывает
+ * компонент на изменения кэша, но сам ничего не грузит. Нужно там, где данные профиля
+ * лишь украшают экран, — например, таймзона для дат на `/dev/outbox`, куда приходят
+ * ещё не войдя, и лишний запрос `/auth/me` там был бы запросом ради оформления.
+ */
+export function useCachedSessionUser(): SessionUser | null | undefined {
+  const { data } = useQuery({
+    queryKey: SESSION_QUERY_KEY,
+    queryFn: fetchSession,
+    enabled: false,
+  });
+  return data;
+}
+
 export function useRequestCode() {
   return useMutation({
     mutationFn: (email: string) =>

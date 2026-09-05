@@ -77,7 +77,11 @@ class VerifyRequest(BaseModel):
 
 
 class UserResponse(BaseModel):
-    """Поля из SPEC.md 4, пункт 5."""
+    """Поля из SPEC.md 4, пункт 5.
+
+    Общая модель для `/auth/me`, `/auth/verify` и `/users/me` (S0-08): один пользователь
+    описывается в схеме одним компонентом. Правка полей здесь меняет ответ всех трёх.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -21,6 +21,7 @@ from app.domains.auth.router import router as auth_router
 from app.domains.mail.provider import check_email_provider
 from app.domains.mail.router import router as dev_router
 from app.domains.system.router import router as system_router
+from app.domains.users.router import router as users_router
 
 API_PREFIX = "/api/v1"
 
@@ -107,6 +108,7 @@ def create_app() -> FastAPI:
     app.add_middleware(OriginCheckMiddleware, app_url=settings.app_url)
     app.include_router(system_router, prefix=API_PREFIX)
     app.include_router(auth_router, prefix=API_PREFIX)
+    app.include_router(users_router, prefix=API_PREFIX)
     if not settings.is_prod:
         # Письма с кодами наружу не выставляются: в проде маршрута просто нет,
         # он не появляется и в OpenAPI.
