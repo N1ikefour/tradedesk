@@ -58,30 +58,57 @@ Skills: `.claude/skills/ingest-mt5/` — домен нормализации dea
 
 ## 4. Команды
 
-Полный список с пометками — `make help`.
+Полный список с пояснениями — `make help`, и он же источник правды: разошёлся с этим разделом — прав `make help`. Заглушек среди целей больше нет, все перечисленные работают.
 
-**Работают:**
+**Гейт перед PR:**
 
 ```
-make install   # venv + зависимости обоих python-пакетов + npm ci. Предусловие для всего остального
-make hooks     # pre-commit install
-make ci        # lint + test + build-web. ЭТО гейт перед PR
-make ci-target # тот же линт и unit-тесты, но на ЦЕЛЕВОМ Python 3.12 в контейнере
-make lint      # ruff + mypy (api, collector) + eslint + prettier + tsc (web)
-make test      # pytest
+make ci        # ВЕСЬ гейт: ci-api + ci-web. Ровно тот же состав гоняет GitHub Actions
+make ci-api    # lint-api + lint-collector + lint-hooks + test-api
+make ci-web    # lint-web + test-web + build-web
+make ci-target # ruff + mypy + unit-тесты на ЦЕЛЕВОМ Python 3.12 в контейнере
+```
+
+**Окружение разработки:**
+
+```
+make install   # .venv + зависимости обоих python-пакетов + npm ci. Предусловие для всего остального
+make hooks     # pre-commit install (после make install)
+```
+
+**Локальное окружение в Docker:**
+
+```
+make init      # .env из .env.example с генерацией секретов. Существующий .env НЕ перезаписывает
+make up        # docker compose --profile local up -d --build, ждёт готовности, печатает URL
+make down      # остановка; данные в volume остаются
+```
+
+**Проверки по отдельности:**
+
+```
+make lint      # = lint-api + lint-collector + lint-web
+make lint-api / lint-collector    # ruff check + ruff format --check + mypy
+make lint-web                     # eslint + prettier --check + tsc --noEmit
+make lint-hooks                   # pre-commit run --all-files
+make test      # = test-api (pytest) + test-web (vitest)
 make build-web # vite build
+make smoke     # playwright-смоук входа против поднятого make up. В make ci НЕ входит
 make format    # автоформат
 ```
 
-**Заглушки** — печатают, в какой задаче появятся, и падают с ненулевым кодом:
+**Схема и типы:**
 
 ```
-make init / up / down          # S0-06 (Docker Compose)
-make migrate / revision        # S0-02, S0-03 (Alembic)
-make types                     # S0-07 (openapi → schema.d.ts)
+make migrate           # alembic upgrade head в .venv (в контейнере это делает старт api)
+make revision m="…"    # новая alembic-миграция (autogenerate)
+make downgrade [to=…]  # откат на шаг назад
+make types             # openapi запущенного api → apps/web/src/api/schema.d.ts. Требует make up
 ```
 
-Коллектор: `cd apps/collector-mt5 && run-collector.bat` (Windows).
+Установка и первый запуск для человека, который репозитория не знает, — `SETUP.md`.
+
+Коллектор MT5 ещё не собран: в `apps/collector-mt5/` пока только пакет-заглушка. `run-collector.bat` и `install-service.ps1` появятся в `S1-10`.
 
 ⚠️ `make ci` включает `pre-commit run --all-files`, а часть хуков умеет править файлы (`ruff --fix`, форматтеры). Прогон гейта может изменить рабочее дерево — это не поломка, а поведение хуков.
 
