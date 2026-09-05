@@ -94,3 +94,4 @@ Updated: 2026-09-05
 | X-16 | Уход на страницу писем сбрасывает форму входа | frontend | Todo | — |
 | X-17 | На Windows нет `init.bat` | infra | Todo | — |
 | X-18 | Имя джоба в CI скрывает тесты web | infra | Todo | — |
+| X-19 | Релизный zip-артефакт | infra | Todo | — |
