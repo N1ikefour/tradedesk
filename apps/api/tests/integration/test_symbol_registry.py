@@ -106,6 +106,18 @@ async def rows() -> list[dict[str, Any]]:
         return [dict(row) for row in found.mappings()]
 
 
+async def raws_in_insertion_order() -> list[str]:
+    """Сырые имена в порядке, в котором строки легли в таблицу.
+
+    `symbols.id` — обычный serial, и внутри одного многострочного INSERT он раздаётся в
+    порядке VALUES. Это единственный наблюдаемый снаружи след того порядка, ради которого
+    в `ensure_symbols` стоит `sorted`.
+    """
+    async with get_session_factory()() as session:
+        found = await session.execute(select(Symbol.raw).order_by(Symbol.id))
+        return list(found.scalars())
+
+
 async def register(raw_symbols: list[str]) -> dict[str, RegisteredSymbol]:
     """Один синк: своя сессия, своя транзакция, коммит — как это сделает S1-04."""
     async with get_session_factory()() as session:
@@ -189,6 +201,59 @@ async def test_every_requested_symbol_comes_back() -> None:
 
     assert sorted(registered) == ["EURUSD.m", "eurusd.m"]
     assert {item.norm for item in registered.values()} == {"EURUSD"}
+
+
+# --- порядок вставки -----------------------------------------------------------------
+
+
+async def test_rows_are_inserted_in_one_canonical_order_whatever_the_batch_order() -> None:
+    """Все синки вставляют символы в одном порядке — защита от взаимоблокировки.
+
+    Многострочный INSERT берёт строчные замки в порядке VALUES: два синка с
+    пересекающимися наборами, идущие навстречу друг другу, зацепились бы намертво, и
+    Postgres оборвал бы один из них по `deadlock_timeout`. Общий порядок это исключает.
+
+    Сам дедлок здесь не воспроизводится: обе вставки — по одному оператору, изнутри
+    оператора клиенту вклиниться нечем, и такой тест держался бы на тайминге. Проверяется
+    то, на чём защита стоит, — что порядок вставки задан набором, а не порядком батча.
+    """
+    await register(["XAUUSD.m", "EURUSD.m", "GBPUSD.m"])
+
+    assert await raws_in_insertion_order() == ["EURUSD.m", "GBPUSD.m", "XAUUSD.m"]
+
+
+# --- транзакцией владеет вызывающий --------------------------------------------------
+
+
+async def test_nothing_is_committed_by_ensure_symbols_itself() -> None:
+    """S1-04 вставит сделки и пересоберёт позиции одной транзакцией (SPEC.md 5.3).
+
+    Коммит внутри `ensure_symbols` разрезал бы её пополам, и откат ингеста оставил бы в
+    базе символы от неудавшегося батча. Отличить «транзакцией владеет вызывающий» от
+    «здесь уже закоммичено» можно только откатом: до него оба варианта выглядят
+    одинаково — строка видна своей же сессии в обоих.
+    """
+    async with get_session_factory()() as session:
+        registered = await ensure_symbols(session, ["EURUSD.m", "XYZ.m"])
+        assert sorted(registered) == ["EURUSD.m", "XYZ.m"], "вставка не состоялась вовсе"
+        await session.rollback()
+
+    assert await rows() == []
+
+
+async def test_rollback_after_ensure_symbols_leaves_earlier_rows_alone() -> None:
+    """Откат неудавшегося батча отматывает только его: чужой коммит он не трогает.
+
+    Иначе тест выше проходил бы и на реализации, которая роняет таблицу целиком.
+    """
+    await register(["EURUSD.m"])
+    before = await rows()
+
+    async with get_session_factory()() as session:
+        await ensure_symbols(session, ["EURUSD.m", "XYZ.m"])
+        await session.rollback()
+
+    assert await rows() == before
 
 
 # --- идемпотентность -----------------------------------------------------------------

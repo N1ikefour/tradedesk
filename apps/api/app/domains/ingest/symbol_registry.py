@@ -38,13 +38,12 @@ from app.domains.ingest.symbols import UNKNOWN_ASSET_CLASS, resolve_symbol
 
 log = get_logger(__name__)
 
-# Значения колонки `symbols.source` (SPEC.md 3.3).
+# Значения колонки `symbols.source` (SPEC.md 3.3). Третьего, 'seed', здесь нет намеренно:
+# в v1 его не пишет никто, потому что словарь известных символов живёт кодом
+# (`KNOWN_SYMBOLS`), а не строками таблицы. Строка со `raw='EURUSD'` утверждала бы, что
+# такой символ у брокера есть, — а у брокера с суффиксами его нет.
 SOURCE_AUTO = "auto"
 SOURCE_USER = "user"
-# 'seed' в v1 не пишется никем: словарь известных символов живёт кодом (`KNOWN_SYMBOLS`),
-# а не строками таблицы. Строка со `raw='EURUSD'` утверждала бы, что такой символ у брокера
-# есть, — а у брокера с суффиксами его нет.
-SOURCE_SEED = "seed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +67,9 @@ async def ensure_symbols(
 
     Возвращает отображение сырого символа в строку словаря — из него S1-04 берёт
     `positions.symbol_norm`. Транзакцией управляет вызывающий: здесь нет ни commit,
-    ни rollback, потому что символы заводятся в той же транзакции, что и сделки.
+    ни rollback, потому что символы заводятся в той же транзакции, что и сделки
+    (SPEC.md 5.3). Коммит отсюда разрезал бы её пополам: откат ингеста оставил бы в базе
+    символы от неудавшегося батча. Закреплено откатом в `test_symbol_registry.py`.
     """
     wanted = sorted(set(raw_symbols))
     if not wanted:
@@ -79,6 +80,13 @@ async def ensure_symbols(
     if not missing:
         return known
 
+    # Порядок `missing` унаследован от `sorted` выше и потому одинаков у всех синков.
+    # Важен он здесь и только здесь: многострочный INSERT берёт строчные замки в порядке
+    # VALUES, и два синка с пересекающимися наборами, идущие в разном порядке, встают во
+    # взаимоблокировку — Postgres снимет её по `deadlock_timeout`, оборвав один из них.
+    # Сам дедлок тестом не воспроизведён: обе вставки — по одному оператору, а изнутри
+    # оператора клиенту вклиниться нечем, так что подобие такого теста держалось бы на
+    # тайминге. Закреплён наблюдаемый след порядка — возрастающий serial `symbols.id`.
     inserted = await session.execute(
         pg_insert(Symbol)
         .values(
@@ -117,7 +125,11 @@ async def ensure_symbols(
 
 
 async def _load(session: AsyncSession, raws: Sequence[str]) -> dict[str, RegisteredSymbol]:
-    """Порядок `raws` отсортирован вызывающим: одинаковый порядок блокировок у всех синков."""
+    """Строки словаря по сырым именам; чего нет в таблице, того нет и в ответе.
+
+    Порядок `raws` здесь ни на что не влияет: SELECT строчных замков не берёт, а результат
+    собирается в словарь. Сортировка вызывающего нужна вставке ниже, не этому чтению.
+    """
     rows = await session.execute(
         select(Symbol.raw, Symbol.norm, Symbol.asset_class, Symbol.source).where(
             Symbol.raw.in_(raws)
