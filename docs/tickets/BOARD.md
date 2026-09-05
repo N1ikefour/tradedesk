@@ -29,16 +29,16 @@ Updated: 2026-09-05
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
 | S1-01 | JSON Schema ингеста | backend | **Done** | [PR #13](https://github.com/N1ikefour/tradedesk/pull/13) |
-| S1-02 | Нормализатор deals | backend | In Progress | `feat/S1-02-normalizer` |
+| S1-02 | Нормализатор deals | backend | **Done** | [PR #15](https://github.com/N1ikefour/tradedesk/pull/15) |
 | S1-03 | Сборщик позиций | backend | Backlog | ждёт выгрузку MT5 |
-| S1-04 | `POST /ingest/deals` | backend | Backlog | тикет заведён заранее |
-| S1-05 | `POST /ingest/heartbeat` + assignments | backend | In Progress | `feat/S1-05-heartbeat` |
+| S1-04 | `POST /ingest/deals` | backend | Backlog | ждёт S1-03 |
+| S1-05 | `POST /ingest/heartbeat` + assignments | backend | **Done** | [PR #16](https://github.com/N1ikefour/tradedesk/pull/16) |
 | S1-06 | Accounts API | backend | **Done** | [PR #14](https://github.com/N1ikefour/tradedesk/pull/14) |
-| S1-07 | Символы | backend | Backlog | — |
+| S1-07 | Символы | backend | In Progress | `feat/S1-07-symbols` |
 | S1-08 | Коллектор: mt5_client + worker | collector | Backlog | — |
 | S1-09 | Коллектор: менеджер процессов, heartbeat | collector | Backlog | — |
 | S1-10 | Коллектор: установка | collector | Backlog | — |
-| S1-11 | UI Accounts | frontend | Backlog | — |
+| S1-11 | UI Accounts | frontend | In Progress | `feat/S1-11-ui-accounts` |
 | S1-12 | Сверка | backend | Backlog | — |
 
 ## Этап 2 — Журнал
