@@ -310,12 +310,20 @@ async def test_every_route_requires_a_session(client: AsyncClient, method: str, 
     [
         ("post", ACCOUNTS),
         ("patch", f"{ACCOUNTS}/00000000-0000-0000-0000-000000000000"),
+        ("post", f"{ACCOUNTS}/00000000-0000-0000-0000-000000000000/pause"),
+        ("post", f"{ACCOUNTS}/00000000-0000-0000-0000-000000000000/resume"),
+        ("post", f"{ACCOUNTS}/00000000-0000-0000-0000-000000000000/archive"),
         ("post", f"{ACCOUNTS}/00000000-0000-0000-0000-000000000000/sync-now"),
         ("delete", f"{ACCOUNTS}/00000000-0000-0000-0000-000000000000"),
     ],
 )
 async def test_mutations_are_guarded_by_origin(client: AsyncClient, method: str, path: str) -> None:
-    """Проверка Origin из SPEC.md 4 распространяется на все мутирующие запросы."""
+    """Проверка Origin из SPEC.md 4 распространяется на все мутирующие запросы.
+
+    Список полный — все семь мутирующих маршрутов домена. Проверка глобальная, одной
+    строки хватило бы; но рядом лежит полный список маршрутов в проверке сессии, и
+    неполная выборка здесь читается как забытая — следующий гадает, что это было.
+    """
     response = await client.request(
         method, path, json={}, headers={"origin": "http://evil.example"}
     )

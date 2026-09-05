@@ -177,33 +177,63 @@ def assert_error_shape(declared: dict[str, Any], where: str) -> None:
     assert error["additionalProperties"] is False, f"{where}: error открыт"
 
 
+_CODES_ELIDED = "<список кодов сверяется отдельно>"
+
+
+def _without_its_codes(declared: dict[str, Any]) -> dict[str, Any]:
+    """Объявление с вырезанным списком кодов — всё остальное сравнимо с общим напрямую.
+
+    Список кодов — единственное, чем доменное объявление вправе отличаться (ADR-0004).
+    Он же дословно попадает в текст описания, поэтому вырезается в обоих местах, иначе
+    описание тянуло бы за собой ту же разницу и сверять было бы нечего.
+
+    Заменяется меткой, а не удаляется: у объявления без `enum` вырезать нечего, и оно
+    совпало бы с любым другим таким же. Состав кодов сверяет
+    `test_declared_codes_match_the_dictionary_exactly` — здесь он намеренно не проверяется.
+    """
+    elided = deepcopy(declared)
+    schema = elided["content"][JSON_MEDIA_TYPE]["schema"]
+    schema["properties"]["error"]["properties"]["code"]["enum"] = _CODES_ELIDED
+    if "description" in elided:
+        listed = ", ".join(sorted(_code_enum(declared)))
+        elided["description"] = elided["description"].replace(f"({listed})", _CODES_ELIDED)
+    return elided
+
+
 def assert_declaration_is_global(document: dict[str, Any], status_code: int) -> dict[str, Any]:
     """Объявление статуса, общее для всех операций; заодно проверяет, что оно одно.
 
     Нужно для 404 и 405: их производит роутер до операции, и «своей» операции у такого
     ответа нет — сверять его можно только с общим объявлением.
 
-    Операции, добавившие к этому статусу собственный код (ADR-0004), из сверки исключены:
-    у `/accounts/{id}` 404 несёт ещё и `account_not_found`, и требовать от неё побайтного
-    совпадения с общим объявлением значило бы запретить доменные коды вовсе.
+    Операция, добавившая к этому статусу собственный код (ADR-0004), из сверки **не
+    выпадает**: у неё сверяется всё, кроме самого списка кодов, — `details`, описание,
+    форма конверта. Выбрасывать её целиком нельзя: доменный код на 400 или 500 тогда
+    молча уводил бы операцию из-под проверки `VALIDATION_DETAILS` и `EMPTY_DETAILS`,
+    то есть из-под «наружу только код», ради которого объявление и закрыто.
 
-    Исключение решает `EXPECTED_DOMAIN_CODES` — таблица самого теста, а не схема. Поэтому
-    расхождение в схеме не может вывести операцию из-под проверки: код, появившийся на
-    маршруте помимо таблицы, оставляет операцию в сверке и роняет её. Что доменное
+    Возвращается объявление операции без доменных кодов: его `enum` — общий, и именно
+    по нему сверяются тела, которые роутер отдаёт вне какой-либо операции. Что доменное
     объявление — надмножество общего, проверяет
     `test_domain_codes_declared_on_their_endpoints`.
     """
-    declarations = [
-        _declared(document, path, method, status_code)
-        for path, method, _ in _operations(document)
-        if not EXPECTED_DOMAIN_CODES.get((path, method, status_code))
-    ]
-    assert declarations, "в схеме нет ни одной операции без доменных кодов на этом статусе"
-    assert all(item == declarations[0] for item in declarations), (
-        f"объявление {status_code} различается по операциям"
-    )
-    assert_error_shape(declarations[0], f"общее объявление {status_code}")
-    return declarations[0]
+    plain: list[dict[str, Any]] = []
+    elided: list[tuple[str, str, dict[str, Any]]] = []
+    for path, method, _ in _operations(document):
+        declared = _declared(document, path, method, status_code)
+        elided.append((path, method, _without_its_codes(declared)))
+        if not EXPECTED_DOMAIN_CODES.get((path, method, status_code)):
+            plain.append(declared)
+
+    assert plain, "в схеме нет ни одной операции без доменных кодов на этом статусе"
+    reference = _without_its_codes(plain[0])
+    for path, method, item in elided:
+        assert item == reference, (
+            f"{method.upper()} {path}: объявление {status_code} расходится с общим "
+            f"не только списком кодов"
+        )
+    assert_error_shape(plain[0], f"общее объявление {status_code}")
+    return plain[0]
 
 
 async def test_validation_error_matches_its_declaration(

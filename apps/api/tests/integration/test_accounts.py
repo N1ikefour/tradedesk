@@ -45,6 +45,11 @@ OTHER_EMAIL = "other@example.test"
 
 ACCOUNTS = f"{API}/accounts"
 
+# SPEC.md 5.2: «последние 50 sync_runs». Число продублировано, а не импортировано из
+# роутера намеренно: тест сверяет ответ со спекой, а взятое из роутера значение
+# подстроилось бы под любую его правку и предел перестал бы быть проверяемым.
+SPEC_SYNC_RUNS_LIMIT = 50
+
 # Значение, которого нет больше нигде: по нему тело ответа обыскивается на утечку.
 INVESTOR_PASSWORD = "s3cret-investor-pw-9f2a1c"
 
@@ -848,6 +853,31 @@ async def test_sync_runs_of_an_account_without_history_are_empty(client: AsyncCl
     created = await create_account(client)
 
     assert (await client.get(f"{ACCOUNTS}/{created['id']}/sync-runs")).json() == {"items": []}
+
+
+async def test_sync_runs_are_capped_at_fifty(client: AsyncClient) -> None:
+    """Курсора у этого списка нет, поэтому предел — единственное, что держит размер ответа.
+
+    `sync_runs` растёт по строке на каждый прогон синка: у активного счёта их набегают
+    тысячи, и снятый предел выдаёт их все одним ответом.
+    """
+    created = await create_account(client)
+    # `deals_received` = возраст прогона в минутах: по нему видно, что отброшены самые
+    # старые, а не первые попавшиеся.
+    await execute(
+        """
+        insert into sync_runs (account_id, source, started_at, deals_received)
+        select cast(:id as uuid), 'collector', now() - make_interval(mins => age), age
+        from generate_series(1, cast(:count as integer)) as age
+        """,
+        id=created["id"],
+        count=SPEC_SYNC_RUNS_LIMIT + 5,
+    )
+
+    items = (await client.get(f"{ACCOUNTS}/{created['id']}/sync-runs")).json()["items"]
+
+    assert len(items) == SPEC_SYNC_RUNS_LIMIT
+    assert [item["deals_received"] for item in items] == list(range(1, SPEC_SYNC_RUNS_LIMIT + 1))
 
 
 # --- валидация на границе ----------------------------------------------------
