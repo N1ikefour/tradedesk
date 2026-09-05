@@ -50,6 +50,11 @@ def _matches_etag(header: str | None, etag: str) -> bool:
     """RFC 9110 §8.8.3: `If-None-Match` может нести список тегов и слабую форму `W/`."""
     if not header:
         return False
+    # RFC 9110 §13.1.2: `*` совпадает с любым существующим представлением. Браузеры его в
+    # условном GET не шлют, но отвечать телом на «отдай, только если у тебя ничего нет» —
+    # нарушение, которое стоит одной ветки.
+    if header.strip() == "*":
+        return True
     return any(candidate.strip().removeprefix("W/") == etag for candidate in header.split(","))
 
 

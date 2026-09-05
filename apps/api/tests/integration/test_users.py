@@ -372,6 +372,8 @@ async def test_timezones_revalidation_is_cheap(client: AsyncClient) -> None:
     assert second.content == b""
     assert second.headers["etag"] == etag
     assert (await client.get(TIMEZONES, headers={"if-none-match": '"stale"'})).status_code == 200
+    # RFC 9110 §13.1.2: `*` — «отдай, только если у тебя ничего нет», и представление есть.
+    assert (await client.get(TIMEZONES, headers={"if-none-match": "*"})).status_code == 304
 
 
 async def test_timezones_body_matches_the_validated_set(client: AsyncClient) -> None:

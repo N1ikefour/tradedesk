@@ -1,12 +1,13 @@
 """Контракт /users/me, не требующий живых зависимостей (S0-08).
 
 Здесь пути, которые обрываются до Postgres: отсутствующая cookie, чужой Origin, форма
-ответа в схеме. Живой профиль и правка — в tests/integration/test_users.py.
+ответа в схеме, разбор условного GET. Живой профиль и правка — в
+tests/integration/test_users.py.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
 
 import pytest
@@ -15,6 +16,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.core.openapi import JSON_MEDIA_TYPE
 from app.domains.auth.cookies import SESSION_COOKIE_NAME
+from app.domains.users import router as users_router
 
 API = "/api/v1"
 ORIGIN = "http://test"
@@ -121,6 +123,78 @@ def test_timezones_declares_not_modified(document: dict[str, Any]) -> None:
     неожиданным ответом, а маршрут отдаёт его на каждой ревалидации.
     """
     assert "304" in document["paths"][TIMEZONES]["get"]["responses"]
+
+
+# --- ETag списка таймзон -----------------------------------------------------
+
+
+@pytest.fixture
+def etag_of(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[tuple[str, ...]], str]]:
+    """Считает тег для подставленного набора имён.
+
+    `timezones_etag` читает список без аргументов и кэширован на процесс, поэтому кэш
+    сбрасывается перед каждым подсчётом и ещё раз после теста: подставленный набор,
+    оставшийся в кэше, отдавал бы чужой тег соседним тестам.
+    """
+
+    def compute(zones: tuple[str, ...]) -> str:
+        monkeypatch.setattr(users_router, "sorted_timezones", lambda: zones)
+        users_router.timezones_etag.cache_clear()
+        return users_router.timezones_etag()
+
+    yield compute
+    users_router.timezones_etag.cache_clear()
+
+
+def test_timezones_etag_follows_the_list_contents(
+    etag_of: Callable[[tuple[str, ...]], str],
+) -> None:
+    """То, чего не проверяет round-trip: разное содержимое обязано давать разные теги.
+
+    «Тот же тег → 304, чужой тег → 200» остаётся верным и для константы вместо хеша, а
+    константа означает вечный 304 — клиент навсегда остался бы со списком той версии,
+    которую скачал первым.
+    """
+    base = etag_of(("Europe/Moscow", "UTC"))
+
+    assert etag_of(("Europe/Moscow", "UTC")) == base
+    assert etag_of(("Europe/Moscow", "UTC", "Asia/Tokyo")) != base
+    assert etag_of(("Europe/Moscow", "Asia/Tokyo")) != base
+    assert etag_of(()) != base
+
+
+def test_timezones_etag_is_a_strong_quoted_tag(
+    etag_of: Callable[[tuple[str, ...]], str],
+) -> None:
+    """RFC 9110 §8.8.3: значение — строка в кавычках. Без них заголовок невалиден."""
+    etag = etag_of(("Europe/Moscow", "UTC"))
+
+    assert etag.startswith('"')
+    assert etag.endswith('"')
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ('"tag"', True),
+        # Слабая форма: тождественности байтов она не обещает, но для выбора «отдавать
+        # ли тело» этого достаточно.
+        ('W/"tag"', True),
+        ('"other", "tag"', True),
+        ('W/"other" , "tag"', True),
+        # RFC 9110 §13.1.2: `*` совпадает с любым существующим представлением.
+        ("*", True),
+        (" * ", True),
+        ('"other"', False),
+        # Кавычки делают из подстановки обычный тег, который с нашим не совпадает.
+        ('"*"', False),
+        ('"ta"', False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_if_none_match_is_parsed_per_rfc(header: str | None, expected: bool) -> None:
+    assert users_router._matches_etag(header, '"tag"') is expected
 
 
 # --- доступ ------------------------------------------------------------------
