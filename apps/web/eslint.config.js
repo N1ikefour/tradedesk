@@ -24,6 +24,24 @@ export default tseslint.config(
     },
     rules: {
       '@typescript-eslint/no-explicit-any': 'error',
+      'no-restricted-syntax': [
+        'error',
+        {
+          // Комбинатор `>` обязателен: без него `:has()` видит `type` у вложенного JSX
+          // внутри значения чужого атрибута (`title={<Icon type="warn" />}`) и кнопка
+          // без типа проходит молча. `asChild` исключён: Slot рендерит ребёнка,
+          // и `<button>` в DOM не появляется — тип там осел бы на чужом теге.
+          selector:
+            'JSXOpeningElement[name.name=/^(button|Button)$/]' +
+            ':not(:has(> JSXAttribute[name.name="type"]))' +
+            ':not(:has(> JSXAttribute[name.name="asChild"]))',
+          message:
+            'Кнопка без явного type по стандарту HTML равна type="submit": внутри <form> ' +
+            'клик по ней и Enter в любом поле отправят форму — запросом, которого никто ' +
+            'не просил. Укажи type="button" для действия на странице или type="submit", ' +
+            'если кнопка действительно отправляет форму.',
+        },
+      ],
     },
   },
   {

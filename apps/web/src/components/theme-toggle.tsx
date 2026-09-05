@@ -9,7 +9,14 @@ export function ThemeToggle() {
   const label = theme === 'dark' ? t.theme.switchToLight : t.theme.switchToDark;
 
   return (
-    <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label={label} title={label}>
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      onClick={toggleTheme}
+      aria-label={label}
+      title={label}
+    >
       {theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}
     </Button>
   );
