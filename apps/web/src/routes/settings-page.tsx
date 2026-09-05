@@ -379,6 +379,7 @@ export function SettingsPage() {
             {t.settings.loadFailed} {messageForError(profile.error)}
           </Alert>
           <Button
+            type="button"
             variant="outline"
             size="sm"
             onClick={() => {

@@ -34,6 +34,7 @@ export function DevOutboxPage() {
         <h1 className="text-2xl font-semibold tracking-tight">{t.outbox.title}</h1>
         <div className="ml-auto flex items-center gap-2">
           <Button
+            type="button"
             variant="outline"
             size="sm"
             onClick={() => {
