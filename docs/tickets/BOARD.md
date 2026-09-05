@@ -28,12 +28,12 @@ Updated: 2026-09-05
 
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
-| S1-01 | JSON Schema ингеста | backend | In Progress | [ветка](https://github.com/N1ikefour/tradedesk/tree/feat/S1-01-ingest-schema) |
+| S1-01 | JSON Schema ингеста | backend | In Review | [PR #13](https://github.com/N1ikefour/tradedesk/pull/13) |
 | S1-02 | Нормализатор deals | backend | Backlog | — |
 | S1-03 | Сборщик позиций | backend | Backlog | — |
 | S1-04 | `POST /ingest/deals` | backend | Backlog | — |
 | S1-05 | `POST /ingest/heartbeat` + assignments | backend | Backlog | — |
-| S1-06 | Accounts API | backend | In Progress | `feat/S1-06-accounts-api` |
+| S1-06 | Accounts API | backend | In Review | [PR #14](https://github.com/N1ikefour/tradedesk/pull/14) |
 | S1-07 | Символы | backend | Backlog | — |
 | S1-08 | Коллектор: mt5_client + worker | collector | Backlog | — |
 | S1-09 | Коллектор: менеджер процессов, heartbeat | collector | Backlog | — |
@@ -97,3 +97,4 @@ Updated: 2026-09-05
 | X-19 | Релизный zip-артефакт | infra | Todo | — |
 | X-20 | Кэш `get_settings` отравляет соседние модули тестов | backend | Todo | — |
 | X-21 | `sync_runs.error` может вынести пароль наружу | backend + collector | Todo | — |
+| X-22 | Комиссии с тремя знаками ломают сверку | backend | Todo | — |
