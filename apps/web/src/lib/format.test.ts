@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   formatDateTime,
   formatHourOfDay,
+  formatRelativePast,
   formatTradingDay,
   formatZonedDateTime,
 } from '@/lib/format';
@@ -68,5 +69,34 @@ describe('formatTradingDay', () => {
     const firstHours = new Date('2026-09-01T00:30:00Z'); // 03:30 1 сентября в Москве
 
     expect(formatTradingDay(firstHours, 'Europe/Moscow', 7)).toBe('31.08.2026');
+  });
+});
+
+describe('formatRelativePast', () => {
+  const now = new Date('2026-09-02T12:00:00Z');
+  const ago = (seconds: number) => new Date(now.getTime() - seconds * 1000).toISOString();
+
+  it('единицу выбирает по возрасту, а склонение — по числу', () => {
+    expect(formatRelativePast(ago(5), now)).toBe('только что');
+    expect(formatRelativePast(ago(59), now)).toBe('только что');
+    expect(formatRelativePast(ago(60), now)).toBe('1 минуту назад');
+    expect(formatRelativePast(ago(120), now)).toBe('2 минуты назад');
+    expect(formatRelativePast(ago(300), now)).toBe('5 минут назад');
+    expect(formatRelativePast(ago(3600), now)).toBe('1 час назад');
+    expect(formatRelativePast(ago(3 * 3600), now)).toBe('3 часа назад');
+    expect(formatRelativePast(ago(86_400), now)).toBe('1 день назад');
+    expect(formatRelativePast(ago(5 * 86_400), now)).toBe('5 дней назад');
+  });
+
+  // Часы браузера и сервера расходятся на секунды; отрицательный возраст — не данные,
+  // а этот рассинхрон, и «через -3 секунды» было бы хуже, чем «только что».
+  it('момент из будущего читается как «только что», а не как отрицательный возраст', () => {
+    expect(formatRelativePast(new Date(now.getTime() + 30_000).toISOString(), now)).toBe(
+      'только что',
+    );
+  });
+
+  it('нечитаемая дата возвращается как есть', () => {
+    expect(formatRelativePast('не дата', now)).toBe('не дата');
   });
 });

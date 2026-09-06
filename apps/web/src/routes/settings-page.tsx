@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 
 import { messageForError } from '@/api/error-message';
 import { ApiRequestError } from '@/api/errors';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { t } from '@/i18n';
 import { formatHourOfDay, formatTradingDay, formatZonedDateTime } from '@/lib/format';
@@ -65,53 +65,6 @@ function buildPatch(user: Profile, values: FormValues): ProfileUpdate {
     patch.day_boundary_hour = values.dayBoundaryHour;
   }
   return patch;
-}
-
-type FieldControlProps = {
-  id: string;
-  'aria-invalid': boolean;
-  'aria-describedby': string | undefined;
-};
-
-function Field({
-  id,
-  label,
-  hint,
-  error,
-  children,
-}: {
-  id: string;
-  label: string;
-  hint?: string;
-  error?: string | null;
-  children: (props: FieldControlProps) => ReactNode;
-}) {
-  const hintId = `${id}-hint`;
-  const errorId = `${id}-error`;
-  const describedBy = [hint === undefined ? null : hintId, error ? errorId : null]
-    .filter((value): value is string => value !== null)
-    .join(' ');
-
-  return (
-    <div className="flex flex-col gap-2">
-      <Label htmlFor={id}>{label}</Label>
-      {children({
-        id,
-        'aria-invalid': Boolean(error),
-        'aria-describedby': describedBy === '' ? undefined : describedBy,
-      })}
-      {hint === undefined ? null : (
-        <p id={hintId} className="text-xs text-muted-foreground">
-          {hint}
-        </p>
-      )}
-      {error ? (
-        <p id={errorId} role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
-      ) : null}
-    </div>
-  );
 }
 
 function SettingsForm({ user }: { user: Profile }) {

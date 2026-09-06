@@ -19,6 +19,11 @@ export const ERROR_CODE = {
   invalidCode: 'invalid_code',
   tooManyAttempts: 'too_many_attempts',
   rateLimited: 'rate_limited',
+  accountNotFound: 'account_not_found',
+  accountAlreadyExists: 'account_already_exists',
+  accountArchived: 'account_archived',
+  accountPaused: 'account_paused',
+  notMt5Account: 'not_mt5_account',
 } as const satisfies Record<string, ErrorCode>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

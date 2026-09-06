@@ -22,13 +22,13 @@ Updated: 2026-09-05
 
 **Этап 0 «Фундамент»** (`PLAN.md` §4, задачи `S0-01…S0-09` в `SPEC.md` §12).
 
-Приложение поднимается локально одной командой, в него можно войти по коду и открыть настройки. **Продуктовых экранов нет** — за пунктами меню заглушки. **Синхронизации с MT5 нет ни в каком виде:** сделкам сейчас взяться неоткуда.
+Приложение поднимается локально одной командой, в него можно войти по коду, открыть настройки и завести торговый счёт. Дашборд, Журнал и Календарь — по-прежнему заглушки. **Синхронизации с MT5 нет ни в каком виде:** сделкам сейчас взяться неоткуда, и добавленный счёт остаётся в статусе «ожидает коллектор» — самого коллектора ещё нет.
 
 | Компонент | Что реально есть |
 |---|---|
 | `apps/api` | FastAPI за префиксом `/api/v1`. Эндпоинты: `/health`, `/version`; `/auth/request-code`, `/auth/verify`, `/auth/logout`, `/auth/me`; `/users/me` (GET, PATCH), `/users/timezones`; `/accounts` (GET, POST), `/accounts/{id}` (PATCH, DELETE) и его `pause`/`resume`/`archive`/`sync-now`/`sync-runs`; `/ingest/heartbeat` и `/internal/collector/assignments` — только по сервисному токену `COLLECTOR_TOKEN`, без сессии (`S1-05`); `/dev/outbox` — есть везде, кроме `APP_ENV=prod`, где маршрут не регистрируется и не попадает в OpenAPI. `app/core`: config, db, redis, structlog со скрабом секретов, скраб внешнего текста (`core/text.py`), формат ошибок, UUID v7, rate-limit, envelope-шифрование и ротация ключа |
 | Схема БД | 14 таблиц, три ревизии Alembic: `b07a46275bbc` — 13 таблиц ядра, `8f4c1d90ae27` — `dev_outbox` и индексы, `c3a91f4d27be` — `sync_requested_at` у счетов. ER-диаграмма и разбор «что молча ломает» — `docs/ARCHITECTURE.md` |
-| `apps/web` | React 19 + TS strict: роутер (`src/routes/routes.tsx`), экран входа, настройки профиля, тёмная тема, TanStack Query, `openapi-fetch` и сгенерированный `src/api/schema.d.ts`. Дашборд, Журнал, Календарь, Счета — `stub-pages.tsx` |
+| `apps/web` | React 19 + TS strict: роутер (`src/routes/routes.tsx`), экран входа, настройки профиля, тёмная тема, TanStack Query, `openapi-fetch` и сгенерированный `src/api/schema.d.ts`. Экран счетов (`/accounts`, `/accounts/:id`): карточки со статусами, форма счёта, пауза/архив/удаление, история синков (`S1-11`). Дашборд, Журнал, Календарь — `stub-pages.tsx` |
 | `apps/collector-mt5` | **кода нет**: пакет-заглушка `collector/__init__.py` + `collector.env.example`. Забор сделок — `S1-08`, установка на Windows — `S1-10` |
 | Локальный запуск | `docker-compose.yml`: postgres 16, redis 7, api, web (профиль `local`); web-static + Caddy (профиль `prod`). `make init` / `make up` / `make down` работают |
 | `infra/scripts` | `init-env.sh`, `start.{sh,bat}`, `stop.{sh,bat}`, `ci-target.sh`. Скриптов `update`, `backup`, `restore` ещё нет — `T-02` |
