@@ -27,7 +27,7 @@
 
 ## 2. Стек и границы
 
-- **Backend:** Python 3.12, FastAPI, async SQLAlchemy 2, Alembic, arq. `arq`, `boto3` и `pandas` разрешены `SPEC.md` §2.3, но в зависимостях их ещё нет — придут со своими задачами.
+- **Backend:** Python 3.12, FastAPI, async SQLAlchemy 2, Alembic, arq. `arq` стоит и работает: сервис `worker`, точка входа `apps/api/app/worker.py` (`X-25`). `boto3` и `pandas` разрешены `SPEC.md` §2.3, но в зависимостях их ещё нет — придут со своими задачами.
 - **Frontend:** Vite + React 19 + TypeScript, TanStack Query/Table, Tailwind, shadcn/ui.
 - **Коллектор:** Python + `MetaTrader5`, только Windows, вне Docker, синхронный код.
 - Список разрешённых зависимостей — `SPEC.md` §2.3. Новая зависимость — только с обоснованием в PR.
