@@ -49,9 +49,9 @@ Updated: 2026-09-06
 | S2-02 | Journal API: entry, reflection, tags, vocab | backend | **Done** | [PR #21](https://github.com/N1ikefour/tradedesk/pull/21) |
 | S2-03 | Ручные сделки | backend | Backlog | — |
 | S2-04 | Вложения | backend | Backlog | — |
-| S2-05 | Календарь API + `analytics/summary` | backend | Backlog | — |
-| S2-06 | UI Journal таблица | frontend | Review | [PR #22](https://github.com/N1ikefour/tradedesk/pull/22) |
-| S2-07 | UI Position card | frontend | Backlog | — |
+| S2-05 | Календарь API + `analytics/summary` | backend | In Progress | `feat/S2-05-analytics` |
+| S2-06 | UI Journal таблица | frontend | **Done** | [PR #22](https://github.com/N1ikefour/tradedesk/pull/22) |
+| S2-07 | UI Position card | frontend | In Progress | `feat/S2-07-position-card` |
 | S2-08 | UI Скриншоты | frontend | Backlog | — |
 | S2-09 | UI Calendar | frontend | Backlog | — |
 | S2-10 | UI Dashboard v1 | frontend | Backlog | — |
