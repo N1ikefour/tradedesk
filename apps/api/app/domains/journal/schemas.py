@@ -20,14 +20,18 @@ SPEC.md 5.4 заменяет запись целиком, поэтому отс�
 from __future__ import annotations
 
 import re
-from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 from pydantic_core import PydanticCustomError
 
+from app.core.query import (
+    FILTER_SEPARATOR,
+    PeriodQuery,
+    split_filter,
+)
 from app.core.schemas import MoneyOut, QuantityOut, UtcDatetime
 from app.core.text import sanitize_external_text
 from app.domains.accounts import models as account_models
@@ -73,17 +77,7 @@ MAX_SEARCH_LENGTH = 100
 MAX_TAGS = 20
 MAX_TAG_LENGTH = 64
 MAX_SYMBOL_LENGTH = 32
-MAX_ACCOUNT_IDS = 100
 
-FILTER_SEPARATOR = ","
-
-NAIVE_DATETIME_ERROR = (
-    "Укажите время с часовым поясом, например 2026-09-01T00:00:00Z: "
-    "без него непонятно, чей это день"
-)
-RANGE_ERROR = "Начало периода должно быть раньше конца"
-ACCOUNT_IDS_ERROR = "account_ids — список UUID через запятую"
-TOO_MANY_ACCOUNT_IDS_ERROR = f"Не больше {MAX_ACCOUNT_IDS} счетов в фильтре"
 TOO_MANY_TAGS_ERROR = f"Не больше {MAX_TAGS} тегов в фильтре"
 TAG_TOO_LONG_ERROR = f"Тег не длиннее {MAX_TAG_LENGTH} символов"
 SYMBOL_TOO_LONG_ERROR = f"Символ не длиннее {MAX_SYMBOL_LENGTH} символов"
@@ -121,40 +115,17 @@ def position_result(position: ingest_models.Position) -> PositionResult | None:
     return "be"
 
 
-def _split(raw: str | None) -> list[str]:
-    if raw is None:
-        return []
-    return [part.strip() for part in raw.split(FILTER_SEPARATOR) if part.strip()]
-
-
-class PositionsQuery(BaseModel):
+class PositionsQuery(PeriodQuery):
     """Фильтры `GET /journal/positions` — SPEC.md 5.4.
 
-    `extra="forbid"` намеренно: опечатка в имени параметра (`symbols` вместо `symbol`)
-    иначе молча вернула бы нефильтрованный список, и человек принял бы чужие строки за
-    свои. Лучше 400.
+    Счета и период — общие с аналитикой (`core/query.py`): одно и то же множество строк
+    обязано попадать и в список, и в шапку, а две копии правила разъезжаются молча.
+    Остальные фильтры свои, и `extra="forbid"` из базы действует на все: опечатка в имени
+    параметра (`symbols` вместо `symbol`) иначе молча вернула бы нефильтрованный список,
+    и человек принял бы чужие строки за свои. Лучше 400.
     """
 
-    model_config = ConfigDict(extra="forbid")
-
-    account_ids: str | None = Field(
-        default=None,
-        description="UUID счетов через запятую. Пусто — все неархивированные счета",
-    )
     status: PositionStatus | None = Field(default=None)
-    date_from: datetime | None = Field(
-        default=None,
-        alias="from",
-        description=(
-            "Начало периода включительно. Сравнивается с временем закрытия, "
-            "а у ещё открытых позиций — с временем открытия"
-        ),
-    )
-    date_to: datetime | None = Field(
-        default=None,
-        alias="to",
-        description="Конец периода, не включая границу",
-    )
     symbol: str | None = Field(default=None, description="Точное совпадение с symbol_norm")
     direction: PositionDirection | None = Field(default=None)
     result: PositionResult | None = Field(
@@ -170,18 +141,6 @@ class PositionsQuery(BaseModel):
     sort: str = Field(default=DEFAULT_SORT, description=SORT_ERROR)
     limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT)
     cursor: str | None = Field(default=None, description="Курсор следующей страницы")
-
-    @field_validator("date_from", "date_to")
-    @classmethod
-    def _requires_offset(cls, value: datetime | None) -> datetime | None:
-        """Наивное время — не «UTC по умолчанию», а незаданный вопрос.
-
-        Приняв его молча, мы сдвинули бы границу периода на смещение пользователя и
-        выкинули из выборки сделки его вечера.
-        """
-        if value is not None and value.tzinfo is None:
-            raise PydanticCustomError("naive_datetime", NAIVE_DATETIME_ERROR)
-        return value
 
     @field_validator("symbol")
     @classmethod
@@ -240,44 +199,15 @@ class PositionsQuery(BaseModel):
             raise PydanticCustomError("cursor", INVALID_CURSOR_MESSAGE) from error
         return value
 
-    @field_validator("account_ids")
-    @classmethod
-    def _account_ids(cls, value: str | None) -> str | None:
-        """Разбор здесь, а не в свойстве: только на границе он даёт 400, а не 500."""
-        parts = _split(value)
-        if len(parts) > MAX_ACCOUNT_IDS:
-            raise PydanticCustomError("account_ids", TOO_MANY_ACCOUNT_IDS_ERROR)
-        for part in parts:
-            try:
-                UUID(part)
-            except ValueError as error:
-                raise PydanticCustomError("account_ids", ACCOUNT_IDS_ERROR) from error
-        return value
-
     @field_validator("tags")
     @classmethod
     def _tags(cls, value: str | None) -> str | None:
-        parts = _split(value)
+        parts = split_filter(value)
         if len(parts) > MAX_TAGS:
             raise PydanticCustomError("tags", TOO_MANY_TAGS_ERROR)
         if any(len(part) > MAX_TAG_LENGTH for part in parts):
             raise PydanticCustomError("tags", TAG_TOO_LONG_ERROR)
         return value
-
-    @model_validator(mode="after")
-    def _range_is_not_empty(self) -> PositionsQuery:
-        """Перевёрнутый период — ошибка, а не пустой журнал.
-
-        Пустой список в ответ на `from > to` человек читает как «сделок нет», а не как
-        «границы перепутаны», и ищет пропажу в данных.
-        """
-        if (
-            self.date_from is not None
-            and self.date_to is not None
-            and self.date_from >= self.date_to
-        ):
-            raise PydanticCustomError("range", RANGE_ERROR)
-        return self
 
     @property
     def sort_key(self) -> Sort:
@@ -291,13 +221,8 @@ class PositionsQuery(BaseModel):
         return decode_cursor(self.cursor, self.sort_key)
 
     @property
-    def account_id_list(self) -> list[UUID]:
-        """Пусто — «все неархивированные счета» (SPEC.md 5.1)."""
-        return [UUID(part) for part in _split(self.account_ids)]
-
-    @property
     def tag_list(self) -> list[str]:
-        return _split(self.tags)
+        return split_filter(self.tags)
 
 
 class AccountBrief(BaseModel):

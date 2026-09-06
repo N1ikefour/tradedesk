@@ -18,6 +18,7 @@ from app.core.origin import OriginCheckMiddleware
 from app.core.redis import close_redis
 from app.core.security import check_master_key, master_key_scrub_values
 from app.domains.accounts.router import router as accounts_router
+from app.domains.analytics.router import router as analytics_router
 from app.domains.auth.router import router as auth_router
 from app.domains.collector.router import router as collector_router
 from app.domains.journal.router import router as journal_router
@@ -114,6 +115,9 @@ def create_app() -> FastAPI:
     app.include_router(users_router, prefix=API_PREFIX)
     app.include_router(accounts_router, prefix=API_PREFIX)
     app.include_router(journal_router, prefix=API_PREFIX)
+    # Своего префикса у роутера нет: сводка живёт под `/analytics`, а календарь остаётся
+    # на своём пути из SPEC.md 5.4 (`/journal/calendar`) — считает их один домен.
+    app.include_router(analytics_router, prefix=API_PREFIX)
     # Маршруты коллектора: сессии у них нет, авторизация — сервисный токен. Живут под тем
     # же префиксом, что и остальной API (CLAUDE.md §5), и в OpenAPI остаются намеренно —
     # это контракт для S1-08, а пароль в схеме присутствует как тип, а не как значение.
