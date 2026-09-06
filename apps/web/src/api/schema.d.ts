@@ -304,6 +304,51 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/journal/positions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List Positions
+     * @description Страница журнала.
+     *
+     *     Сортировка по умолчанию — `close_time:desc`: журнал открывают, чтобы увидеть, чем
+     *     кончился сегодняшний день. Открытые позиции при сортировке по времени закрытия и по
+     *     длительности идут первой группой в обе стороны — у них этих значений нет, а прятать
+     *     их в хвост тысячестрочного списка нельзя.
+     */
+    get: operations['list_positions_api_v1_journal_positions_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/journal/positions/{position_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Position
+     * @description Карточка позиции со сделками, записью журнала и рефлексией.
+     */
+    get: operations['get_position_api_v1_journal_positions__position_id__get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/ingest/heartbeat': {
     parameters: {
       query?: never;
@@ -377,6 +422,23 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /**
+     * AccountBrief
+     * @description Счёт в строке журнала — SPEC.md 5.4: «account {id,label,color,is_demo}».
+     */
+    AccountBrief: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Label */
+      label: string;
+      /** Color */
+      color: string;
+      /** Is Demo */
+      is_demo: boolean;
+    };
     /**
      * AccountCreateRequest
      * @description Тело `POST /accounts` (SPEC.md 5.2).
@@ -603,6 +665,65 @@ export interface components {
        */
       status: 'pending' | 'connected' | 'needs_attention' | 'paused' | 'archived';
     };
+    /**
+     * DealResponse
+     * @description Сделка позиции. `raw` и `time_server` наружу не выходят — это отладка (SPEC.md 3.3).
+     */
+    DealResponse: {
+      /** Deal Ticket */
+      deal_ticket: number;
+      /** Order Ticket */
+      order_ticket: number | null;
+      /** Symbol Raw */
+      symbol_raw: string;
+      /** Deal Type */
+      deal_type: string;
+      /** Entry */
+      entry: string;
+      /** Reason */
+      reason: string | null;
+      /**
+       * Volume
+       * @description Десятичное число, numeric(18,8)
+       */
+      volume: string;
+      /**
+       * Price
+       * @description Десятичное число, numeric(18,8)
+       */
+      price: string;
+      /**
+       * Profit
+       * @description Десятичное число, numeric(18,2)
+       */
+      profit: string;
+      /**
+       * Commission
+       * @description Десятичное число, numeric(18,2)
+       */
+      commission: string;
+      /**
+       * Swap
+       * @description Десятичное число, numeric(18,2)
+       */
+      swap: string;
+      /**
+       * Fee
+       * @description Десятичное число, numeric(18,2)
+       */
+      fee: string;
+      /**
+       * Time Utc
+       * Format: date-time
+       */
+      time_utc: string;
+      /** Comment */
+      comment: string | null;
+      /** Magic */
+      magic: number | null;
+      /** Source */
+      source: string;
+    };
     /** HealthResponse */
     HealthResponse: {
       /**
@@ -680,6 +801,48 @@ export interface components {
       /** Ignored */
       ignored: number;
     };
+    /**
+     * JournalEntryBrief
+     * @description Запись журнала «кратко» (SPEC.md 5.4): теги и одна строка заметки.
+     */
+    JournalEntryBrief: {
+      /** Tags */
+      tags: string[];
+      /** Has Notes */
+      has_notes: boolean;
+      /** Notes Preview */
+      notes_preview: string | null;
+      /** Risk Amount */
+      risk_amount: string | null;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+    };
+    /**
+     * JournalEntryDetail
+     * @description Запись журнала целиком — блок карточки (SPEC.md 9.3).
+     */
+    JournalEntryDetail: {
+      /** Notes */
+      notes: string | null;
+      /** Tags */
+      tags: string[];
+      /** Planned Entry */
+      planned_entry: string | null;
+      /** Planned Sl */
+      planned_sl: string | null;
+      /** Planned Tp */
+      planned_tp: string | null;
+      /** Risk Amount */
+      risk_amount: string | null;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+    };
     /** OutboxEntry */
     OutboxEntry: {
       /**
@@ -708,6 +871,271 @@ export interface components {
     OutboxResponse: {
       /** Items */
       items: components['schemas']['OutboxEntry'][];
+    };
+    /**
+     * PositionCard
+     * @description Карточка позиции — SPEC.md 5.4.
+     *
+     *     ⚠️ Вложений здесь пока нет списком, только счётчик: presigned GET требует S3, а его
+     *     в проекте нет до `S2-04`. Поле `attachments` добавит она же.
+     */
+    PositionCard: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /**
+       * Position Id
+       * @description Идентификатор позиции у брокера
+       */
+      position_id: number;
+      /** Symbol Raw */
+      symbol_raw: string;
+      /** Symbol Norm */
+      symbol_norm: string;
+      /**
+       * Direction
+       * @enum {string}
+       */
+      direction: 'long' | 'short';
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: 'open' | 'closed';
+      /**
+       * Result
+       * @description Только у закрытых позиций
+       */
+      result: ('win' | 'loss' | 'be') | null;
+      /**
+       * Open Time
+       * Format: date-time
+       */
+      open_time: string;
+      /** Close Time */
+      close_time: string | null;
+      /**
+       * Volume Opened
+       * @description Десятичное число, numeric(18,8)
+       */
+      volume_opened: string;
+      /**
+       * Volume Closed
+       * @description Десятичное число, numeric(18,8)
+       */
+      volume_closed: string;
+      /**
+       * Avg Entry Price
+       * @description Десятичное число, numeric(18,8)
+       */
+      avg_entry_price: string;
+      /** Avg Exit Price */
+      avg_exit_price: string | null;
+      /**
+       * Gross Pnl
+       * @description Десятичное число, numeric(18,2)
+       */
+      gross_pnl: string;
+      /**
+       * Commission
+       * @description Десятичное число, numeric(18,2)
+       */
+      commission: string;
+      /**
+       * Swap
+       * @description Десятичное число, numeric(18,2)
+       */
+      swap: string;
+      /**
+       * Fee
+       * @description Десятичное число, numeric(18,2)
+       */
+      fee: string;
+      /**
+       * Net Pnl
+       * @description Десятичное число, numeric(18,2)
+       */
+      net_pnl: string;
+      /** Deals Count */
+      deals_count: number;
+      /** Duration Seconds */
+      duration_seconds: number | null;
+      /** Close Reason */
+      close_reason: string | null;
+      /** Is Manual */
+      is_manual: boolean;
+      /**
+       * Rebuilt At
+       * Format: date-time
+       */
+      rebuilt_at: string;
+      account: components['schemas']['AccountBrief'];
+      journal_entry: components['schemas']['JournalEntryDetail'] | null;
+      reflection: components['schemas']['ReflectionDetail'] | null;
+      /** Attachments Count */
+      attachments_count: number;
+      /** Deals */
+      deals: components['schemas']['DealResponse'][];
+    };
+    /**
+     * PositionListItem
+     * @description Строка журнала — SPEC.md 5.4.
+     */
+    PositionListItem: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /**
+       * Position Id
+       * @description Идентификатор позиции у брокера
+       */
+      position_id: number;
+      /** Symbol Raw */
+      symbol_raw: string;
+      /** Symbol Norm */
+      symbol_norm: string;
+      /**
+       * Direction
+       * @enum {string}
+       */
+      direction: 'long' | 'short';
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: 'open' | 'closed';
+      /**
+       * Result
+       * @description Только у закрытых позиций
+       */
+      result: ('win' | 'loss' | 'be') | null;
+      /**
+       * Open Time
+       * Format: date-time
+       */
+      open_time: string;
+      /** Close Time */
+      close_time: string | null;
+      /**
+       * Volume Opened
+       * @description Десятичное число, numeric(18,8)
+       */
+      volume_opened: string;
+      /**
+       * Volume Closed
+       * @description Десятичное число, numeric(18,8)
+       */
+      volume_closed: string;
+      /**
+       * Avg Entry Price
+       * @description Десятичное число, numeric(18,8)
+       */
+      avg_entry_price: string;
+      /** Avg Exit Price */
+      avg_exit_price: string | null;
+      /**
+       * Gross Pnl
+       * @description Десятичное число, numeric(18,2)
+       */
+      gross_pnl: string;
+      /**
+       * Commission
+       * @description Десятичное число, numeric(18,2)
+       */
+      commission: string;
+      /**
+       * Swap
+       * @description Десятичное число, numeric(18,2)
+       */
+      swap: string;
+      /**
+       * Fee
+       * @description Десятичное число, numeric(18,2)
+       */
+      fee: string;
+      /**
+       * Net Pnl
+       * @description Десятичное число, numeric(18,2)
+       */
+      net_pnl: string;
+      /** Deals Count */
+      deals_count: number;
+      /** Duration Seconds */
+      duration_seconds: number | null;
+      /** Close Reason */
+      close_reason: string | null;
+      /** Is Manual */
+      is_manual: boolean;
+      /**
+       * Rebuilt At
+       * Format: date-time
+       */
+      rebuilt_at: string;
+      account: components['schemas']['AccountBrief'];
+      journal_entry: components['schemas']['JournalEntryBrief'] | null;
+      reflection: components['schemas']['ReflectionBrief'] | null;
+      /** Attachments Count */
+      attachments_count: number;
+    };
+    /**
+     * PositionsPage
+     * @description Страница списка — конверт SPEC.md 5.1.
+     *
+     *     Общего числа строк здесь нет намеренно: `count(*)` по журналу стоит столько же, сколько
+     *     сама страница, а нужен он одному месту — шапке журнала, которая берёт числа из
+     *     `GET /analytics/summary` (S2-05).
+     */
+    PositionsPage: {
+      /** Items */
+      items: components['schemas']['PositionListItem'][];
+      /**
+       * Next Cursor
+       * @description Курсор следующей страницы. `null` — страница последняя
+       */
+      next_cursor: string | null;
+    };
+    /**
+     * ReflectionBrief
+     * @description SPEC.md 5.4 обещает в списке ровно `reflection.filled_at` — им и ограничиваемся.
+     */
+    ReflectionBrief: {
+      /** Filled At */
+      filled_at: string | null;
+    };
+    /**
+     * ReflectionDetail
+     * @description Рефлексия целиком. Значения — из словарей SPEC.md 3.5, их отдаёт `/journal/vocab`.
+     */
+    ReflectionDetail: {
+      /** Setup Grade */
+      setup_grade: ('A' | 'B' | 'C' | 'D') | null;
+      /** Execution Grade */
+      execution_grade: ('A' | 'B' | 'C' | 'D') | null;
+      /** Followed Plan */
+      followed_plan: boolean | null;
+      /** Emotion Before */
+      emotion_before: string | null;
+      /** Emotion During */
+      emotion_during: string | null;
+      /** Emotion After */
+      emotion_after: string | null;
+      /** Mistakes */
+      mistakes: string[];
+      /** Confidence */
+      confidence: number | null;
+      /** Free Text */
+      free_text: string | null;
+      /** Filled At */
+      filled_at: string | null;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
     };
     /** RequestCodeRequest */
     RequestCodeRequest: {
@@ -871,6 +1299,7 @@ export interface components {
       | 'method_not_allowed'
       | 'not_found'
       | 'not_mt5_account'
+      | 'position_not_found'
       | 'rate_limited'
       | 'too_many_attempts'
       | 'unauthorized'
@@ -4424,6 +4853,432 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'account_not_found' | 'not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  list_positions_api_v1_journal_positions_get: {
+    parameters: {
+      query?: {
+        /** @description UUID счетов через запятую. Пусто — все неархивированные счета */
+        account_ids?: string | null;
+        status?: ('open' | 'closed') | null;
+        /** @description Начало периода включительно. Сравнивается с временем закрытия, а у ещё открытых позиций — с временем открытия */
+        from?: string | null;
+        /** @description Конец периода, не включая границу */
+        to?: string | null;
+        /** @description Точное совпадение с symbol_norm */
+        symbol?: string | null;
+        direction?: ('long' | 'short') | null;
+        /** @description Только закрытые позиции: у открытых итога нет */
+        result?: ('win' | 'loss' | 'be') | null;
+        /** @description Теги через запятую. Позиция должна нести их все */
+        tags?: string | null;
+        /** @description Заполнена ли рефлексия (`filled_at` не пуст) */
+        has_reflection?: boolean | null;
+        /** @description Поиск по символу и тексту заметки */
+        q?: string | null;
+        /** @description Сортировка задаётся как «поле:направление», поле — одно из close_time, open_time, net_pnl, symbol_norm, duration_seconds; направление — asc или desc */
+        sort?: string;
+        limit?: number;
+        /** @description Курсор следующей страницы */
+        cursor?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PositionsPage'];
+        };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (account_not_found, not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'account_not_found' | 'not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  get_position_api_v1_journal_positions__position_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        position_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PositionCard'];
+        };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (not_found, position_not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'not_found' | 'position_not_found';
               message: string;
               details: {
                 [key: string]: unknown;

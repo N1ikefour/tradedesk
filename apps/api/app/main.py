@@ -20,6 +20,7 @@ from app.core.security import check_master_key, master_key_scrub_values
 from app.domains.accounts.router import router as accounts_router
 from app.domains.auth.router import router as auth_router
 from app.domains.collector.router import router as collector_router
+from app.domains.journal.router import router as journal_router
 from app.domains.mail.provider import check_email_provider
 from app.domains.mail.router import router as dev_router
 from app.domains.system.router import router as system_router
@@ -112,6 +113,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router, prefix=API_PREFIX)
     app.include_router(users_router, prefix=API_PREFIX)
     app.include_router(accounts_router, prefix=API_PREFIX)
+    app.include_router(journal_router, prefix=API_PREFIX)
     # Маршруты коллектора: сессии у них нет, авторизация — сервисный токен. Живут под тем
     # же префиксом, что и остальной API (CLAUDE.md §5), и в OpenAPI остаются намеренно —
     # это контракт для S1-08, а пароль в схеме присутствует как тип, а не как значение.

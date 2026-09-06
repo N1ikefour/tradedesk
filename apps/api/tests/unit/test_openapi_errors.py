@@ -46,6 +46,7 @@ EXPECTED_GLOBAL_CODES: dict[int, set[str]] = {
 
 # Доменные коды — поверх общего набора, на своих маршрутах (ADR-0004).
 _ACCOUNT = f"{API}/accounts/{{account_id}}"
+_POSITIONS = f"{API}/journal/positions"
 
 EXPECTED_DOMAIN_CODES: dict[tuple[str, str, int], set[str]] = {
     (f"{API}/auth/verify", "post", 422): {"invalid_code", "too_many_attempts"},
@@ -63,6 +64,10 @@ EXPECTED_DOMAIN_CODES: dict[tuple[str, str, int], set[str]] = {
     (f"{_ACCOUNT}/sync-now", "post", 404): {"account_not_found"},
     (f"{_ACCOUNT}/sync-now", "post", 422): {"account_archived", "account_paused"},
     (f"{_ACCOUNT}/sync-runs", "get", 404): {"account_not_found"},
+    # Журнал (S2-01). Испорченного курсора здесь нет намеренно: он разбирается на границе
+    # и уходит общим `validation_error` — доменного кода на 400 у журнала не появляется.
+    (_POSITIONS, "get", 404): {"account_not_found"},
+    (f"{_POSITIONS}/{{position_id}}", "get", 404): {"position_not_found"},
 }
 
 
