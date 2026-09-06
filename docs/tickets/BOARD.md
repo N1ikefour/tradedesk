@@ -34,11 +34,11 @@ Updated: 2026-09-05
 | S1-04 | `POST /ingest/deals` | backend | Backlog | ждёт S1-03 |
 | S1-05 | `POST /ingest/heartbeat` + assignments | backend | **Done** | [PR #16](https://github.com/N1ikefour/tradedesk/pull/16) |
 | S1-06 | Accounts API | backend | **Done** | [PR #14](https://github.com/N1ikefour/tradedesk/pull/14) |
-| S1-07 | Символы | backend | In Progress | `feat/S1-07-symbols` |
+| S1-07 | Символы | backend | **Done** | [PR #17](https://github.com/N1ikefour/tradedesk/pull/17) |
 | S1-08 | Коллектор: mt5_client + worker | collector | Backlog | — |
 | S1-09 | Коллектор: менеджер процессов, heartbeat | collector | Backlog | — |
 | S1-10 | Коллектор: установка | collector | Backlog | — |
-| S1-11 | UI Accounts | frontend | In Progress | `feat/S1-11-ui-accounts` |
+| S1-11 | UI Accounts | frontend | **Done** | [PR #18](https://github.com/N1ikefour/tradedesk/pull/18) |
 | S1-12 | Сверка | backend | Backlog | — |
 
 ## Этап 2 — Журнал
