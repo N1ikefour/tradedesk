@@ -45,7 +45,7 @@ Updated: 2026-09-05
 
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
-| S2-01 | Journal API: список и карточка | backend | Backlog | — |
+| S2-01 | Journal API: список и карточка | backend | In Progress | `feat/S2-01-journal-api` |
 | S2-02 | Journal API: entry, reflection, tags, vocab | backend | Backlog | — |
 | S2-03 | Ручные сделки | backend | Backlog | — |
 | S2-04 | Вложения | backend | Backlog | — |
@@ -100,7 +100,7 @@ Updated: 2026-09-05
 | X-22 | Комиссии с тремя знаками ломают сверку | backend | Todo | — |
 | X-23 | Сервер молча переинтерпретирует то, что файл отвергает | backend | Todo | — |
 | X-24 | Объявления ошибок сверяются не на всех статусах | backend | Todo | — |
-| X-25 | Нет worker'а: `check_collectors` никто не зовёт | infra | Todo | — |
+| X-25 | Нет worker'а: `check_collectors` никто не зовёт | infra | In Progress | `feat/X-25-worker-arq` |
 | X-26 | Счёт не освобождается от умершего коллектора | backend | Отложен | решение принципала, см. тикет |
 | X-27 | Нет лимита попыток на маршрутах коллектора | backend | Todo | — |
 | X-28 | Правки документов в `main` идут мимо гейта | infra | Todo | — |
