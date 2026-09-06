@@ -1,14 +1,18 @@
-"""Контракт журнала по объявленной схеме — S2-01.
+"""Контракт журнала по объявленной схеме — S2-01 и S2-02.
 
-Фронт (`S2-06`) генерирует типы из OpenAPI (`make types`), поэтому проверяется не код, а
-то, что приложение обещает. Три вещи ломаются в этом домене молча:
+Фронт (`S2-06`, `S2-07`) генерирует типы из OpenAPI (`make types`), поэтому проверяется не
+код, а то, что приложение обещает. Четыре вещи ломаются в этом домене молча:
 
 * **`deals.raw` и `time_server`.** В `raw` лежит полный ответ терминала. Одна строка в
   модели ответа — и он уезжает клиенту целиком; в диффе это выглядит как «добавил поле».
 * **Деньги числом.** В JSON нет десятичного типа: `number` означает double на фронте,
   а `numeric(18,2)` теряет и масштаб, и точность на больших суммах.
-* **Лишний маршрут.** `S2-02`…`S2-04` живут отдельными задачами; появившийся здесь
-  черновик `PUT entry` попал бы в схему и в типы фронта раньше своей задачи.
+* **Необязательное поле в теле `PUT`.** `PUT` заменяет запись целиком: поле со значением
+  по умолчанию превращает частичное тело автосохранения (`S2-07`) в молчаливое стирание
+  заметки. В диффе это выглядит как «добавил `= None`», поэтому проверяется схемой:
+  у тел записи множество `required` обязано совпадать со множеством полей.
+* **Лишний маршрут.** `S2-03` и `S2-04` живут отдельными задачами; появившийся здесь
+  черновик ручной сделки попал бы в схему и в типы фронта раньше своей задачи.
 
 Значения (а не имена и типы) проверяет `tests/integration/test_journal.py`.
 """
@@ -22,15 +26,25 @@ import pytest
 from fastapi import FastAPI
 
 from app.core.openapi import JSON_MEDIA_TYPE
+from app.domains.journal import vocab
 
 API = "/api/v1"
 JOURNAL = f"{API}/journal"
 
-# Ровно два `GET` из SPEC.md 5.4. Остальное — S2-02…S2-04.
+# Чтение из S2-01 плюс запись из S2-02. Ручные сделки, вложения и календарь — S2-03…S2-05.
 EXPECTED_ROUTES = {
     (f"{JOURNAL}/positions", "get"),
     (f"{JOURNAL}/positions/{{position_id}}", "get"),
+    (f"{JOURNAL}/positions/{{position_id}}/entry", "put"),
+    (f"{JOURNAL}/positions/{{position_id}}/reflection", "put"),
+    (f"{JOURNAL}/tags", "get"),
+    (f"{JOURNAL}/tags", "post"),
+    (f"{JOURNAL}/tags/{{tag_id}}", "delete"),
+    (f"{JOURNAL}/vocab", "get"),
 }
+
+# Тела записи: всё, что клиент присылает в `PUT` и `POST` этого домена.
+REQUEST_MODELS = ("JournalEntryUpdate", "ReflectionUpdate", "TagCreateRequest")
 
 # Колонки позиции из SPEC.md 3.3 плюс вычисленный `result`. Список заморожен: правка
 # этого множества — единственный способ добавить поле в ответ, и она видна в ревью.
@@ -201,8 +215,8 @@ def _journal_success_schemas(document: dict[str, Any]) -> list[tuple[str, dict[s
 # --- границы задачи -----------------------------------------------------------
 
 
-def test_journal_declares_exactly_two_reads(document: dict[str, Any]) -> None:
-    """S2-01 — только список и карточка; правки, вложения и теги приходят своими задачами."""
+def test_journal_declares_exactly_the_routes_of_its_two_tasks(document: dict[str, Any]) -> None:
+    """S2-01 и S2-02; ручные сделки, вложения и календарь приходят своими задачами."""
     declared = {
         (path, method)
         for path, item in document["paths"].items()
@@ -343,3 +357,191 @@ def test_sort_and_filters_are_documented_for_the_frontend(document: dict[str, An
         "limit",
         "cursor",
     }
+
+
+# --- тела записи: обязательность полей и есть главный инвариант S2-02 ----------
+
+
+@pytest.mark.parametrize("model", REQUEST_MODELS)
+def test_write_bodies_require_every_field(document: dict[str, Any], model: str) -> None:
+    """`PUT` заменяет запись целиком, поэтому необязательных полей в теле быть не может.
+
+    Это не педантизм про REST. `S2-07` сохраняет карточку автоматически; поле со
+    значением по умолчанию превратило бы его частичное тело в «сотри заметку», причём
+    молча и с ответом `200`. С обязательными полями тот же запрос — `400`.
+
+    Проверка равенством, а не «required непусто»: единственный способ ослабить правило —
+    дать полю default, и тогда оно выпадает из `required`, а тест краснеет.
+    """
+    schema = _component(document, model)
+
+    assert set(schema["required"]) == set(schema["properties"])
+
+
+@pytest.mark.parametrize("model", REQUEST_MODELS)
+def test_write_bodies_reject_unknown_fields(document: dict[str, Any], model: str) -> None:
+    """Опечатка в имени поля — `400`, а не «сохранено» с потерянным значением."""
+    assert _component(document, model)["additionalProperties"] is False
+
+
+def test_entry_body_declares_exactly_the_columns_of_journal_entries(
+    document: dict[str, Any],
+) -> None:
+    """SPEC.md 3.4: `notes, tags, planned_*, risk_amount`. `updated_at` ставит сервер."""
+    schema = _component(document, "JournalEntryUpdate")
+
+    assert set(schema["properties"]) == {
+        "notes",
+        "tags",
+        "planned_entry",
+        "planned_sl",
+        "planned_tp",
+        "risk_amount",
+    }
+
+
+def test_reflection_body_declares_exactly_the_columns_of_reflections(
+    document: dict[str, Any],
+) -> None:
+    """`filled_at` в теле нет намеренно: его считает сервер (SPEC.md 5.4)."""
+    schema = _component(document, "ReflectionUpdate")
+
+    assert set(schema["properties"]) == {
+        "setup_grade",
+        "execution_grade",
+        "followed_plan",
+        "emotion_before",
+        "emotion_during",
+        "emotion_after",
+        "mistakes",
+        "confidence",
+        "free_text",
+    }
+    assert "filled_at" not in schema["properties"]
+
+
+# --- словари SPEC.md 3.5: один источник у проверки тела и у /journal/vocab -----
+
+
+def _enum_of(document: dict[str, Any], model: str, field: str) -> list[str]:
+    declared = _component(document, model)["properties"][field]
+    for variant in _variants(declared):
+        if "enum" in variant:
+            values = variant["enum"]
+            assert isinstance(values, list)
+            return values
+    raise AssertionError(f"{model}.{field} объявлено без enum: {declared}")
+
+
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        ("emotion_before", list(vocab.EMOTIONS)),
+        ("emotion_during", list(vocab.EMOTIONS)),
+        ("emotion_after", list(vocab.EMOTIONS)),
+        ("setup_grade", list(vocab.SETUP_GRADES)),
+        ("execution_grade", list(vocab.EXECUTION_GRADES)),
+    ],
+)
+def test_reflection_enums_match_the_vocabulary(
+    document: dict[str, Any], field: str, expected: list[str]
+) -> None:
+    """Принимаемые значения и словарь фронта — одно и то же множество, а не два похожих.
+
+    Разъехавшись, они дали бы худший из возможных отказов: значение, выбранное в
+    показанном меню, сервер отвергает как невалидное.
+    """
+    assert _enum_of(document, "ReflectionUpdate", field) == expected
+
+
+def test_mistakes_items_match_the_vocabulary(document: dict[str, Any]) -> None:
+    items = _component(document, "ReflectionUpdate")["properties"]["mistakes"]["items"]
+
+    assert items["enum"] == list(vocab.MISTAKES)
+
+
+def test_vocab_response_carries_exactly_the_four_dictionaries(document: dict[str, Any]) -> None:
+    """SPEC.md 3.5 — эмоции, ошибки и две шкалы оценок. Пятого словаря там нет."""
+    schema = _component(document, "VocabResponse")
+
+    assert set(schema["properties"]) == {
+        "emotions",
+        "mistakes",
+        "setup_grades",
+        "execution_grades",
+    }
+    assert schema["additionalProperties"] is False
+
+
+def test_vocabulary_keys_are_the_ones_the_spec_names(document: dict[str, Any]) -> None:
+    """Ключи стабильны и не переименовываются (SPEC.md 3.5): они уже лежат в `reflections`.
+
+    Список продублирован здесь дословно намеренно — иначе тест сверял бы `vocab.py` с
+    самим собой и переименование ключа прошло бы мимо него.
+    """
+    assert list(vocab.EMOTIONS) == [
+        "calm",
+        "focused",
+        "edgy",
+        "fomo",
+        "frustrated",
+        "bored",
+        "euphoric",
+        "fearful",
+        "tired",
+    ]
+    assert list(vocab.MISTAKES) == [
+        "no_plan",
+        "early_entry",
+        "late_entry",
+        "chased",
+        "moved_sl",
+        "no_sl",
+        "oversized",
+        "revenge",
+        "early_exit",
+        "held_too_long",
+        "against_trend",
+        "news_ignored",
+        "overtrading",
+    ]
+    assert list(vocab.SETUP_GRADES) == ["A", "B", "C", "D"]
+    assert list(vocab.EXECUTION_GRADES) == ["A", "B", "C", "D"]
+
+
+# --- теги ---------------------------------------------------------------------
+
+
+def test_tag_response_carries_the_dictionary_row_and_its_usage(document: dict[str, Any]) -> None:
+    """`usage_count` — не украшение: удаление тега снимает его со всех этих позиций."""
+    schema = _component(document, "TagResponse")
+
+    assert set(schema["properties"]) == {"id", "name", "color", "usage_count"}
+
+
+def test_tag_deletion_reports_how_many_positions_it_touched(document: dict[str, Any]) -> None:
+    """Ответ на `DELETE` — не `204`: клиенту иначе неоткуда узнать масштаб последствий."""
+    schema = _component(document, "TagDeletedResponse")
+
+    assert set(schema["properties"]) == {"name", "positions_updated"}
+    responses = document["paths"][f"{JOURNAL}/tags/{{tag_id}}"]["delete"]["responses"]
+    assert "200" in responses
+
+
+@pytest.mark.parametrize(
+    ("path", "method", "code"),
+    [
+        (f"{JOURNAL}/positions/{{position_id}}/entry", "put", "position_not_found"),
+        (f"{JOURNAL}/positions/{{position_id}}/reflection", "put", "position_not_found"),
+        (f"{JOURNAL}/tags/{{tag_id}}", "delete", "tag_not_found"),
+    ],
+)
+def test_write_routes_declare_their_not_found_code(
+    document: dict[str, Any], path: str, method: str, code: str
+) -> None:
+    """Чужая позиция и чужой тег — `404` с доменным кодом, объявленным в схеме (ADR-0004)."""
+    response = document["paths"][path][method]["responses"]["404"]
+    body = response["content"][JSON_MEDIA_TYPE]["schema"]
+    declared = body["properties"]["error"]["properties"]["code"]["enum"]
+
+    assert code in declared

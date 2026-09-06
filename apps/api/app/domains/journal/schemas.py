@@ -9,13 +9,20 @@ ORM-объекта, по той же причине, что и в домене �
 Деньги, цены и объёмы уходят строками (`core.schemas.MoneyOut`, `QuantityOut`): в JSON нет
 десятичного типа, и число здесь означало бы double на фронте (`CLAUDE.md` §2 — никакого
 float в денежных расчётах).
+
+⚠️ **У всех тел записи в этом файле поля обязательны — без исключений.** `PUT` из
+SPEC.md 5.4 заменяет запись целиком, поэтому отсутствие поля означало бы «сотри его».
+Автосохранение карточки (`S2-07`) с частичным телом стёрло бы заметку без единого
+признака ошибки; с обязательными полями тот же запрос — `400 validation_error` с именем
+пропущенного поля. Очистка выражается явным `null` (у массивов — пустым массивом).
 """
 
 from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Literal
+from decimal import Decimal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
@@ -25,6 +32,7 @@ from app.core.schemas import MoneyOut, QuantityOut, UtcDatetime
 from app.core.text import sanitize_external_text
 from app.domains.accounts import models as account_models
 from app.domains.ingest import models as ingest_models
+from app.domains.ingest import schemas as ingest_schemas
 from app.domains.journal import models
 from app.domains.journal.cursor import (
     DEFAULT_SORT,
@@ -36,12 +44,22 @@ from app.domains.journal.cursor import (
     decode_cursor,
     parse_sort,
 )
+from app.domains.journal.vocab import (
+    CONFIDENCE_MAX,
+    CONFIDENCE_MIN,
+    EMOTIONS,
+    EXECUTION_GRADES,
+    MISTAKES,
+    SETUP_GRADES,
+    Emotion,
+    Grade,
+    Mistake,
+)
 
 PositionStatus = Literal["open", "closed"]
 PositionDirection = Literal["long", "short"]
 # SPEC.md 5.4: «result считается по net_pnl: > 0 win, < 0 loss, = 0 breakeven».
 PositionResult = Literal["win", "loss", "be"]
-Grade = Literal["A", "B", "C", "D"]
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
@@ -576,3 +594,348 @@ class PositionsPage(BaseModel):
     next_cursor: str | None = Field(
         description="Курсор следующей страницы. `null` — страница последняя"
     )
+
+
+# --- запись: entry, reflection, теги, словари (S2-02) --------------------------
+
+# Ограничения на длину текста — не про показ, а про то, что тело запроса не транспорт для
+# дампа: без них одна заметка кладёт в `text` сколько угодно мегабайт, и каждая страница
+# журнала потом тащит их через `notes_preview`.
+MAX_NOTES_LENGTH = 20_000
+MAX_FREE_TEXT_LENGTH = 20_000
+
+# Границы колонок берутся у ingest, а не переписываются: `numeric(18,2)` и `numeric(18,8)`
+# — одни и те же колонки SPEC.md 2.2, и вторая копия чисел разошлась бы молча. Имена
+# намеренно свои: `Money`/`Quantity` из ingest проверяют присланное коллектором, здесь —
+# другое поле и другие правила (`risk_amount` строго положителен, цены плана — нет).
+MONEY_LIMIT = ingest_schemas.MONEY_LIMIT
+QUANTITY_LIMIT = ingest_schemas.QUANTITY_LIMIT
+
+TAG_COLOR_PATTERN = r"^#[0-9a-f]{6}$"
+_TAG_COLOR_RE = re.compile(TAG_COLOR_PATTERN)
+
+# Postgres не хранит нулевой байт в `text`: asyncpg роняет запрос уже на драйвере, то есть
+# это была бы 500 на обычной вставке текста. Остальные управляющие символы в заметке
+# законны — она многострочная.
+NUL = "\x00"
+
+# Одиночные строки, которые едут в чипы и в фильтр: здесь управляющие символы не нужны.
+_TAG_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+NOTES_TOO_LONG_ERROR = f"Заметка не длиннее {MAX_NOTES_LENGTH} символов"
+FREE_TEXT_TOO_LONG_ERROR = f"Текст не длиннее {MAX_FREE_TEXT_LENGTH} символов"
+NUL_ERROR = "Текст не должен содержать нулевой байт"
+TAG_REQUIRED_ERROR = "Тег не может быть пустым"
+TAG_CONTROL_ERROR = "Тег не должен содержать управляющие символы"
+# Запятая — разделитель в `?tags=a,b` (фильтр списка). Тег с запятой сохранился бы, но
+# отфильтровать по нему стало бы нечем: человек видел бы чип, по которому ничего не ищется.
+TAG_COMMA_ERROR = "Тег не может содержать запятую: по ней разделяется фильтр ?tags="
+TOO_MANY_ENTRY_TAGS_ERROR = f"Не больше {MAX_TAGS} тегов на позиции"
+TAG_COLOR_ERROR = "Цвет тега — шестизначный hex в нижнем регистре, например #2563eb, либо null"
+CONFIDENCE_ERROR = f"Уверенность — целое от {CONFIDENCE_MIN} до {CONFIDENCE_MAX}"
+TOO_MANY_MISTAKES_ERROR = f"Не больше {len(MISTAKES)} ошибок"
+
+# Тела запросов принимают и число, и строку — как и контракт ингеста (SPEC.md 5.3).
+# Наружу то же самое уходит только строкой (`MoneyOut`, `QuantityOut`): в JSON нет
+# десятичного типа, и клиенту, которому нужна точность, строка доступна в обе стороны.
+PlannedPrice = Annotated[Decimal, Field(allow_inf_nan=False, gt=-QUANTITY_LIMIT, lt=QUANTITY_LIMIT)]
+# Строго положителен, и это не вкус: SPEC.md 3.4 — «если задано, R считается от него»,
+# то есть ноль здесь стал бы делением на ноль в метриках (S2-05), а отрицательный риск
+# перевернул бы знак R. «Не задано» выражается `null`, а не нулём.
+RiskAmount = Annotated[Decimal, Field(allow_inf_nan=False, gt=0, lt=MONEY_LIMIT)]
+
+
+def _reject_nul(value: str, code: str) -> str:
+    if NUL in value:
+        raise PydanticCustomError(code, NUL_ERROR)
+    return value
+
+
+def _clean_long_text(value: str | None, code: str, limit: int, too_long: str) -> str | None:
+    """Свободный текст: пробелы по краям срезаются, пустой становится `null`.
+
+    Строка из одних пробелов — это отсутствие текста, а не текст. Разница видна снаружи:
+    от неё зависит `has_notes` в списке и `filled_at` у рефлексии.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    # Длина раньше поиска по строке: мегабайтное значение не должно доходить до сканирования.
+    if len(text) > limit:
+        raise PydanticCustomError(code, too_long)
+    return _reject_nul(text, code)
+
+
+def normalize_tag(value: str) -> str:
+    """Один тег в каноничном виде ввода: обрезанный, без управляющих символов и запятых.
+
+    Регистр **сохраняется**: показывается то, что напечатал человек. Сведение `Trend` и
+    `trend` к одной записи словаря — не здесь, а в сервисе: для этого нужен сам словарь.
+    """
+    tag = value.strip()
+    if not tag:
+        raise PydanticCustomError("tags", TAG_REQUIRED_ERROR)
+    if len(tag) > MAX_TAG_LENGTH:
+        raise PydanticCustomError("tags", TAG_TOO_LONG_ERROR)
+    if FILTER_SEPARATOR in tag:
+        raise PydanticCustomError("tags", TAG_COMMA_ERROR)
+    if _TAG_CONTROL_RE.search(tag):
+        raise PydanticCustomError("tags", TAG_CONTROL_ERROR)
+    return tag
+
+
+def fold_tag(value: str) -> str:
+    """Ключ сравнения тегов. `casefold`, а не `lower`: словарь пользователя русский тоже."""
+    return value.casefold()
+
+
+def normalize_tag_list(value: list[str]) -> list[str]:
+    """Теги позиции: нормализованные, без повторов без учёта регистра, в порядке ввода.
+
+    Повтор — не ошибка: `["Trend", "trend"]` это один тег, названный дважды, и 400 здесь
+    был бы придиркой. Побеждает первое написание в списке; какое написание доедет до
+    хранения, решает словарь (см. `service.resolve_tags`).
+    """
+    unique: dict[str, str] = {}
+    for raw in value:
+        tag = normalize_tag(raw)
+        unique.setdefault(fold_tag(tag), tag)
+    if len(unique) > MAX_TAGS:
+        raise PydanticCustomError("tags", TOO_MANY_ENTRY_TAGS_ERROR)
+    return list(unique.values())
+
+
+def validate_tag_color(value: str | None) -> str | None:
+    """`null` или `#rrggbb` в нижнем регистре — и ничего больше.
+
+    Не палитра из восьми цветов, как у счетов: тегов бывает много, и восьми им мало.
+    Но и не свободная строка: значение уезжает во фронт как цвет чипа, то есть в `style`,
+    и произвольный текст оттуда — это то, что там оказаться не должно.
+    """
+    if value is None:
+        return None
+    color = value.strip().lower()
+    if not color:
+        return None
+    if _TAG_COLOR_RE.match(color) is None:
+        raise PydanticCustomError("color", TAG_COLOR_ERROR)
+    return color
+
+
+class JournalEntryUpdate(BaseModel):
+    """Тело `PUT /journal/positions/{id}/entry` — полная замена записи журнала.
+
+    ⚠️ **Все поля обязательны.** Это не придирка к форме, а единственная защита от того,
+    ради чего маршрут и существует: `PUT` заменяет запись целиком, поэтому тело без
+    `notes` означает «сотри заметку». Автосохранение карточки (`S2-07`), приславшее
+    частичное тело, молча уничтожило бы написанное — и человек узнал бы об этом при
+    следующем открытии позиции. С обязательными полями такой запрос — `400
+    validation_error` с именем пропущенного поля в `details.fields`, то есть ошибка
+    клиента, видимая в разработке, а не потеря данных у пользователя.
+
+    Очистка поля выражается явным `null` (у `tags` — пустым массивом). Разница между
+    «не прислал» и «прислал null» здесь единственное, что отделяет ошибку от намерения.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    notes: str | None = Field(
+        description=(
+            f"Заметка, не длиннее {MAX_NOTES_LENGTH} символов. "
+            "`null` или строка из пробелов очищают заметку"
+        )
+    )
+    tags: list[str] = Field(
+        description=(
+            f"Теги позиции, не больше {MAX_TAGS}. Пустой массив снимает все теги. "
+            "Отсутствующие в словаре заводятся автоматически; написание берётся из "
+            "словаря, если тег там уже есть"
+        )
+    )
+    planned_entry: PlannedPrice | None = Field(description="Планируемая цена входа")
+    planned_sl: PlannedPrice | None = Field(description="Планируемый стоп-лосс")
+    planned_tp: PlannedPrice | None = Field(description="Планируемый тейк-профит")
+    risk_amount: RiskAmount | None = Field(
+        description="Риск в валюте счёта, строго больше нуля. От него считается R"
+    )
+
+    @field_validator("notes")
+    @classmethod
+    def _notes(cls, value: str | None) -> str | None:
+        return _clean_long_text(value, "notes", MAX_NOTES_LENGTH, NOTES_TOO_LONG_ERROR)
+
+    @field_validator("tags")
+    @classmethod
+    def _tags(cls, value: list[str]) -> list[str]:
+        return normalize_tag_list(value)
+
+
+class ReflectionUpdate(BaseModel):
+    """Тело `PUT /journal/positions/{id}/reflection` — полная замена рефлексии.
+
+    ⚠️ **Все поля обязательны** — по той же причине, что и у записи журнала, см.
+    `JournalEntryUpdate`.
+
+    Значения эмоций и ошибок проверяются по словарям SPEC.md 3.5 здесь, на границе:
+    ключ вне словаря сохранился бы, но подписи у него на фронте нет, и в карточке он
+    остался бы пустым местом, которое нечем объяснить.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    setup_grade: Grade | None = Field(description="Оценка сетапа")
+    execution_grade: Grade | None = Field(description="Оценка исполнения")
+    followed_plan: bool | None = Field(description="Следовал ли плану")
+    emotion_before: Emotion | None = Field(description="Эмоция до входа")
+    emotion_during: Emotion | None = Field(description="Эмоция в позиции")
+    emotion_after: Emotion | None = Field(description="Эмоция после выхода")
+    mistakes: list[Mistake] = Field(description="Ошибки из словаря. Пустой массив — их нет")
+    confidence: int | None = Field(description=CONFIDENCE_ERROR)
+    free_text: str | None = Field(
+        description=f"Свободный текст, не длиннее {MAX_FREE_TEXT_LENGTH} символов"
+    )
+
+    @field_validator("mistakes")
+    @classmethod
+    def _mistakes(cls, value: list[Mistake]) -> list[Mistake]:
+        """Повторы схлопываются, порядок ввода сохраняется: два одинаковых чипа — один чип."""
+        unique = list(dict.fromkeys(value))
+        if len(unique) > len(MISTAKES):
+            raise PydanticCustomError("mistakes", TOO_MANY_MISTAKES_ERROR)
+        return unique
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _confidence_is_not_bool(cls, value: object) -> object:
+        """`true` — не «уверенность 1»: bool в Python наследует int, и pydantic пропустил
+        бы его как 1. Клиент получил бы «сохранено» вместо явной ошибки."""
+        if isinstance(value, bool):
+            raise PydanticCustomError("confidence", CONFIDENCE_ERROR)
+        return value
+
+    @field_validator("confidence")
+    @classmethod
+    def _confidence(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if not CONFIDENCE_MIN <= value <= CONFIDENCE_MAX:
+            raise PydanticCustomError("confidence", CONFIDENCE_ERROR)
+        return value
+
+    @field_validator("free_text")
+    @classmethod
+    def _free_text(cls, value: str | None) -> str | None:
+        return _clean_long_text(value, "free_text", MAX_FREE_TEXT_LENGTH, FREE_TEXT_TOO_LONG_ERROR)
+
+    @property
+    def is_filled(self) -> bool:
+        """Есть ли в рефлексии хоть одно заполненное поле — SPEC.md 5.4 про `filled_at`.
+
+        Заполнено — значит человек **сделал выбор**, а не «значение похоже на непустое».
+        Отсюда два неочевидных следствия, и оба видны пользователю:
+
+        * `followed_plan = false` — заполнено. Это самый ценный ответ в журнале
+          («плану не следовал»), и считать его пустым значило бы гасить иконку рефлексии
+          ровно на тех сделках, ради разбора которых журнал и ведут.
+        * пустая строка в `free_text` и пустой массив `mistakes` — не заполнено. Выбора
+          в них нет: валидатор уже свёл строку из пробелов к `null`, а пустой массив —
+          это «ошибок не отмечено», то же самое, что не трогать поле.
+
+        `confidence` в словах не нуждается: его диапазон 1..5, нуля в нём нет.
+        """
+        return any(
+            (
+                self.setup_grade is not None,
+                self.execution_grade is not None,
+                self.followed_plan is not None,
+                self.emotion_before is not None,
+                self.emotion_during is not None,
+                self.emotion_after is not None,
+                bool(self.mistakes),
+                self.confidence is not None,
+                self.free_text is not None,
+            )
+        )
+
+
+class TagCreateRequest(BaseModel):
+    """Тело `POST /journal/tags` — завести тег или задать существующему написание и цвет.
+
+    ⚠️ **Оба поля обязательны**, как и в остальных телах этой задачи: `color: null`
+    очищает цвет, отсутствие поля — ошибка. Иначе «сохранил тег без цвета» и «не трогал
+    цвет» выглядели бы одинаково.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description=f"Название тега, не длиннее {MAX_TAG_LENGTH} символов")
+    color: str | None = Field(description=TAG_COLOR_ERROR)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        return normalize_tag(value)
+
+    @field_validator("color")
+    @classmethod
+    def _color(cls, value: str | None) -> str | None:
+        return validate_tag_color(value)
+
+
+class TagResponse(BaseModel):
+    """Тег словаря пользователя — SPEC.md 3.4."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    name: str
+    color: str | None
+    usage_count: int = Field(description="На скольких позициях пользователя стоит этот тег")
+
+    @classmethod
+    def from_tag(cls, tag: models.Tag, usage_count: int) -> TagResponse:
+        return cls(id=tag.id, name=tag.name, color=tag.color, usage_count=usage_count)
+
+
+class TagsResponse(BaseModel):
+    """Конверт списка SPEC.md 5.1. Курсора нет: словарь тегов человека помещается целиком."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[TagResponse]
+
+
+class TagDeletedResponse(BaseModel):
+    """Итог `DELETE /journal/tags/{tag_id}`.
+
+    Не `204`: удаление тега из словаря снимает его со **всех** позиций пользователя, и
+    сколько их было — единственное, чего клиент не может узнать после факта. Без числа
+    интерфейсу нечего показать вместо «удалено», хотя изменились десятки позиций.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="Название удалённого тега — для сообщения пользователю")
+    positions_updated: int = Field(description="Со скольких позиций тег снят")
+
+
+class VocabResponse(BaseModel):
+    """Словари SPEC.md 3.5. Ключи стабильны, русские подписи — на фронте."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    emotions: list[str]
+    mistakes: list[str]
+    setup_grades: list[str]
+    execution_grades: list[str]
+
+    @classmethod
+    def current(cls) -> VocabResponse:
+        return cls(
+            emotions=list(EMOTIONS),
+            mistakes=list(MISTAKES),
+            setup_grades=list(SETUP_GRADES),
+            execution_grades=list(EXECUTION_GRADES),
+        )

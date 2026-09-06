@@ -1,6 +1,12 @@
-"""Журнал против настоящих Postgres и Redis — DoD S2-01.
+"""Журнал против настоящих Postgres и Redis — DoD S2-01 и S2-02.
 
-Главный тест здесь один: `test_pages_cover_every_row_once_on_identical_sort_values`.
+Файл читается двумя частями: сначала чтение (список, курсор, фильтры, карточка — S2-01),
+затем запись (`PUT entry`, `PUT reflection`, словарь тегов, `vocab` — S2-02). Они живут в
+одном модуле, а не в двух, потому что делят посев: `seed_position` и вход двух разных
+пользователей нужны обеим половинам, а второй модуль означал бы второй контейнер Postgres
+на прогон ради тех же семи строк.
+
+Главный тест первой половины один: `test_pages_cover_every_row_once_on_identical_sort_values`.
 Все пять полей сортировки SPEC.md 5.4 неуникальны, поэтому позиции сеются с **дословно
 одинаковыми** значениями во всех пяти сразу, и страницы обходятся от первой до последней.
 Тест на разных значениях был бы зелёным при любой реализации курсора и не доказывал бы
@@ -16,10 +22,15 @@
 из `_order_by` и снять его же из предиката `_after`. Мутацию `_order_by` uuid4 убивает во
 всех 12 параметризациях ниже, uuid7 — в 8 из 12; мутацию `_after` обе убивают в 12 из 12.
 То есть ложно зелёным uuid7 тест не сделал бы, но слабее делает.
+
+Во второй половине главных тестов два, и оба про то, что человек увидел бы как враньё
+интерфейса: `test_filled_at_survives_later_edits` (отметка о разборе не переставляется) и
+`test_same_tag_in_another_case_does_not_create_a_second_row` (`Trend` и `trend` — один тег).
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
@@ -1070,3 +1081,547 @@ async def test_attachments_count_does_not_grow_the_query_count(
     assert ten_rows == one_row, f"запросов на страницу стало больше: {one_row} -> {ten_rows}"
     items, _ = await page(client)
     assert all(item["attachments_count"] == 1 for item in items)
+
+
+# --- запись: entry, reflection, теги, словари (S2-02) --------------------------
+
+
+TAGS = f"{API}/journal/tags"
+VOCAB = f"{API}/journal/vocab"
+
+EMPTY_ENTRY: dict[str, Any] = {
+    "notes": None,
+    "tags": [],
+    "planned_entry": None,
+    "planned_sl": None,
+    "planned_tp": None,
+    "risk_amount": None,
+}
+
+EMPTY_REFLECTION: dict[str, Any] = {
+    "setup_grade": None,
+    "execution_grade": None,
+    "followed_plan": None,
+    "emotion_before": None,
+    "emotion_during": None,
+    "emotion_after": None,
+    "mistakes": [],
+    "confidence": None,
+    "free_text": None,
+}
+
+
+def entry_url(position_id: UUID | str) -> str:
+    return f"{POSITIONS}/{position_id}/entry"
+
+
+def reflection_url(position_id: UUID | str) -> str:
+    return f"{POSITIONS}/{position_id}/reflection"
+
+
+async def put_entry(
+    client: AsyncClient, position_id: UUID | str, **overrides: Any
+) -> dict[str, Any]:
+    response = await client.put(entry_url(position_id), json={**EMPTY_ENTRY, **overrides})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert isinstance(body, dict)
+    return body
+
+
+async def put_reflection(
+    client: AsyncClient, position_id: UUID | str, **overrides: Any
+) -> dict[str, Any]:
+    response = await client.put(reflection_url(position_id), json={**EMPTY_REFLECTION, **overrides})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert isinstance(body, dict)
+    return body
+
+
+async def card(client: AsyncClient, position_id: UUID | str) -> dict[str, Any]:
+    response = await client.get(f"{POSITIONS}/{position_id}")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert isinstance(body, dict)
+    return body
+
+
+async def tag_items(client: AsyncClient) -> list[dict[str, Any]]:
+    response = await client.get(TAGS)
+    assert response.status_code == 200, response.text
+    items = response.json()["items"]
+    assert isinstance(items, list)
+    return items
+
+
+async def create_tag(client: AsyncClient, name: str, color: str | None = None) -> dict[str, Any]:
+    response = await client.post(TAGS, json={"name": name, "color": color})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert isinstance(body, dict)
+    return body
+
+
+async def tag_rows(account_id: str) -> list[tuple[str, str | None]]:
+    """Строки словаря прямо из базы: ответ API их уже сгруппировал бы по регистру."""
+    async with get_engine().connect() as connection:
+        rows = (
+            await connection.execute(
+                text(
+                    "select t.name, t.color from tags t "
+                    "join trading_accounts a on a.user_id = t.user_id "
+                    "where a.id = :account order by t.name"
+                ),
+                {"account": UUID(account_id)},
+            )
+        ).all()
+    return [(row[0], row[1]) for row in rows]
+
+
+# --- полная замена и скоупинг по владельцу ------------------------------------
+
+
+async def test_entry_is_created_by_the_first_save_and_shows_up_in_the_card(
+    client: AsyncClient, account: str
+) -> None:
+    position = await seed_position(account)
+
+    saved = await put_entry(
+        client,
+        position,
+        notes="  вошёл по плану  ",
+        tags=["Trend"],
+        planned_entry="1.08543",
+        risk_amount="50",
+    )
+
+    assert saved["notes"] == "вошёл по плану"
+    assert saved["tags"] == ["Trend"]
+    # Строкой, а не числом: numeric(18,8) и numeric(18,2) с масштабом колонки.
+    assert saved["planned_entry"] == "1.08543000"
+    assert saved["risk_amount"] == "50.00"
+    assert (await card(client, position))["journal_entry"] == saved
+
+
+async def test_entry_put_replaces_the_whole_record(client: AsyncClient, account: str) -> None:
+    """Смысл `PUT`: присланное тело — это вся запись, а не поправка к ней.
+
+    Клиент, который хочет сохранить только теги, обязан прислать и заметку. Именно
+    поэтому поля обязательные: тело без `notes` не «оставляет как было», а сообщает
+    об ошибке — см. `test_partial_entry_body_is_rejected_instead_of_clearing_the_note`.
+    """
+    position = await seed_position(account)
+    await put_entry(client, position, notes="первая версия", tags=["Trend"], risk_amount="50")
+
+    replaced = await put_entry(client, position, notes="вторая версия")
+
+    assert replaced["notes"] == "вторая версия"
+    assert replaced["tags"] == []
+    assert replaced["risk_amount"] is None
+
+
+async def test_partial_entry_body_is_rejected_instead_of_clearing_the_note(
+    client: AsyncClient, account: str
+) -> None:
+    """Главная защита S2-07: частичное тело автосохранения — 400, а не потеря заметки.
+
+    Проверяется не только код ответа, но и то, что заметка на месте: `400` без отката
+    записи был бы ровно тем же дефектом, только с другим номером.
+    """
+    position = await seed_position(account)
+    await put_entry(client, position, notes="дорогой текст", tags=["Trend"])
+
+    response = await client.put(entry_url(position), json={"tags": ["Breakout"]})
+
+    assert response.status_code == 400, response.text
+    assert error_code(response) == "validation_error"
+    assert set(response.json()["error"]["details"]["fields"]) == {
+        "body.notes",
+        "body.planned_entry",
+        "body.planned_sl",
+        "body.planned_tp",
+        "body.risk_amount",
+    }
+    survived = await card(client, position)
+    assert survived["journal_entry"]["notes"] == "дорогой текст"
+    assert survived["journal_entry"]["tags"] == ["Trend"]
+
+
+async def test_partial_reflection_body_is_rejected(client: AsyncClient, account: str) -> None:
+    position = await seed_position(account)
+
+    response = await client.put(reflection_url(position), json={"confidence": 4})
+
+    assert response.status_code == 400, response.text
+    assert "body.setup_grade" in response.json()["error"]["details"]["fields"]
+
+
+@pytest.mark.parametrize("route", [entry_url, reflection_url])
+async def test_writing_to_someone_elses_position_is_a_404(
+    client: AsyncClient,
+    other_client: AsyncClient,
+    account: str,
+    route: Callable[[UUID | str], str],
+) -> None:
+    """Чужая позиция неотличима от несуществующей — как и на чтении (CLAUDE.md §2)."""
+    position = await seed_position(account)
+    body = EMPTY_ENTRY if route is entry_url else EMPTY_REFLECTION
+
+    response = await other_client.put(route(position), json=body)
+
+    assert response.status_code == 404, response.text
+    assert error_code(response) == "position_not_found"
+
+
+async def test_writing_to_a_missing_position_is_a_404(client: AsyncClient) -> None:
+    response = await client.put(entry_url(uuid4()), json=EMPTY_ENTRY)
+
+    assert response.status_code == 404
+    assert error_code(response) == "position_not_found"
+
+
+async def test_entry_and_reflection_do_not_overwrite_each_other(
+    client: AsyncClient, account: str
+) -> None:
+    """Пользовательский слой — три независимые записи; сохранение одной не трогает другие."""
+    position = await seed_position(account)
+    await put_entry(client, position, notes="заметка", tags=["Trend"])
+    await put_reflection(client, position, setup_grade="A", confidence=5)
+
+    await put_entry(client, position, notes="заметка", tags=["Trend"], risk_amount="25")
+
+    full = await card(client, position)
+    assert full["reflection"]["setup_grade"] == "A"
+    assert full["reflection"]["confidence"] == 5
+    assert full["journal_entry"]["notes"] == "заметка"
+
+
+# --- filled_at: что считается заполненным -------------------------------------
+
+
+async def test_empty_reflection_does_not_claim_to_be_filled(
+    client: AsyncClient, account: str
+) -> None:
+    position = await seed_position(account)
+
+    saved = await put_reflection(client, position)
+
+    assert saved["filled_at"] is None
+    items, _ = await page(client, has_reflection="true")
+    assert items == []
+
+
+async def test_followed_plan_false_alone_fills_the_reflection(
+    client: AsyncClient, account: str
+) -> None:
+    """«Плану не следовал» — ответ, а не пустое поле. Иначе иконка гасла бы там, где нужнее."""
+    position = await seed_position(account)
+
+    saved = await put_reflection(client, position, followed_plan=False)
+
+    assert saved["filled_at"] is not None
+    items, _ = await page(client, has_reflection="true")
+    assert [item["id"] for item in items] == [str(position)]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("free_text", "   "), ("mistakes", []), ("confidence", None), ("setup_grade", None)],
+)
+async def test_blank_answers_do_not_fill_the_reflection(
+    client: AsyncClient, account: str, field: str, value: Any
+) -> None:
+    """Пустая строка и пустой массив — не выбор: заполненной рефлексию они не делают."""
+    position = await seed_position(account)
+
+    saved = await put_reflection(client, position, **{field: value})
+
+    assert saved["filled_at"] is None
+
+
+async def test_filled_at_survives_later_edits(client: AsyncClient, account: str) -> None:
+    """Дата разбора сделки ставится один раз и не переезжает на каждую правку.
+
+    Переставлять её значило бы терять единственный ответ на вопрос «когда я это разобрал»:
+    «когда трогали» и так показывает `updated_at`.
+    """
+    position = await seed_position(account)
+    first = await put_reflection(client, position, setup_grade="B")
+
+    second = await put_reflection(client, position, setup_grade="B", confidence=4)
+    third = await put_reflection(client, position, setup_grade="A", free_text="передержал")
+
+    assert second["filled_at"] == first["filled_at"]
+    assert third["filled_at"] == first["filled_at"]
+    assert third["updated_at"] > first["updated_at"]
+
+
+async def test_clearing_the_reflection_takes_the_mark_off(
+    client: AsyncClient, account: str
+) -> None:
+    """Иначе `has_reflection=true` возвращал бы позицию с пустой рефлексией.
+
+    Иконка в таблице обещала бы разбор, которого больше нет, — и это как раз тот случай,
+    когда интерфейс врёт, а данные ни при чём.
+    """
+    position = await seed_position(account)
+    await put_reflection(client, position, setup_grade="B", free_text="поспешил")
+
+    cleared = await put_reflection(client, position)
+
+    assert cleared["filled_at"] is None
+    items, _ = await page(client, has_reflection="true")
+    assert items == []
+
+
+async def test_refilling_after_clearing_sets_a_new_mark(client: AsyncClient, account: str) -> None:
+    """Снятая отметка ставится заново: это первое сохранение нынешнего содержимого."""
+    position = await seed_position(account)
+    first = await put_reflection(client, position, setup_grade="B")
+    await put_reflection(client, position)
+
+    again = await put_reflection(client, position, setup_grade="C")
+
+    assert again["filled_at"] is not None
+    assert again["filled_at"] > first["filled_at"]
+
+
+async def test_reflection_rejects_a_value_outside_the_vocabulary(
+    client: AsyncClient, account: str
+) -> None:
+    position = await seed_position(account)
+
+    response = await client.put(
+        reflection_url(position), json={**EMPTY_REFLECTION, "emotion_before": "счастлив"}
+    )
+
+    assert response.status_code == 400
+    assert "body.emotion_before" in response.json()["error"]["details"]["fields"]
+
+
+# --- теги: словарь, регистр, удаление -----------------------------------------
+
+
+async def test_unknown_tag_is_added_to_the_dictionary_by_saving_the_entry(
+    client: AsyncClient, account: str
+) -> None:
+    """Тег достаточно назвать: иначе карточке пришлось бы звать два маршрута подряд."""
+    position = await seed_position(account)
+
+    await put_entry(client, position, tags=["Trend", "Пробой"])
+
+    # Порядок — по написанию без учёта регистра, в коллации базы: латиница раньше кириллицы.
+    assert [tag["name"] for tag in await tag_items(client)] == ["Trend", "Пробой"]
+    assert all(tag["color"] is None for tag in await tag_items(client))
+
+
+async def test_same_tag_in_another_case_does_not_create_a_second_row(
+    client: AsyncClient, account: str
+) -> None:
+    """DoD S2-02: `Trend` и `trend` — один тег, и в словаре, и на позициях.
+
+    Проверяется по строкам таблицы, а не по ответу API: сведение регистров в выдаче
+    прятало бы вторую строку, которая при этом лежала бы в базе.
+    """
+    first = await seed_position(account)
+    second = await seed_position(account)
+
+    await put_entry(client, first, tags=["Trend"])
+    saved = await put_entry(client, second, tags=["trend"])
+
+    assert await tag_rows(account) == [("Trend", None)]
+    # Написание берёт словарь: человек напечатал `trend`, а увидит `Trend`.
+    assert saved["tags"] == ["Trend"]
+
+
+async def test_cyrillic_tags_fold_by_case_too(client: AsyncClient, account: str) -> None:
+    position = await seed_position(account)
+    await put_entry(client, position, tags=["Пробой"])
+
+    saved = await put_entry(client, position, tags=["пробой"])
+
+    assert await tag_rows(account) == [("Пробой", None)]
+    assert saved["tags"] == ["Пробой"]
+
+
+async def test_posting_a_tag_sets_its_spelling_everywhere(
+    client: AsyncClient, account: str
+) -> None:
+    """Единственный способ поменять написание — явное действие над словарём.
+
+    И оно переносится на позиции: в `journal_entries.tags` лежат написания словаря, и
+    оставить их старыми значило бы развести чипы в таблице со списком тегов.
+    """
+    first = await seed_position(account)
+    second = await seed_position(account)
+    await put_entry(client, first, tags=["trend"])
+    await put_entry(client, second, tags=["trend", "Breakout"])
+
+    renamed = await create_tag(client, "TREND", color="#2563eb")
+
+    assert renamed["name"] == "TREND"
+    assert renamed["color"] == "#2563eb"
+    assert renamed["usage_count"] == 2
+    assert await tag_rows(account) == [("Breakout", None), ("TREND", "#2563eb")]
+    assert (await card(client, first))["journal_entry"]["tags"] == ["TREND"]
+    assert (await card(client, second))["journal_entry"]["tags"] == ["TREND", "Breakout"]
+
+
+async def test_posting_an_existing_tag_keeps_its_identity(
+    client: AsyncClient, account: str
+) -> None:
+    """Тот же тег другим регистром — не конфликт: это он же, с новым написанием."""
+    created = await create_tag(client, "Trend")
+
+    again = await create_tag(client, "trend", color="#16a34a")
+
+    assert again["id"] == created["id"]
+    assert again["name"] == "trend"
+    assert len(await tag_items(client)) == 1
+
+
+async def test_tag_usage_count_only_counts_the_owner(
+    client: AsyncClient, other_client: AsyncClient, account: str
+) -> None:
+    stranger_account = await create_account(other_client, login=7009999)
+    mine = await seed_position(account)
+    theirs = await seed_position(stranger_account)
+    await put_entry(client, mine, tags=["Trend"])
+    await put_entry(other_client, theirs, tags=["Trend"])
+
+    assert [(tag["name"], tag["usage_count"]) for tag in await tag_items(client)] == [("Trend", 1)]
+    assert [(tag["name"], tag["usage_count"]) for tag in await tag_items(other_client)] == [
+        ("Trend", 1)
+    ]
+
+
+async def test_tag_dictionaries_of_two_users_do_not_mix(
+    client: AsyncClient, other_client: AsyncClient, account: str
+) -> None:
+    """Одинаковое имя у разных людей — разные теги: словарь висит на `tags.user_id`."""
+    stranger_account = await create_account(other_client, login=7009998)
+    await put_entry(client, await seed_position(account), tags=["Trend"])
+    await put_entry(other_client, await seed_position(stranger_account), tags=["trend"])
+
+    mine = await tag_items(client)
+    theirs = await tag_items(other_client)
+
+    assert [tag["name"] for tag in mine] == ["Trend"]
+    assert [tag["name"] for tag in theirs] == ["trend"]
+    assert mine[0]["id"] != theirs[0]["id"]
+
+
+async def test_deleting_a_tag_takes_it_off_every_position(
+    client: AsyncClient, account: str
+) -> None:
+    """Оставить чип, которого нет в словаре, нельзя: он вернулся бы автосохранением."""
+    first = await seed_position(account)
+    second = await seed_position(account)
+    untouched = await seed_position(account)
+    await put_entry(client, first, notes="разбор", tags=["Trend", "Breakout"])
+    await put_entry(client, second, tags=["Trend"])
+    await put_entry(client, untouched, tags=["Breakout"])
+    tag = next(item for item in await tag_items(client) if item["name"] == "Trend")
+
+    response = await client.delete(f"{TAGS}/{tag['id']}")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"name": "Trend", "positions_updated": 2}
+    assert [item["name"] for item in await tag_items(client)] == ["Breakout"]
+    first_card = await card(client, first)
+    assert first_card["journal_entry"]["tags"] == ["Breakout"]
+    # Удаление тега — правка одной колонки, а не пользовательского слоя целиком.
+    assert first_card["journal_entry"]["notes"] == "разбор"
+    assert (await card(client, untouched))["journal_entry"]["tags"] == ["Breakout"]
+
+
+async def test_deleting_someone_elses_tag_is_a_404(
+    client: AsyncClient, other_client: AsyncClient, account: str
+) -> None:
+    await put_entry(client, await seed_position(account), tags=["Trend"])
+    tag = (await tag_items(client))[0]
+
+    response = await other_client.delete(f"{TAGS}/{tag['id']}")
+
+    assert response.status_code == 404, response.text
+    assert error_code(response) == "tag_not_found"
+    assert len(await tag_items(client)) == 1
+
+
+async def test_deleting_a_missing_tag_is_a_404(client: AsyncClient) -> None:
+    response = await client.delete(f"{TAGS}/{uuid4()}")
+
+    assert response.status_code == 404
+    assert error_code(response) == "tag_not_found"
+
+
+async def test_saved_tags_stay_filterable(client: AsyncClient, account: str) -> None:
+    """Написание в базе и написание в фильтре — одно и то же, иначе чип ничего не находит."""
+    position = await seed_position(account)
+    await put_entry(client, position, tags=["Trend"])
+    await seed_entry(await seed_position(account), tags=["Breakout"])
+
+    items, _ = await page(client, tags="Trend")
+
+    assert [item["id"] for item in items] == [str(position)]
+
+
+# --- словари SPEC.md 3.5 ------------------------------------------------------
+
+
+async def test_vocab_returns_the_dictionaries_of_spec_3_5(client: AsyncClient) -> None:
+    response = await client.get(VOCAB)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["emotions"][0] == "calm"
+    assert "revenge" in body["mistakes"]
+    assert body["setup_grades"] == ["A", "B", "C", "D"]
+    assert body["execution_grades"] == ["A", "B", "C", "D"]
+
+
+async def test_vocab_forbids_serving_a_stale_copy(client: AsyncClient) -> None:
+    """`no-cache` — «храни, но переспрашивай»: устаревшее меню предлагало бы не то, что
+    принимает сервер, и оставляло бы без подписи уже сохранённый ключ."""
+    response = await client.get(VOCAB)
+
+    assert response.headers["cache-control"] == "private, no-cache"
+
+
+@pytest.mark.parametrize("path", ["/journal/vocab", "/journal/tags"])
+async def test_write_side_routes_require_a_session(app: FastAPI, path: str) -> None:
+    async with make_client(app) as anonymous:
+        response = await anonymous.get(f"{API}{path}")
+
+    assert response.status_code == 401, response.text
+
+
+async def test_parallel_saves_of_one_tag_neither_hang_nor_split_it(
+    client: AsyncClient, account: str
+) -> None:
+    """Шесть одновременных сохранений одного тега разным регистром — один тег и ни одной ошибки.
+
+    ⚠️ **Этот тест не воспроизводит саму гонку, и это измерено.** Мутация «убрать
+    advisory-блокировку» (`service._lock_tag_dictionary`) оставляет его зелёным: под
+    `ASGITransport` шесть запросов доходят до вставки по очереди, и окна между `SELECT`
+    словаря и `INSERT` не возникает. То есть защита от гонки тестом **не доказана** —
+    она обоснована рассуждением в `_TAG_LOCK_NAMESPACE`, а закрыть её по-настоящему
+    может только уникальный индекс по `(user_id, lower(name))`, то есть миграция.
+
+    Что тест доказывает: сама блокировка не ломает параллельную запись — не роняет
+    запросы и не встаёт намертво. Это единственное место, где два сохранения карточки
+    идут одновременно, и взаимная блокировка здесь была бы зависанием у пользователя.
+    """
+    positions = [await seed_position(account) for _ in range(6)]
+    spellings = ["Trend", "trend", "TREND", "TrEnD", "tREND", "trEnd"]
+
+    responses = await asyncio.gather(
+        *(
+            client.put(entry_url(position), json={**EMPTY_ENTRY, "tags": [spelling]})
+            for position, spelling in zip(positions, spellings, strict=True)
+        )
+    )
+
+    assert [response.status_code for response in responses] == [200] * 6
+    assert len(await tag_rows(account)) == 1
