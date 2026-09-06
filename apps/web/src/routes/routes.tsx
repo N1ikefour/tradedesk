@@ -9,7 +9,8 @@ import { AccountPage } from '@/routes/account-page';
 import { AccountsPage } from '@/routes/accounts-page';
 import { JournalPage } from '@/routes/journal-page';
 import { SettingsPage } from '@/routes/settings-page';
-import { CalendarPage, DashboardPage, PositionPage } from '@/routes/stub-pages';
+import { PositionPage } from '@/routes/position-page';
+import { CalendarPage, DashboardPage } from '@/routes/stub-pages';
 import { DEV_OUTBOX_AVAILABLE } from '@/lib/env';
 
 /**
@@ -27,8 +28,14 @@ export const routes: RouteObject[] = [
         element: <RootLayout />,
         children: [
           { index: true, element: <DashboardPage /> },
-          { path: 'journal', element: <JournalPage /> },
-          { path: 'journal/:id', element: <PositionPage /> },
+          // Карточка позиции — вложенный маршрут, а не соседний: SPEC.md 9.1 требует
+          // модал поверх таблицы, а SPEC.md 9.3 — навигацию по текущему списку. И то и
+          // другое возможно, только пока список остаётся смонтированным под карточкой.
+          {
+            path: 'journal',
+            element: <JournalPage />,
+            children: [{ path: ':id', element: <PositionPage /> }],
+          },
           { path: 'calendar', element: <CalendarPage /> },
           { path: 'accounts', element: <AccountsPage /> },
           { path: 'accounts/:id', element: <AccountPage /> },

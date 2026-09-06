@@ -65,11 +65,20 @@ function ratioOf(item: PositionListItem): string | null {
   return value === null ? null : formatRatio(value);
 }
 
-export function describePosition(item: PositionListItem, timeZone: string): PositionView {
+/**
+ * `search` — параметры фильтра из адреса журнала. Они едут в адрес карточки не для
+ * красоты: карточка открывается вложенным маршрутом поверх списка, и без них родительский
+ * журнал перечитал бы фильтры как пустые, показав под карточкой другой список.
+ */
+export function describePosition(
+  item: PositionListItem,
+  timeZone: string,
+  search: string,
+): PositionView {
   const isOpen = item.status === 'open';
   return {
     id: item.id,
-    href: `/journal/${item.id}`,
+    href: `/journal/${item.id}${search}`,
     accountTitle: item.account.is_demo
       ? `${item.account.label} · ${t.journal.demoBadge}`
       : item.account.label,
@@ -100,6 +109,21 @@ export function describePosition(item: PositionListItem, timeZone: string): Posi
     hasReflection: item.reflection?.filled_at != null,
     hasAttachments: item.attachments_count > 0,
   };
+}
+
+/**
+ * Доменное значение MT5 (`deal_type`, `entry`, `reason`, `close_reason` — SPEC.md 6.2) →
+ * подпись. В схеме это строка, а не перечисление, поэтому незнакомое значение показывается
+ * как есть: прочерк на его месте прятал бы факт, присланный брокером.
+ */
+export function dictionaryLabel(
+  dictionary: Record<string, string | undefined>,
+  key: string | null,
+): string {
+  if (key === null) {
+    return t.journal.unknownValue;
+  }
+  return dictionary[key] ?? key;
 }
 
 /** Класс цвета для P&L — SPEC.md 9.4: зелёный/красный/серый. */

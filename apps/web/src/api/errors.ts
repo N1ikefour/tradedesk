@@ -16,6 +16,7 @@ export const ERROR_CODE = {
   unauthorized: 'unauthorized',
   forbiddenOrigin: 'forbidden_origin',
   notFound: 'not_found',
+  positionNotFound: 'position_not_found',
   invalidCode: 'invalid_code',
   tooManyAttempts: 'too_many_attempts',
   rateLimited: 'rate_limited',

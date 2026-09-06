@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  canonicalDecimal,
   decimalSign,
   divideDecimal,
   formatMoney,
@@ -112,5 +113,26 @@ describe('divideDecimal', () => {
 
     expect(value).not.toBeNull();
     expect(formatRatio(value as string)).toBe('-2,50');
+  });
+});
+
+describe('canonicalDecimal', () => {
+  it('приводит написание к одному виду, не трогая значение', () => {
+    expect(canonicalDecimal('1.10000000')).toBe('1.1');
+    expect(canonicalDecimal('1,1')).toBe('1.1');
+    expect(canonicalDecimal('007')).toBe('7');
+    expect(canonicalDecimal('0.50')).toBe('0.5');
+    expect(canonicalDecimal('-0.0')).toBe('0');
+    expect(canonicalDecimal('  -12.30  ')).toBe('-12.3');
+  });
+
+  it('не теряет цифр за пределами double', () => {
+    expect(canonicalDecimal('123456789012.12345678')).toBe('123456789012.12345678');
+  });
+
+  it('не число — null, а не подставленный ноль', () => {
+    expect(canonicalDecimal('около 1.1')).toBeNull();
+    expect(canonicalDecimal('')).toBeNull();
+    expect(canonicalDecimal('-')).toBeNull();
   });
 });

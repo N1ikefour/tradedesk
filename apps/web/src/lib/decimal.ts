@@ -15,6 +15,11 @@
 
 const DECIMAL_RE = /^([+-]?)(\d*)(?:\.(\d*))?$/;
 
+/** Разделитель, который печатает человек в русской раскладке. */
+const COMMA = /,/g;
+/** Незначащие нули целой части: `007` — это `7`, а `000` — `0`. */
+const LEADING_ZEROS = /^0+(?=\d)/;
+
 /** Неразрывный пробел: разряд не должен переноситься на другую строку таблицы. */
 const GROUP_SEPARATOR = '\u00a0';
 const DECIMAL_SEPARATOR = ',';
@@ -158,6 +163,27 @@ export function formatVolume(raw: string): string | null {
 /** Отношение (R) — число без валюты, два знака. */
 export function formatRatio(raw: string): string | null {
   return formatFixed(raw, RATIO_DIGITS, RATIO_DIGITS);
+}
+
+/**
+ * Десятичный литерал запятой или точкой — к одному написанию: `1,10` и `1.10000000`
+ * становятся `1.1`, `007` — `7`, `-0.0` — `0`. Ничего, кроме отбрасывания незначащих
+ * нулей, тут не происходит: цифры остаются теми же, `number` по-прежнему не появляется.
+ *
+ * Нужна ровно затем, чтобы «изменено» в карточке позиции считалось по значению, а не по
+ * написанию. Иначе форма, показавшая `1.1` там, где сервер хранит `1.10000000`, считала
+ * бы себя изменённой вечно — и автосохранение слало бы один и тот же PUT по кругу.
+ */
+export function canonicalDecimal(raw: string): string | null {
+  const parsed = parseDecimal(raw.replace(COMMA, '.'));
+  if (parsed === null) {
+    return null;
+  }
+  const whole = parsed.whole.replace(LEADING_ZEROS, '');
+  const fraction = trimFraction(parsed.fraction, 0);
+  const negative = parsed.negative && (hasSignificantDigit(whole) || hasSignificantDigit(fraction));
+  const tail = fraction === '' ? '' : `.${fraction}`;
+  return `${negative ? '-' : ''}${whole}${tail}`;
 }
 
 /**

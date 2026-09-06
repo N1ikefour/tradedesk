@@ -31,6 +31,8 @@ export function messageForError(error: unknown): string {
       return t.errors.forbiddenOrigin;
     case ERROR_CODE.notFound:
       return t.errors.notFound;
+    case ERROR_CODE.positionNotFound:
+      return t.errors.positionNotFound;
     case ERROR_CODE.accountNotFound:
       return t.errors.accountNotFound;
     case ERROR_CODE.accountAlreadyExists:

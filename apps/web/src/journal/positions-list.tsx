@@ -10,7 +10,7 @@
  */
 import { ArrowDown, ArrowUp, ImageIcon, NotebookPen } from 'lucide-react';
 import { useEffect, useRef, type ReactNode } from 'react';
-import { Link, useNavigate } from 'react-router';
+import { Link, useLocation, useNavigate } from 'react-router';
 
 import { Badge } from '@/components/ui/badge';
 import { t } from '@/i18n';
@@ -254,6 +254,7 @@ export function PositionsList({
   const isDesktop = useIsDesktop();
   const container = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
+  const { search } = useLocation();
   const virtual = useVirtualRows({
     count: items.length,
     rowHeight: isDesktop ? ROW_HEIGHT : CARD_HEIGHT,
@@ -271,7 +272,7 @@ export function PositionsList({
 
   const views = items
     .slice(virtual.start, virtual.end)
-    .map((item) => describePosition(item, timeZone));
+    .map((item) => describePosition(item, timeZone, search));
   const open = (href: string) => {
     void navigate(href);
   };

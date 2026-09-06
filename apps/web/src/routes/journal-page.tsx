@@ -10,7 +10,7 @@
  * фильтров, когда появится, чем брать числа.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router';
+import { Link, Outlet, useMatch, useSearchParams } from 'react-router';
 
 import { useAccounts } from '@/accounts/api';
 import { useAccountIds } from '@/accounts/selection';
@@ -18,7 +18,7 @@ import { messageForError } from '@/api/error-message';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { t } from '@/i18n';
-import { usePositions } from '@/journal/api';
+import { usePositions, type PositionListItem } from '@/journal/api';
 import { FiltersPanel } from '@/journal/filters-panel';
 import {
   DEFAULT_FILTERS,
@@ -30,6 +30,7 @@ import {
   type SortField,
 } from '@/journal/filters';
 import { PositionsList } from '@/journal/positions-list';
+import { useIsDesktop } from '@/lib/use-media-query';
 import { useProfileDayBoundaryHour, useProfileTimeZone } from '@/user/profile';
 
 /**
@@ -41,8 +42,22 @@ import { useProfileDayBoundaryHour, useProfileTimeZone } from '@/user/profile';
  */
 const MAX_IDLE_PAGES = 3;
 
+/**
+ * Что карточка позиции видит от своего списка. Соседей для «← предыдущая / следующая →»
+ * взять больше неоткуда: список курсорный, эндпоинта «соседи» в контракте нет, а карточка
+ * живёт вложенным маршрутом ровно затем, чтобы читать загруженные строки отсюда.
+ */
+export type JournalListContext = {
+  readonly items: readonly PositionListItem[];
+};
+
 export function JournalPage() {
   const [params, setParams] = useSearchParams();
+  // Карточка позиции — вложенный маршрут (SPEC.md 9.1): на большом экране она модал
+  // поверх таблицы, на телефоне — страница, и тогда список под ней не рисуется.
+  const cardOpen = useMatch('/journal/:id') !== null;
+  const isDesktop = useIsDesktop();
+  const showList = isDesktop || !cardOpen;
   const filters = useMemo(() => readFilters(params), [params]);
   const timeZone = useProfileTimeZone();
   const dayBoundaryHour = useProfileDayBoundaryHour();
@@ -59,8 +74,12 @@ export function JournalPage() {
 
   // Выбор, под который не подходит ни один счёт, спрашивать не о чем: пустой
   // `account_ids` означает «все счета», и запрос вернул бы ровно то, что выбор исключил.
-  const positions = usePositions(queryParams, selection.ready && !selection.empty);
+  // Скрытый список не запрашивается: по прямой ссылке на карточку с телефона журнал
+  // человеку не показан, и грузить его страницами незачем. Уже загруженные строки при
+  // этом остаются доступными — их отдаёт кэш, а не запрос.
+  const positions = usePositions(queryParams, selection.ready && !selection.empty && showList);
   const items = positions.data ?? [];
+  const outletContext: JournalListContext = { items };
 
   const applyFilters = (next: JournalFilters) => {
     setParams(writeFilters(next), { replace: true });
@@ -112,6 +131,10 @@ export function JournalPage() {
 
   const noAccounts = accounts.isSuccess && accounts.data.items.length === 0;
   const filtered = !isDefaultFilters(filters);
+
+  if (!showList) {
+    return <Outlet context={outletContext} />;
+  }
 
   return (
     <section className="flex w-full flex-col gap-6">
@@ -220,6 +243,8 @@ export function JournalPage() {
           }
         />
       ) : null}
+
+      <Outlet context={outletContext} />
     </section>
   );
 }
