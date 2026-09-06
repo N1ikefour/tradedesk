@@ -8,6 +8,10 @@
  * символа, поиска и числа тегов, и любое несоответствие — это `400` вместо журнала.
  * Непонятное значение поэтому не показывается ошибкой, а просто не применяется: человек,
  * открывший чужую ссылку, должен увидеть свои сделки, а не разбор её синтаксиса.
+ *
+ * Проверка на этом не кончается: у текста снимаются управляющие символы, а у дат —
+ * годы вне диапазона сервера. И то и другое проходило бы «валидацию» видом строки, но
+ * возвращало бы `500` и `400` соответственно — то есть чужая ссылка ломала бы экран.
  */
 import { accountIdsParam } from '@/accounts/selection';
 import type { PositionsQueryParams } from '@/journal/api';
@@ -100,6 +104,31 @@ const FILTER_SEPARATOR = ',';
 const SORT_SEPARATOR = ':';
 
 /**
+ * Управляющие символы вырезаются целиком, и повод конкретный: `\x00` не снимается
+ * `trim()`, а Postgres не принимает NUL в text-параметре — `?symbol=%00EURUSD` из чужой
+ * ссылки роняет журнал в `500`. Заодно уходят невидимки (`\p{Cf}`), которые приезжают
+ * копипастой из мессенджера и делают «EURUSD» неравным «EURUSD».
+ */
+const CONTROL_CHARS = /\p{C}/gu;
+
+function stripControl(value: string): string {
+  return value.replace(CONTROL_CHARS, '').trim();
+}
+
+/** Чистка идёт до подрезания: иначе невидимка занимала бы место значащего символа. */
+function readText(raw: string | null, maxLength: number): string {
+  return stripControl(raw ?? '').slice(0, maxLength);
+}
+
+/**
+ * Границы, в которых сервер знает даты: `datetime` уже года 1 не принимает, а
+ * `toISOString()` за годом 9999 печатает расширенный год (`+099998-12-31T…`), и запрос
+ * возвращается `400`. Разбор адреса до этого не доводит.
+ */
+const MIN_YEAR = 1;
+const MAX_YEAR = 9999;
+
+/**
  * Значение из списка допустимых или `null`. Одна функция и на разбор адреса, и на разбор
  * `<select>`: у обоих источник — строка, которой могло не быть в перечислении.
  */
@@ -111,7 +140,12 @@ export function oneOf<T extends string>(value: string | null, allowed: readonly 
 }
 
 function isValidInstant(value: string): boolean {
-  return !Number.isNaN(new Date(value).getTime());
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return false;
+  }
+  const year = parsed.getUTCFullYear();
+  return year >= MIN_YEAR && year <= MAX_YEAR;
 }
 
 function readSort(raw: string | null): Pick<JournalFilters, 'sortField' | 'sortDirection'> {
@@ -130,7 +164,7 @@ function readTags(raw: string | null): readonly string[] {
   }
   const seen = new Set<string>();
   for (const part of raw.split(FILTER_SEPARATOR)) {
-    const tag = part.trim();
+    const tag = stripControl(part);
     if (tag !== '' && tag.length <= MAX_TAG_LENGTH) {
       seen.add(tag);
     }
@@ -169,12 +203,12 @@ export function readFilters(params: URLSearchParams): JournalFilters {
   return {
     ...readPeriod(params),
     status: oneOf(params.get(PARAM.status), STATUS_VALUES),
-    symbol: (params.get(PARAM.symbol) ?? '').trim().slice(0, MAX_SYMBOL_LENGTH),
+    symbol: readText(params.get(PARAM.symbol), MAX_SYMBOL_LENGTH),
     direction: oneOf(params.get(PARAM.direction), DIRECTION_VALUES),
     result: oneOf(params.get(PARAM.result), RESULT_VALUES),
     tags: readTags(params.get(PARAM.tags)),
     reflection: oneOf(params.get(PARAM.reflection), REFLECTION_VALUES),
-    q: (params.get(PARAM.q) ?? '').trim().slice(0, MAX_SEARCH_LENGTH),
+    q: readText(params.get(PARAM.q), MAX_SEARCH_LENGTH),
     ...readSort(params.get(PARAM.sort)),
   };
 }

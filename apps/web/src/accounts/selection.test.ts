@@ -44,7 +44,11 @@ beforeEach(() => {
 
 describe('resolveSelection', () => {
   it('«все» не даёт ни одного id: параметра в запросе не будет', () => {
-    expect(resolveSelection({ mode: 'all', ids: [] }, ACCOUNTS)).toEqual({ ids: [], ready: true });
+    expect(resolveSelection({ mode: 'all', ids: [] }, ACCOUNTS)).toEqual({
+      ids: [],
+      ready: true,
+      empty: false,
+    });
   });
 
   it('удалённый счёт выпадает из выбора, а не роняет журнал в 404', () => {
@@ -61,10 +65,12 @@ describe('resolveSelection', () => {
     expect(resolveSelection({ mode: 'single', ids: [FIRST] }, undefined)).toEqual({
       ids: [],
       ready: false,
+      empty: false,
     });
     expect(resolveSelection({ mode: 'all_real', ids: [] }, undefined)).toEqual({
       ids: [],
       ready: false,
+      empty: false,
     });
   });
 
@@ -73,7 +79,36 @@ describe('resolveSelection', () => {
   });
 
   it('пресет «все реальные» разворачивается по загруженному списку', () => {
-    expect(resolveSelection({ mode: 'all_real', ids: [] }, ACCOUNTS).ids).toEqual([FIRST]);
+    expect(resolveSelection({ mode: 'all_real', ids: [] }, ACCOUNTS)).toEqual({
+      ids: [FIRST],
+      ready: true,
+      empty: false,
+    });
+  });
+
+  it('«все реальные» без единого реального счёта — пусто, а не «все»', () => {
+    // Пустой `ids` в контракте означает «все счета», поэтому без отдельного признака
+    // выбор «Все реальные» показал бы демо-сделки под видом реальных.
+    const demoOnly = [account(SECOND, true)];
+
+    expect(resolveSelection({ mode: 'all_real', ids: [] }, demoOnly)).toEqual({
+      ids: [],
+      ready: true,
+      empty: true,
+    });
+    expect(resolveSelection({ mode: 'all_real', ids: [] }, [])).toEqual({
+      ids: [],
+      ready: true,
+      empty: true,
+    });
+  });
+
+  it('протухший явный список — это «все», а не пусто: он не правило, а остаток', () => {
+    expect(resolveSelection({ mode: 'single', ids: [GONE] }, ACCOUNTS)).toEqual({
+      ids: [],
+      ready: true,
+      empty: false,
+    });
   });
 });
 

@@ -21,8 +21,22 @@ import { useIsDesktop } from '@/lib/use-media-query';
 import { useVirtualRows } from '@/lib/use-virtual-rows';
 import { cn } from '@/lib/utils';
 
-const ROW_HEIGHT = 44;
-const CARD_HEIGHT = 96;
+/**
+ * Строка таблицы: 44 пикселя тела плюс схлопнутая рамка сверху. Рамку приходится
+ * считать отдельно, потому что при `border-collapse: collapse` (его ставит preflight
+ * Tailwind) она не входит в высоту `tr` так, как её понимает `box-sizing` — строка с
+ * `height: 44` занимает 45. Виртуализация меряет шаг, поэтому шаг здесь и объявлен;
+ * `tr` получает высоту без рамки. Замерено в браузере, закреплено тестом раскладки.
+ */
+const ROW_BORDER = 1;
+const ROW_BODY_HEIGHT = 44;
+export const ROW_HEIGHT = ROW_BODY_HEIGHT + ROW_BORDER;
+
+/**
+ * Карточка — обычный блок, а не строка таблицы: `box-sizing: border-box` из того же
+ * preflight включает рамку в заданную высоту, и шаг равен ей.
+ */
+export const CARD_HEIGHT = 96;
 const COLUMN_COUNT = 11;
 
 type SortState = Pick<JournalFilters, 'sortField' | 'sortDirection'>;
@@ -108,7 +122,7 @@ function Spacer({ height }: { height: number }) {
 function Row({ view, onOpen }: { view: PositionView; onOpen: (href: string) => void }) {
   return (
     <tr
-      style={{ height: ROW_HEIGHT }}
+      style={{ height: ROW_BODY_HEIGHT }}
       className="cursor-pointer border-t border-border hover:bg-accent/50"
       onClick={(event) => {
         // Клик по самой ссылке роутер обрабатывает сам — второй переход здесь лишний.
@@ -122,7 +136,7 @@ function Row({ view, onOpen }: { view: PositionView; onOpen: (href: string) => v
           aria-hidden="true"
           title={view.accountTitle}
           className="block w-1.5"
-          style={{ backgroundColor: view.accountColor, height: ROW_HEIGHT }}
+          style={{ backgroundColor: view.accountColor, height: ROW_BODY_HEIGHT }}
         />
       </td>
       <td

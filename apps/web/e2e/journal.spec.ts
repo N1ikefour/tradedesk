@@ -40,4 +40,12 @@ test('фильтр журнала переживает перезагрузку,
   await page.goto('/journal?direction=diagonal&sort=DROP%20TABLE&result=nope&period=никогда');
   await expect(page.getByRole('heading', { name: t.pages.journal })).toBeVisible();
   await expect(page.getByLabel(t.journal.directionLabel, { exact: true })).toHaveValue('');
+
+  // Управляющие символы в адресе. Проверяется против настоящего API: `\x00` не снимается
+  // `trim()` и валит запрос в 500 на стороне Postgres — то есть присланная ссылка роняла
+  // бы журнал получателю. Экран обязан открыться, а не показать ошибку загрузки.
+  await page.goto('/journal?symbol=%00%00EURUSD&q=%00abc&tags=%00tag&from=99999-01-01');
+  await expect(page.getByRole('heading', { name: t.pages.journal })).toBeVisible();
+  await expect(page.getByText(t.journal.emptyAccounts)).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
 });

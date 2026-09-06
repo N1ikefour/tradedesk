@@ -87,6 +87,16 @@ describe('divideDecimal', () => {
     expect(divideDecimal('2.00', '3.00', 2)).toBe('0.67');
   });
 
+  it('не сваливается в double: R считается на BigInt и на границах numeric(18,2)', () => {
+    // Каждая строка убивает свою подмену на `Number(dividend) / Number(divisor)`:
+    // на первой double теряет цифру (…994.00) при любом округлении; вторая ловит
+    // `.toFixed(2)` (2,675 хранится как 2,674999…82 и печатается как 2.67); третья —
+    // `Math.round(v * 100)`, где 1,005 × 100 даёт 100.49999999999999.
+    expect(divideDecimal('9007199254740993.01', '1', 2)).toBe('9007199254740993.01');
+    expect(divideDecimal('2.675', '1', 2)).toBe('2.68');
+    expect(divideDecimal('1.005', '1', 2)).toBe('1.01');
+  });
+
   it('деление на ноль и на мусор — null, а не бесконечность', () => {
     expect(divideDecimal('10.00', '0', 2)).toBeNull();
     expect(divideDecimal('10.00', '0.00', 2)).toBeNull();

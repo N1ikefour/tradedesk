@@ -8,8 +8,10 @@
  * нет: это настройка рабочего места, а не описание того, что на экране.
  *
  * Пресеты «Все реальные» и предупреждение «демо и реал вместе» — `S2-11`. Здесь есть
- * только форма состояния под них, чтобы хранилище не пришлось переучивать задним числом
- * вместе с уже сохранёнными у людей значениями.
+ * форма состояния под них, чтобы хранилище не пришлось переучивать задним числом вместе
+ * с уже сохранёнными у людей значениями, и семантика режима `all_real`: раз значение
+ * умеет попасть в хранилище (руками, из другой вкладки, из будущей версии), оно обязано
+ * что-то означать уже сейчас, а не разбираться в `S2-11` задним числом.
  */
 import { useMemo } from 'react';
 import { create } from 'zustand';
@@ -128,9 +130,17 @@ export type ResolvedAccountIds = {
   readonly ids: readonly string[];
   /** Можно ли уже спрашивать список: непроверенный выбор счетов посылать нельзя. */
   readonly ready: boolean;
+  /**
+   * Выбор не совпал ни с одним счётом. Отдельный признак нужен потому, что пустой
+   * `ids` в контракте `SPEC.md` 5.1 означает противоположное — «все счета».
+   */
+  readonly empty: boolean;
 };
 
-const ALL: ResolvedAccountIds = { ids: [], ready: true };
+const ALL: ResolvedAccountIds = { ids: [], ready: true, empty: false };
+
+/** Правило, под которое не подошёл ни один счёт. Списку нечего показывать. */
+const NOTHING: ResolvedAccountIds = { ids: [], ready: true, empty: true };
 
 /**
  * Выбор → `account_ids`. Счёт мог быть удалён или архивирован в другой вкладке, а выбор
@@ -154,17 +164,20 @@ export function resolveSelection(
     return ALL;
   }
   if (accounts === undefined) {
-    return { ids: [], ready: false };
+    return { ids: [], ready: false, empty: false };
   }
   if (selection.mode === 'all_real') {
-    return {
-      ids: accounts.filter((account) => !account.is_demo).map((account) => account.id),
-      ready: true,
-    };
+    // «Все реальные» — правило, а не список: не подошло ни одного счёта — значит
+    // показывать нечего. Молчаливый переход к «всем» показал бы здесь ровно то, что
+    // выбор исключает, — демо-сделки под видом реальных.
+    const real = accounts.filter((account) => !account.is_demo).map((account) => account.id);
+    return real.length === 0 ? NOTHING : { ids: real, ready: true, empty: false };
   }
   const known = new Set(accounts.map((account) => account.id));
   const kept = selection.ids.filter((id) => known.has(id));
-  return kept.length === 0 ? ALL : { ids: kept, ready: true };
+  // Явный список — не правило: он мог протухнуть целиком, пока счета правили в другой
+  // вкладке, и «все» здесь безопаснее пустого экрана, потому что ничего не прячет.
+  return kept.length === 0 ? ALL : { ids: kept, ready: true, empty: false };
 }
 
 /**

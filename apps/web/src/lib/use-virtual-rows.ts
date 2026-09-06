@@ -5,9 +5,13 @@
  * это тысячи позиций за год. Отрисованные разом, они превращают прокрутку в слайд-шоу —
  * не из-за React, а потому что браузер считает раскладку по всем строкам сразу.
  *
- * Своя реализация вместо `@tanstack/react-virtual`: строки здесь одной высоты, и всё
- * поведение сводится к трём числам — с какой строки начать, какой отступ поставить сверху
- * и какой снизу. Ради этого не заводится ещё одна зависимость.
+ * Реализация своя, хотя `@tanstack/react-virtual` разрешён `SPEC.md` 2.3 наравне с
+ * `zustand`, — запрета на него нет. Причина в объёме задачи: строки здесь одной высоты и
+ * не измеряются поштучно, поэтому всё поведение сводится к трём числам — с какой строки
+ * начать, какой отступ поставить сверху и какой снизу. Библиотека решает задачу шире
+ * (переменная высота, замер элементов, горизонтальные окна, динамические окна), и на
+ * этом наборе даёт не меньше кода, а другой. Перевод на неё — отдельный разговор с
+ * отдельным тикетом, а не то, что здесь запрещено.
  *
  * Высота строки — константа, и это ограничение названо честно: строка с переносом текста
  * сломала бы расчёт. Поэтому в таблице журнала ячейки не переносятся.
@@ -69,6 +73,13 @@ export function useVirtualRows({
     [],
   );
 
+  const applyScroll = useCallback(() => {
+    const node = containerRef.current;
+    if (node !== null) {
+      setScrollTop(node.scrollTop);
+    }
+  }, [containerRef]);
+
   /**
    * Событий прокрутки приходит больше, чем кадров, и каждое из них — это перерисовка
    * окна. Обновление кладётся на кадр: лишние события за тот же кадр схлопываются.
@@ -79,12 +90,25 @@ export function useVirtualRows({
     }
     frame.current = window.requestAnimationFrame(() => {
       frame.current = null;
-      const node = containerRef.current;
-      if (node !== null) {
-        setScrollTop(node.scrollTop);
-      }
+      applyScroll();
     });
-  }, [containerRef]);
+  }, [applyScroll]);
+
+  useEffect(() => {
+    // В скрытой вкладке кадры не выполняются, и запрошенный повисает вместе с ними:
+    // слот занят, а значит каждое следующее событие прокрутки уходит в ранний выход.
+    // Смена видимости закрывает кадр руками и применяет то, ради чего он ставился.
+    const release = () => {
+      if (frame.current === null) {
+        return;
+      }
+      window.cancelAnimationFrame(frame.current);
+      frame.current = null;
+      applyScroll();
+    };
+    document.addEventListener('visibilitychange', release);
+    return () => document.removeEventListener('visibilitychange', release);
+  }, [applyScroll]);
 
   const visible = Math.ceil(viewport / rowHeight);
   const first = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);

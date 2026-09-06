@@ -9,7 +9,7 @@
  * как «не загрузилось». Поэтому блока нет вовсе; он встанет между заголовком и панелью
  * фильтров, когда появится, чем брать числа.
  */
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 
 import { useAccounts } from '@/accounts/api';
@@ -32,6 +32,15 @@ import {
 import { PositionsList } from '@/journal/positions-list';
 import { useProfileDayBoundaryHour, useProfileTimeZone } from '@/user/profile';
 
+/**
+ * Сколько страниц подряд догрузка терпит, не получив ни одной новой строки. Признак
+ * конца списка — `next_cursor` сервера, то есть чужое обещание: сервер, отдающий пустую
+ * страницу с новым курсором, превращал бы прокрутку в непрерывный поток запросов,
+ * которого человек не видит и не может остановить. Сегодняшний сервер так не отвечает —
+ * но список останавливает себя сам, а не полагается на это.
+ */
+const MAX_IDLE_PAGES = 3;
+
 export function JournalPage() {
   const [params, setParams] = useSearchParams();
   const filters = useMemo(() => readFilters(params), [params]);
@@ -48,7 +57,9 @@ export function JournalPage() {
     [filters, accountIds, timeZone, dayBoundaryHour],
   );
 
-  const positions = usePositions(queryParams, selection.ready);
+  // Выбор, под который не подходит ни один счёт, спрашивать не о чем: пустой
+  // `account_ids` означает «все счета», и запрос вернул бы ровно то, что выбор исключил.
+  const positions = usePositions(queryParams, selection.ready && !selection.empty);
   const items = positions.data ?? [];
 
   const applyFilters = (next: JournalFilters) => {
@@ -64,13 +75,40 @@ export function JournalPage() {
   };
 
   const { hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage } = positions;
+  const loaded = items.length;
+  const idle = useRef({ loaded: -1, pages: 0 });
+  const [autoPaused, setAutoPaused] = useState(false);
+
+  useEffect(() => {
+    // Смена фильтра или счёта — это другой список, и счётчик холостых страниц к нему
+    // отношения не имеет.
+    idle.current = { loaded: -1, pages: 0 };
+    setAutoPaused(false);
+  }, [queryParams]);
+
   const loadMore = useCallback(() => {
     // Провалившаяся догрузка не повторяется сама: иначе конец списка превращается в
     // бесконечный цикл запросов, которого человек не видит и не может остановить.
-    if (hasNextPage && !isFetchingNextPage && !isFetchNextPageError) {
-      void fetchNextPage();
+    if (!hasNextPage || isFetchingNextPage || isFetchNextPageError) {
+      return;
     }
-  }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage]);
+    if (idle.current.loaded !== loaded) {
+      idle.current = { loaded, pages: 0 };
+    } else if (idle.current.pages >= MAX_IDLE_PAGES) {
+      setAutoPaused(true);
+      return;
+    } else {
+      idle.current.pages += 1;
+    }
+    void fetchNextPage();
+  }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage, loaded]);
+
+  /** Ручная догрузка — решение человека, поэтому счётчик холостых страниц обнуляется. */
+  const loadMoreManually = useCallback(() => {
+    idle.current = { loaded: -1, pages: 0 };
+    setAutoPaused(false);
+    void fetchNextPage();
+  }, [fetchNextPage]);
 
   const noAccounts = accounts.isSuccess && accounts.data.items.length === 0;
   const filtered = !isDefaultFilters(filters);
@@ -84,7 +122,16 @@ export function JournalPage() {
 
       <FiltersPanel filters={filters} timeZone={timeZone} onChange={applyFilters} />
 
-      {positions.isPending ? (
+      {selection.empty ? (
+        <div className="flex flex-col items-start gap-3 rounded-lg border border-border p-6">
+          <p className="text-sm">{t.journal.emptyRealAccounts}</p>
+          <Button type="button" variant="outline" size="sm" asChild>
+            <Link to="/accounts">{t.journal.goToAccounts}</Link>
+          </Button>
+        </div>
+      ) : null}
+
+      {positions.isPending && !selection.empty ? (
         <p className="text-sm text-muted-foreground">{t.common.loading}</p>
       ) : null}
 
@@ -155,14 +202,15 @@ export function JournalPage() {
               {isFetchNextPageError ? (
                 <>
                   <span className="text-destructive">{t.journal.loadMoreFailed}</span>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      void fetchNextPage();
-                    }}
-                  >
+                  <Button type="button" variant="outline" size="sm" onClick={loadMoreManually}>
+                    {t.journal.loadMore}
+                  </Button>
+                </>
+              ) : null}
+              {autoPaused && hasNextPage && !isFetchingNextPage && !isFetchNextPageError ? (
+                <>
+                  <span>{t.journal.loadMorePaused}</span>
+                  <Button type="button" variant="outline" size="sm" onClick={loadMoreManually}>
                     {t.journal.loadMore}
                   </Button>
                 </>

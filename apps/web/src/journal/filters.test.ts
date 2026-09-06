@@ -97,6 +97,30 @@ describe('чтение фильтров из адреса', () => {
     expect(filters.to).toBe('2026-09-02T00:00:00Z');
   });
 
+  it('управляющие символы не доезжают до сервера: NUL в тексте — это 500, а не фильтр', () => {
+    const nul = String.fromCharCode(0);
+
+    expect(read(`symbol=${encodeURIComponent(`${nul}${nul}EURUSD`)}`).symbol).toBe('EURUSD');
+    expect(read(`q=${encodeURIComponent(`${nul}пробой`)}`).q).toBe('пробой');
+    expect(read(`tags=${encodeURIComponent(`${nul}news`)},plan`).tags).toEqual(['news', 'plan']);
+    // Значение, от которого после чистки ничего не осталось, — это отсутствие фильтра.
+    expect(read(`symbol=${encodeURIComponent(nul)}`).symbol).toBe('');
+    expect(read(`tags=${encodeURIComponent(nul)}`).tags).toEqual([]);
+  });
+
+  it('невидимки из копипасты не превращают EURUSD в другой символ', () => {
+    // U+200B и U+FEFF приезжают вставкой из мессенджера и на экране не видны вовсе.
+    expect(read('symbol=%E2%80%8BEURUSD%EF%BB%BF').symbol).toBe('EURUSD');
+  });
+
+  it('дата вне диапазона сервера не применяется: toISOString печатает расширенный год', () => {
+    expect(read('from=99999-01-01').from).toBeNull();
+    expect(read('from=%2B010000-01-01').from).toBeNull();
+    expect(read('from=-000001-01-01').from).toBeNull();
+    // Год, который сервер принимает, остаётся фильтром.
+    expect(read('from=2026-09-01T00:00:00Z').from).toBe('2026-09-01T00:00:00Z');
+  });
+
   it('перевёрнутый период не применяется: сервер отверг бы его целиком', () => {
     const filters = read('from=2026-09-05T00:00:00Z&to=2026-09-01T00:00:00Z');
 

@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -6,6 +6,7 @@ import type { Account } from '@/accounts/api';
 import { useAccountSelectionStore } from '@/accounts/selection';
 import { t } from '@/i18n';
 import type { PositionListItem } from '@/journal/api';
+import { ROW_HEIGHT } from '@/journal/positions-list';
 import { errorResponse, installFetchMock, jsonResponse, type RouteTable } from '@/test/fetch-mock';
 import { renderApp, TEST_USER } from '@/test/render';
 
@@ -16,11 +17,11 @@ const POSITIONS = 'GET /api/v1/journal/positions';
 const FIRST_ACCOUNT = '0199a2b0-0000-7000-8000-0000000000a1';
 const SECOND_ACCOUNT = '0199a2b0-0000-7000-8000-0000000000a2';
 
-function account(id: string, label: string): Account {
+function account(id: string, label: string, isDemo = false): Account {
   return {
     id,
     label,
-    is_demo: false,
+    is_demo: isDemo,
     color: '#2563eb',
     platform: 'mt5',
     broker: null,
@@ -102,6 +103,16 @@ function lastQuery(queries: Query[]): Query {
     throw new Error('журнал не запрашивался ни разу');
   }
   return query;
+}
+
+/**
+ * Дать экрану доработать: проверяется отсутствие запросов, а его нельзя дождаться
+ * ожиданием — только паузой, за которую цикл догрузки успел бы себя показать.
+ */
+async function settle(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
 }
 
 async function openJournal(entries: string[] = ['/journal']) {
@@ -205,6 +216,61 @@ describe('журнал: список', () => {
     expect(await screen.findByText('GBPUSD')).toBeInTheDocument();
     expect(queries[1]?.get('cursor')).toBe('cursor-2');
     expect(lastQuery(queries).has('page')).toBe(false);
+  });
+});
+
+describe('журнал: догрузка не уходит в цикл', () => {
+  it('провалившаяся страница останавливает догрузку, а не повторяется сама', async () => {
+    const queries: Query[] = [];
+    installFetchMock({
+      [SESSION]: () => jsonResponse(200, TEST_USER),
+      [ACCOUNTS]: () => jsonResponse(200, { items: [account(FIRST_ACCOUNT, 'Основной')] }),
+      [POSITIONS]: ({ url }) => {
+        queries.push(url.searchParams);
+        return url.searchParams.get('cursor') === null
+          ? jsonResponse(200, { items: [position(1)], next_cursor: 'cursor-2' })
+          : errorResponse(500, 'internal_error', 'сервер не смог');
+      },
+    });
+    await openJournal();
+
+    expect(await screen.findByText(t.journal.loadMoreFailed)).toBeInTheDocument();
+    // Первая страница и одна провалившаяся попытка — больше запросов быть не должно.
+    await settle();
+    expect(queries.length).toBe(2);
+
+    await userEvent.click(screen.getByRole('button', { name: t.journal.loadMore }));
+
+    // Повтор по кнопке — решение человека, поэтому запрос уходит, но снова один.
+    await waitFor(() => expect(queries.length).toBe(3));
+    await settle();
+    expect(queries.length).toBe(3);
+  });
+
+  it('пустые страницы с новым курсором не превращаются в поток запросов', async () => {
+    const queries: Query[] = [];
+    let cursor = 0;
+    installFetchMock({
+      [SESSION]: () => jsonResponse(200, TEST_USER),
+      [ACCOUNTS]: () => jsonResponse(200, { items: [account(FIRST_ACCOUNT, 'Основной')] }),
+      [POSITIONS]: ({ url }) => {
+        queries.push(url.searchParams);
+        cursor += 1;
+        // Сервер обещает продолжение и не присылает ни строки. Сегодняшний API так не
+        // отвечает, но признак конца списка — его слово, а не проверяемый факт.
+        return url.searchParams.get('cursor') === null
+          ? jsonResponse(200, { items: [position(1)], next_cursor: `cursor-${cursor}` })
+          : jsonResponse(200, { items: [], next_cursor: `cursor-${cursor}` });
+      },
+    });
+    await openJournal();
+
+    expect(await screen.findByText(t.journal.loadMorePaused)).toBeInTheDocument();
+    await settle();
+
+    // Первая страница плюс предел холостых догрузок — и остановка до кнопки.
+    expect(queries.length).toBe(5);
+    expect(screen.getByRole('button', { name: t.journal.loadMore })).toBeInTheDocument();
   });
 });
 
@@ -343,6 +409,24 @@ describe('журнал: переключатель счетов', () => {
     await waitFor(() => expect(lastQuery(queries).get('account_ids')).toBe(SECOND_ACCOUNT));
   });
 
+  it('«все реальные» при одних демо-счетах не показывает демо-сделки', async () => {
+    // Режим ставит `S2-11`, но значение уже умеет попасть в хранилище — руками или из
+    // другой вкладки. Пустой `account_ids` означает «все счета», поэтому без отдельного
+    // признака запрос вернул бы ровно то, что выбор исключает.
+    useAccountSelectionStore.setState({ mode: 'all_real', ids: [] });
+    const { routes, queries } = withJournal([position(1)], {
+      accounts: [account(SECOND_ACCOUNT, 'Демо', true)],
+    });
+    installFetchMock(routes);
+    await openJournal();
+
+    expect(await screen.findByText(t.journal.emptyRealAccounts)).toBeInTheDocument();
+    await settle();
+    expect(queries).toHaveLength(0);
+    expect(screen.queryByText('EURUSD')).not.toBeInTheDocument();
+    expect(screen.queryByText(t.common.loading)).not.toBeInTheDocument();
+  });
+
   it('единственный счёт показан без выпадающего списка', async () => {
     const { routes } = withJournal([position(1)]);
     installFetchMock(routes);
@@ -376,6 +460,44 @@ describe('журнал: мобильная раскладка', () => {
 });
 
 describe('журнал: виртуализация', () => {
+  it('высота строки в разметке та же, по которой считаются отступы окна', async () => {
+    const { routes } = withJournal([position(1)]);
+    installFetchMock(routes);
+    await openJournal();
+
+    await screen.findByText('EURUSD');
+    const [, row] = within(screen.getByRole('table')).getAllByRole('row');
+
+    // Схлопнутая рамка (`border-collapse: collapse` из preflight) в высоту `tr` не
+    // входит: строка с `height: 44` занимает на экране 45 — замерено в браузере.
+    // Виртуализация считает шаг, поэтому шаг и рамка объявлены раздельно.
+    expect(ROW_HEIGHT).toBe(45);
+    expect(row).toHaveStyle({ height: '44px' });
+    expect(row?.className).toContain('border-t');
+  });
+
+  it('повтор тега не даёт двух элементов с одним ключом', async () => {
+    const { routes } = withJournal([
+      position(1, {
+        journal_entry: {
+          tags: ['news', 'news', 'plan'],
+          has_notes: false,
+          notes_preview: null,
+          risk_amount: null,
+          updated_at: '2026-09-05T11:00:00Z',
+        },
+      }),
+    ]);
+    installFetchMock(routes);
+    await openJournal();
+
+    await screen.findByText('EURUSD');
+    const table = within(screen.getByRole('table'));
+
+    expect(table.getAllByText('news')).toHaveLength(1);
+    expect(table.getByText('plan')).toBeInTheDocument();
+  });
+
   it('пять тысяч позиций не превращаются в пять тысяч строк разметки', async () => {
     const items = Array.from({ length: 5000 }, (_, index) => position(index + 1));
     const { routes } = withJournal(items);

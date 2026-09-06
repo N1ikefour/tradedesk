@@ -48,6 +48,14 @@ function orDash(value: string | null): string {
   return value ?? t.journal.unknownValue;
 }
 
+/**
+ * Повторы схлопываются: тег — ключ строки списка, а уникальность набора гарантируется
+ * записью, которой ещё нет (`S2-02`). Дубль дал бы React два элемента с одним ключом.
+ */
+function tagsOf(item: PositionListItem): readonly string[] {
+  return [...new Set(item.journal_entry?.tags ?? [])];
+}
+
 function ratioOf(item: PositionListItem): string | null {
   const risk = item.journal_entry?.risk_amount;
   if (risk === null || risk === undefined) {
@@ -88,7 +96,7 @@ export function describePosition(item: PositionListItem, timeZone: string): Posi
     netPnl: orDash(formatMoney(item.net_pnl)),
     netPnlSign: decimalSign(item.net_pnl) ?? 'zero',
     ratio: ratioOf(item),
-    tags: item.journal_entry?.tags ?? [],
+    tags: tagsOf(item),
     hasReflection: item.reflection?.filled_at != null,
     hasAttachments: item.attachments_count > 0,
   };
