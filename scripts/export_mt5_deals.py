@@ -30,8 +30,8 @@ except ImportError:
 
 # ── настройки ────────────────────────────────────────────────────────────────
 
-DAYS_BACK = 365           # за какой период выгружать
-KEEP_COMMENTS = True      # комментарии брокера. См. предупреждение в конце
+DAYS_BACK = 365  # за какой период выгружать
+KEEP_COMMENTS = True  # комментарии брокера. См. предупреждение в конце
 OUT = Path(__file__).with_name("mt5-export.json")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -90,7 +90,9 @@ def main() -> None:
         "deals_count": len(rows),
         "deals": rows,
     }
-    OUT.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    OUT.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+    )
 
     mt5.shutdown()
     report(rows, info, offset_minutes, symbols)
@@ -106,7 +108,9 @@ def report(rows: list[dict], info, offset_minutes, symbols: list[str]) -> None:
     print("=" * 62)
 
     print(f"\nВалюта счёта: {info.currency}")
-    print(f"Режим позиций (margin_mode): {int(info.margin_mode)}  [0=netting, 1=exchange, 2=hedging]")
+    print(
+        f"Режим позиций (margin_mode): {int(info.margin_mode)}  [0=netting, 1=exchange, 2=hedging]"
+    )
     print(f"Смещение сервера от UTC: {offset_minutes} мин")
 
     types: dict[int, int] = {}
@@ -128,11 +132,16 @@ def report(rows: list[dict], info, offset_minutes, symbols: list[str]) -> None:
     print(f"   {len(other_with_pos)} шт.")
     if other_with_pos:
         s = other_with_pos[0]
-        print(f"   пример: type={s['type']} position_id={s['position_id']} profit={s['profit']}")
+        print(
+            f"   пример: type={s['type']} position_id={s['position_id']} profit={s['profit']}"
+        )
 
     print("\nОтменённые сделки (type 13/14) с position_id — вопрос №1, самый опасный:")
     cancelled = [r for r in rows if r["type"] in (13, 14) and r["position_id"]]
-    print(f"   {len(cancelled)} шт." + (f", пример profit={cancelled[0]['profit']}" if cancelled else ""))
+    print(
+        f"   {len(cancelled)} шт."
+        + (f", пример profit={cancelled[0]['profit']}" if cancelled else "")
+    )
 
     print("\nЗнаков после запятой — вопрос №19 (от него зависит, сойдётся ли сверка):")
     for field in ("commission", "swap", "profit", "fee"):
@@ -155,7 +164,9 @@ def report(rows: list[dict], info, offset_minutes, symbols: list[str]) -> None:
         if len(comments) > 25:
             print(f"   … и ещё {len(comments) - 25}")
 
-    print("\nНомер счёта в файле заменён на 9999999. Пароли не читаются и не сохраняются.")
+    print(
+        "\nНомер счёта в файле заменён на 9999999. Пароли не читаются и не сохраняются."
+    )
     print("=" * 62 + "\n")
 
 
