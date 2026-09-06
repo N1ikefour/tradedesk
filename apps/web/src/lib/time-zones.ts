@@ -50,6 +50,15 @@ export function isKnownTimeZone(name: string): boolean {
   }
 }
 
+/**
+ * Зона, которую движок точно знает. Зона профиля может быть ему незнакома: наборы имён
+ * IANA у браузера и у сервера расходятся по псевдонимам, и падать на этом нельзя —
+ * показываем по зоне компьютера, а экран настроек про расхождение предупреждает отдельно.
+ */
+export function safeTimeZone(timeZone: string): string {
+  return isKnownTimeZone(timeZone) ? timeZone : browserTimeZone();
+}
+
 /** `UTC+3`, `UTC+5:45`, `UTC-4`. Пустая строка — если движок зону не знает. */
 export function offsetLabel(name: string, at: Date): string {
   const offsetMs = getTimezoneOffset(name, at);

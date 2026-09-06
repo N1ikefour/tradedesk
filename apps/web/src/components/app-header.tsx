@@ -1,6 +1,7 @@
 import { LogOut } from 'lucide-react';
 import { NavLink, useNavigate } from 'react-router';
 
+import { AccountSwitcher } from '@/accounts/account-switcher';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { Button } from '@/components/ui/button';
 import { useLogout, useSession } from '@/auth/session';
@@ -34,7 +35,13 @@ export function AppHeader() {
       <div className="mx-auto flex h-14 max-w-7xl items-center gap-4 px-4">
         <span className="shrink-0 text-sm font-semibold tracking-tight">{t.app.name}</span>
 
-        <nav aria-label={t.header.menu} className="flex min-w-0 items-center gap-1 overflow-x-auto">
+        {/* `flex-1`: меню забирает свободную ширину раньше правой группы. Иначе
+            переключатель счетов с длинным именем счёта съедает её на телефоне, и от
+            меню остаётся полоска в несколько пикселей. */}
+        <nav
+          aria-label={t.header.menu}
+          className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+        >
           {NAV_ITEMS.map((item) => (
             <NavLink
               key={item.to}
@@ -69,19 +76,8 @@ export function AppHeader() {
           ) : null}
         </nav>
 
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          {/*
-            Место под глобальный переключатель счетов (SPEC.md 9.2). Сам переключатель
-            приезжает вместе со счетами — S1-11; сейчас здесь только слот, чтобы шапка
-            не перекраивалась под него задним числом. Подписи нет намеренно: слово
-            «Счета» уже стоит в меню слева, и второе такое же читается как ошибка.
-          */}
-          <div
-            data-slot="account-switcher"
-            aria-hidden="true"
-            title={t.header.accountSwitcherHint}
-            className="hidden h-9 w-28 rounded-md border border-dashed border-border sm:block"
-          />
+        <div className="ml-auto flex min-w-0 shrink items-center gap-2">
+          <AccountSwitcher />
 
           <ThemeToggle />
 

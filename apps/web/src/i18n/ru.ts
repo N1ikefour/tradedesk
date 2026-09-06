@@ -9,6 +9,7 @@ const MINUTES = ['минуту', 'минуты', 'минут'] as const;
 const HOURS = ['час', 'часа', 'часов'] as const;
 const DAYS = ['день', 'дня', 'дней'] as const;
 const POSITIONS = ['позиция', 'позиции', 'позиций'] as const;
+const ACCOUNTS = ['счёт', 'счёта', 'счетов'] as const;
 
 /**
  * Окно лимита на запрос кода — десять минут по адресу и час по IP (SPEC.md 4),
@@ -51,11 +52,28 @@ export const ru = {
     devOutbox: 'Письма (dev)',
   },
   header: {
-    // Место под переключатель счетов (SPEC.md 9.2). Сам переключатель — задача S1-11.
-    // Подписи у слота нет: слово «Счета» уже занято пунктом меню рядом.
-    accountSwitcherHint: 'Здесь появится переключатель счетов',
     logout: 'Выйти',
     menu: 'Меню',
+  },
+  // Короткие единицы — для колонок таблицы, где «2 часа 30 минут» не помещается и
+  // мешает сравнивать строки взглядом. Полные формы живут в `time` и склоняются там.
+  units: {
+    seconds: (count: number) => `${count} с`,
+    minutes: (count: number) => `${count} мин`,
+    hours: (count: number) => `${count} ч`,
+    days: (count: number) => `${count} д`,
+  },
+  accountSwitcher: {
+    // Подписи у переключателя нет: слово «Счета» уже занято пунктом меню рядом, и второе
+    // такое же читается как ошибка. Смысл несёт само значение — какие счета в выборке.
+    open: 'Выбрать счета',
+    all: 'Все счета',
+    selected: (count: number) => `${count} ${plural(count, ACCOUNTS)}`,
+    // Выбор влияет на журнал, календарь и дашборд сразу (SPEC.md 9.2) — человеку стоит
+    // знать это до того, как он снимет галочку и не найдёт вчерашних сделок.
+    hint: 'Влияет на журнал, календарь и дашборд.',
+    demoBadge: 'демо',
+    loadFailed: 'Счета не загрузились.',
   },
   theme: {
     switchToLight: 'Включить светлую тему',
@@ -327,6 +345,113 @@ export const ru = {
     createFailed: 'Не удалось добавить счёт.',
     saveFailed: 'Не удалось сохранить счёт.',
     noChanges: 'Менять нечего.',
+  },
+  journal: {
+    // Заголовок берётся из `pages.journal`: то же слово стоит в меню.
+    hint: 'Ваши позиции списком. Фильтры сохраняются в адресе — ссылкой на отфильтрованный журнал можно поделиться.',
+    unknownValue: '—',
+    stillOpen: 'открыта',
+    long: 'Лонг',
+    short: 'Шорт',
+    demoBadge: 'демо',
+
+    loadFailed: 'Не удалось загрузить журнал.',
+    // Единственное реальное состояние до появления сборщика позиций: сделкам взяться
+    // неоткуда, и человек должен прочитать здесь причину, а не решить, что журнал сломан.
+    empty: 'Позиций пока нет.',
+    emptyHint:
+      'Позиции собираются из сделок, которые приносит коллектор MT5 с вашего компьютера. ' +
+      'Пока он не синхронизировал ни одной сделки, журнал остаётся пустым.',
+    emptyAccounts: 'Счетов ещё нет — журналу неоткуда взяться. Начните со счёта.',
+    emptyFiltered: 'Под фильтр не попала ни одна позиция.',
+    emptyFilteredHint: 'Смените период или снимите часть условий — данные никуда не делись.',
+    resetFilters: 'Сбросить фильтры',
+    goToAccounts: 'К счетам',
+
+    filtersTitle: 'Фильтры',
+    periodLabel: 'Период',
+    periodToday: 'Сегодня',
+    periodWeek: 'Неделя',
+    periodMonth: 'Месяц',
+    periodAll: 'Всё',
+    // Период границами приходит ссылкой — например, кликом по дню календаря. Кнопки
+    // пресетов его не выражают, поэтому он показан как есть и снимается отдельно.
+    periodCustom: 'Свой период',
+    periodCustomFrom: (value: string) => `с ${value}`,
+    periodCustomTo: (value: string) => `по ${value}`,
+    periodCustomClear: 'Снять период',
+
+    statusLabel: 'Состояние',
+    statusAny: 'Любое',
+    statusOpen: 'Открытые',
+    statusClosed: 'Закрытые',
+
+    directionLabel: 'Направление',
+    directionAny: 'Любое',
+
+    resultLabel: 'Результат',
+    resultAny: 'Любой',
+    resultWin: 'Прибыль',
+    resultLoss: 'Убыток',
+    // Пункта «безубыток» в списке нет: `result='be'` это точный ноль `net_pnl`
+    // (SPEC.md 5.4), а комиссия его сдвигает, и на счёте с комиссией фильтр всегда пуст.
+    // Из адреса значение принимается — иначе чужая ссылка молча показывала бы не то.
+    resultBreakeven: 'Безубыток (точный ноль)',
+
+    symbolLabel: 'Символ',
+    symbolPlaceholder: 'EURUSD',
+    symbolHint: 'Целиком, как в журнале: поиск по части имени — в поле ниже.',
+
+    tagsLabel: 'Теги',
+    tagsPlaceholder: 'через запятую',
+    tagsHint: 'Позиция должна нести все перечисленные теги.',
+
+    reflectionLabel: 'Рефлексия',
+    reflectionAny: 'Любая',
+    reflectionFilled: 'Заполнена',
+    reflectionNone: 'Не заполнена',
+
+    searchLabel: 'Поиск',
+    searchPlaceholder: 'Символ или текст заметки',
+
+    apply: 'Применить',
+
+    sortLabel: 'Сортировка',
+    sortFieldCloseTime: 'По времени закрытия',
+    sortFieldOpenTime: 'По времени открытия',
+    sortFieldNetPnl: 'По итогу',
+    sortFieldSymbolNorm: 'По символу',
+    sortFieldDurationSeconds: 'По длительности',
+    sortAsc: 'По возрастанию',
+    sortDesc: 'По убыванию',
+    sortToggle: 'Изменить направление сортировки',
+
+    columnAccount: 'Счёт',
+    columnCloseTime: 'Закрытие',
+    columnSymbol: 'Символ',
+    columnDirection: 'Направление',
+    columnVolume: 'Объём',
+    columnPrices: 'Вход → выход',
+    columnDuration: 'Длительность',
+    columnNetPnl: 'Итог',
+    columnRatio: 'R',
+    columnTags: 'Теги',
+    columnMarks: 'Отметки',
+    sortBy: (column: string) => `Сортировать по столбцу «${column}»`,
+
+    reflectionMark: 'Рефлексия заполнена',
+    attachmentsMark: 'Есть скриншоты',
+    openedAt: (value: string) => `открыта с ${value}`,
+    openCard: (symbol: string) => `Открыть позицию ${symbol}`,
+
+    // Общего числа строк в ответе нет намеренно (SPEC.md 5.4): `count(*)` по журналу
+    // стоит как сама страница. Поэтому «страница 3 из 47» здесь не пишется никогда —
+    // видно, сколько уже загружено, и загружается ли ещё.
+    loadedCount: (count: number) => `${count} ${plural(count, POSITIONS)} в списке`,
+    loadingMore: 'Загружаем ещё…',
+    loadMore: 'Показать ещё',
+    loadMoreFailed: 'Не удалось загрузить продолжение списка.',
+    allLoaded: 'Это весь журнал по текущему фильтру.',
   },
   account: {
     backToList: 'Ко всем счетам',

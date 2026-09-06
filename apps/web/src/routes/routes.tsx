@@ -7,8 +7,9 @@ import { RequireAuth } from '@/routes/require-auth';
 import { RootLayout } from '@/routes/root-layout';
 import { AccountPage } from '@/routes/account-page';
 import { AccountsPage } from '@/routes/accounts-page';
+import { JournalPage } from '@/routes/journal-page';
 import { SettingsPage } from '@/routes/settings-page';
-import { CalendarPage, DashboardPage, JournalPage, PositionPage } from '@/routes/stub-pages';
+import { CalendarPage, DashboardPage, PositionPage } from '@/routes/stub-pages';
 import { DEV_OUTBOX_AVAILABLE } from '@/lib/env';
 
 /**

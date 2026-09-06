@@ -156,20 +156,32 @@ describe('список счетов', () => {
     );
     await openAccounts();
 
-    expect(await screen.findByText('Руками')).toBeInTheDocument();
+    // Заголовок карточки, а не любой текст: то же имя стоит теперь в переключателе
+    // счетов в шапке (SPEC.md 9.2), и поиск по всей странице находит оба.
+    expect(await screen.findByRole('heading', { name: 'Руками' })).toBeInTheDocument();
     expect(screen.queryByText(t.accounts.heartbeatNever)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: t.accounts.sync })).not.toBeInTheDocument();
     expect(screen.getByText(new RegExp(t.accounts.noBroker))).toBeInTheDocument();
   });
 
   it('показ архивных живёт в адресе и восстанавливается из него', async () => {
-    const { calls } = installFetchMock(withAccounts([account({ status: 'archived' })]));
+    // Запросы различаются параметром, а не путём: переключатель счетов в шапке просит
+    // свой список неархивированных счетов, и считать обращения по одному только пути
+    // здесь больше нельзя.
+    const searches: string[] = [];
+    installFetchMock({
+      [SESSION]: () => jsonResponse(200, TEST_USER),
+      [LIST]: ({ url }) => {
+        searches.push(url.search);
+        return jsonResponse(200, { items: [account({ status: 'archived' })] });
+      },
+    });
     renderApp(['/accounts?archived=1']);
 
     const checkbox = await screen.findByLabelText(t.accounts.showArchived);
     expect(checkbox).toBeChecked();
     await waitFor(() => {
-      expect(callsTo(calls, LIST)).toHaveLength(1);
+      expect(searches.filter((search) => search.includes('include_archived'))).toHaveLength(1);
     });
     expect(screen.getByText(t.accounts.statusArchived)).toBeInTheDocument();
   });

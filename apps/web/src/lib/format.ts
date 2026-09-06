@@ -5,27 +5,18 @@
  * Время приходит из API в UTC (ISO с `Z`), а показывается в таймзоне пользователя из
  * профиля (`/users/me`). Смещение считает `date-fns-tz` — своих вычислений здесь нет.
  *
- * Деньги и цены появятся вместе с экранами, которые их показывают.
+ * Деньги, цены и объёмы приходят строками и печатаются в `@/lib/decimal`: там они
+ * никогда не становятся `number`, и разделять эти два модуля стоит именно поэтому.
  */
-import { format, parseISO, subDays } from 'date-fns';
+import { format } from 'date-fns';
 import { formatInTimeZone } from 'date-fns-tz';
 
 import { t } from '@/i18n';
-import { browserTimeZone, isKnownTimeZone } from '@/lib/time-zones';
+import { safeTimeZone } from '@/lib/time-zones';
+import { tradingDate } from '@/lib/trading-day';
 
 const DATE_TIME_PATTERN = 'dd.MM.yyyy HH:mm';
 const DAY_PATTERN = 'dd.MM.yyyy';
-const ISO_DAY_PATTERN = 'yyyy-MM-dd';
-const HOUR_PATTERN = 'H';
-
-/**
- * Зона профиля может быть незнакома движку: наборы имён IANA у браузера и у сервера
- * расходятся по псевдонимам. Падать на этом нельзя — показываем по зоне компьютера,
- * а экран настроек про расхождение предупреждает отдельно.
- */
-function safeTimeZone(timeZone: string): string {
-  return isKnownTimeZone(timeZone) ? timeZone : browserTimeZone();
-}
 
 /** `02.09.2026 17:03` в переданной таймзоне. */
 export function formatZonedDateTime(at: Date, timeZone: string): string {
@@ -49,16 +40,11 @@ export function formatHourOfDay(hour: number): string {
 /**
  * Дата торгового дня для момента `at` — SPEC.md 3: день начинается в `day_boundary_hour`
  * по таймзоне пользователя, а не в полночь UTC. Час до границы принадлежит вчерашнему
- * торговому дню.
+ * торговому дню. Саму границу считает `@/lib/trading-day` — тот же расчёт стоит под
+ * пресетами периода в журнале, и разъехаться этим двум местам нельзя.
  */
 export function formatTradingDay(at: Date, timeZone: string, boundaryHour: number): string {
-  const zone = safeTimeZone(timeZone);
-  const day = formatInTimeZone(at, zone, ISO_DAY_PATTERN);
-  const hour = Number(formatInTimeZone(at, zone, HOUR_PATTERN));
-  // Арифметика по календарной дате, а не по часам: сутки в зоне пользователя не всегда
-  // длятся 24 часа, а нужен именно предыдущий день календаря.
-  const start = parseISO(day);
-  return format(hour < boundaryHour ? subDays(start, 1) : start, DAY_PATTERN);
+  return format(tradingDate(at, timeZone, boundaryHour), DAY_PATTERN);
 }
 
 const SECONDS_IN_MINUTE = 60;
@@ -88,4 +74,36 @@ export function formatRelativePast(iso: string, now: Date): string {
     return t.time.hoursAgo(Math.floor(seconds / SECONDS_IN_HOUR));
   }
   return t.time.daysAgo(Math.floor(seconds / SECONDS_IN_DAY));
+}
+
+/**
+ * Длительность позиции — колонка журнала (SPEC.md 9.3). Две единицы, не больше: строка
+ * стоит в узкой ячейке рядом с ценами, и «1 д 2 ч 3 мин 4 с» там читается хуже, чем
+ * «1 д 2 ч», а третья единица ничего не решает при взгляде на список.
+ */
+export function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return t.journal.unknownValue;
+  }
+  const total = Math.floor(seconds);
+  if (total < SECONDS_IN_MINUTE) {
+    return t.units.seconds(total);
+  }
+  if (total < SECONDS_IN_HOUR) {
+    const minutes = Math.floor(total / SECONDS_IN_MINUTE);
+    const rest = total % SECONDS_IN_MINUTE;
+    return rest === 0
+      ? t.units.minutes(minutes)
+      : `${t.units.minutes(minutes)} ${t.units.seconds(rest)}`;
+  }
+  if (total < SECONDS_IN_DAY) {
+    const hours = Math.floor(total / SECONDS_IN_HOUR);
+    const minutes = Math.floor((total % SECONDS_IN_HOUR) / SECONDS_IN_MINUTE);
+    return minutes === 0
+      ? t.units.hours(hours)
+      : `${t.units.hours(hours)} ${t.units.minutes(minutes)}`;
+  }
+  const days = Math.floor(total / SECONDS_IN_DAY);
+  const hours = Math.floor((total % SECONDS_IN_DAY) / SECONDS_IN_HOUR);
+  return hours === 0 ? t.units.days(days) : `${t.units.days(days)} ${t.units.hours(hours)}`;
 }
