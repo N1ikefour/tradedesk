@@ -66,8 +66,12 @@ describe('тело PUT /entry', () => {
   });
 
   it('точность 18 знаков переживает дорогу через форму', () => {
-    // Ровно то, ради чего деньги не превращаются в number: double такое число не держит.
-    const raw = '12345678.12345678';
+    // Число выбрано так, что double его НЕ держит: то же значение стоит в decimal.test.ts.
+    // С `12345678.12345678` этот тест был декорацией — оно проходит через double без
+    // потерь, и подмена canonicalDecimal на `String(Number(...))` оставалась зелёной.
+    const raw = '123456789012.12345678';
+    expect(String(Number(raw))).not.toBe(raw);
+
     const body = entryBody(entryFormFrom(detail({ planned_entry: raw })));
     expect(body?.planned_entry).toBe(raw);
   });

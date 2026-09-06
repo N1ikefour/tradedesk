@@ -92,8 +92,19 @@ export function PositionCard({
       {query.data === undefined ? null : (
         <>
           <PositionHeader position={query.data} headingLevel={headingLevel} />
-          <EntryBlocks position={query.data} onTouched={onTouched} />
-          <ReflectionBlock position={query.data} onTouched={onTouched} />
+          {/*
+           * `key` здесь — не оптимизация, а условие сохранности данных. Стрелка «→»
+           * меняет `positionId` под тем же деревом, и если сосед уже в кэше запроса, то
+           * без ключа React оставляет блоки формы смонтированными: `useFlushOnUnmount` не
+           * срабатывает, набранное переезжает на чужую позицию и записывается ей.
+           * Найдено в браузере: заметка, набранная EURUSD, оказалась у USDJPY.
+           */}
+          <EntryBlocks key={`entry-${positionId}`} position={query.data} onTouched={onTouched} />
+          <ReflectionBlock
+            key={`reflection-${positionId}`}
+            position={query.data}
+            onTouched={onTouched}
+          />
           <DealsTable deals={query.data.deals} />
         </>
       )}

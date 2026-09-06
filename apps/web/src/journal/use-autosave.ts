@@ -65,8 +65,6 @@ export function useAutosave<TBody>({
 
   const bodyRef = useRef(body);
   bodyRef.current = body;
-  const savedRef = useRef(savedSerialized);
-  savedRef.current = savedSerialized;
   const saveRef = useRef(save);
   saveRef.current = save;
 
@@ -78,24 +76,39 @@ export function useAutosave<TBody>({
     }
   }, []);
 
-  const inFlight = useRef(false);
   /**
    * Что уже доехало до сервера. Отдельно от `savedBody`, потому что тот приходит из кэша
    * запроса — а при закрытии карточки её кэш обновляться уже некуда: компонент снимается
    * раньше. Без этой памяти дозапись на выходе повторяла бы только что отправленное тело.
+   *
+   * ⚠️ Живёт ровно до следующего ответа сервера и обнуляется вместе с ним (ниже). Иначе
+   * снимок переживает своё окно и запрещает отправку навсегда: запись изменили снаружи,
+   * человек вернул прежний текст — форма разошлась с `savedBody`, но совпала с
+   * доставленным, и автосохранение молча замирало на «Не сохранено» без единой попытки.
    */
   const delivered = useRef<string | null>(null);
-  const run = useCallback(async (): Promise<void> => {
-    clearTimer();
+  const savedRef = useRef(savedSerialized);
+  if (savedRef.current !== savedSerialized) {
+    savedRef.current = savedSerialized;
+    delivered.current = null;
+  }
+
+  /**
+   * Хвост очереди сохранений. Второй `run()` не отбрасывается, а встаёт за первым: правка,
+   * сделанная поверх летящего запроса, иначе доезжала бы только в смонтированном
+   * компоненте (там её подхватывает эффект по `saving`) — а на `flush()` при закрытии
+   * карточки не доезжала бы вовсе, и последний набранный символ пропадал молча.
+   */
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  const attempt = useCallback(async (): Promise<void> => {
     const current = bodyRef.current;
-    if (current === null || inFlight.current) {
+    if (current === null) {
       return;
     }
     const snapshot = JSON.stringify(current);
     if (snapshot === savedRef.current || snapshot === delivered.current) {
       return;
     }
-    inFlight.current = true;
     setSaving(true);
     try {
       await saveRef.current(current);
@@ -105,10 +118,17 @@ export function useAutosave<TBody>({
     } catch (error) {
       setFailure({ snapshot, error });
     } finally {
-      inFlight.current = false;
       setSaving(false);
     }
-  }, [clearTimer]);
+  }, []);
+
+  const run = useCallback((): Promise<void> => {
+    clearTimer();
+    // `attempt` не отвергается никогда, поэтому цепочка не может оборваться отказом.
+    const next = queue.current.then(attempt);
+    queue.current = next;
+    return next;
+  }, [attempt, clearTimer]);
 
   const blocked = failure !== null && failure.snapshot === serialized;
 

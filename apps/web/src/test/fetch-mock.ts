@@ -7,7 +7,13 @@ import { vi } from 'vitest';
 
 export type MockedCall = { method: string; path: string; body: unknown };
 
-export type MockRoute = (call: MockedCall & { url: URL }) => Response | Promise<Response>;
+/**
+ * `signal` отдаётся маршруту, чтобы можно было изобразить молчащее соединение: ответа нет,
+ * ошибки нет, и запрос заканчивается только собственным таймаутом клиента.
+ */
+export type MockRoute = (
+  call: MockedCall & { url: URL; signal: AbortSignal | null },
+) => Response | Promise<Response>;
 
 /** Ключ — `"<МЕТОД> <путь>"`, например `"POST /api/v1/auth/verify"`. */
 export type RouteTable = Record<string, MockRoute>;
@@ -47,16 +53,22 @@ function parseJson(text: string): unknown {
 async function describeRequest(
   input: Request | URL | string,
   init?: RequestInit,
-): Promise<MockedCall & { url: URL }> {
+): Promise<MockedCall & { url: URL; signal: AbortSignal | null }> {
   if (input instanceof Request) {
     const body = parseJson(await input.clone().text());
     const url = new URL(input.url);
-    return { method: input.method.toUpperCase(), url, path: url.pathname, body };
+    return {
+      method: input.method.toUpperCase(),
+      url,
+      path: url.pathname,
+      body,
+      signal: input.signal,
+    };
   }
   const url = new URL(String(input), window.location.origin);
   const method = (init?.method ?? 'GET').toUpperCase();
   const body = typeof init?.body === 'string' ? parseJson(init.body) : null;
-  return { method, url, path: url.pathname, body };
+  return { method, url, path: url.pathname, body, signal: init?.signal ?? null };
 }
 
 export function installFetchMock(routes: RouteTable): { calls: MockedCall[] } {

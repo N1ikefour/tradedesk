@@ -7,7 +7,7 @@ import { t } from '@/i18n';
 
 export function messageForError(error: unknown): string {
   if (error instanceof NetworkError) {
-    return t.errors.network;
+    return error.timedOut ? t.errors.timeout : t.errors.network;
   }
   if (!(error instanceof ApiRequestError)) {
     return t.errors.unknown;

@@ -95,6 +95,19 @@ export class NetworkError extends Error {
     super('network request failed', { cause });
     this.name = 'NetworkError';
   }
+
+  /**
+   * Запрос оборвали мы сами — по своему пределу ожидания, а не сетью. Разница видна
+   * человеку: соединение при этом может быть цело, а сервер запрос уже применить, и
+   * «проверьте соединение» отправляло бы чинить то, что не сломано.
+   */
+  get timedOut(): boolean {
+    const reason = this.cause;
+    if (!(reason instanceof DOMException)) {
+      return false;
+    }
+    return reason.name === 'TimeoutError' || reason.name === 'AbortError';
+  }
 }
 
 /**

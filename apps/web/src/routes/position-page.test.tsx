@@ -1,6 +1,7 @@
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { onlineManager } from '@tanstack/react-query';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Account } from '@/accounts/api';
 import { useAccountSelectionStore } from '@/accounts/selection';
@@ -32,6 +33,12 @@ const CARD_ID = positionId(1);
 const CARD = `GET /api/v1/journal/positions/${CARD_ID}`;
 const ENTRY = `PUT /api/v1/journal/positions/${CARD_ID}/entry`;
 const REFLECTION = `PUT /api/v1/journal/positions/${CARD_ID}/reflection`;
+
+/** Соседняя строка того же списка — цель стрелки «следующая». */
+const NEIGHBOR_ID = positionId(2);
+const NEIGHBOR = `GET /api/v1/journal/positions/${NEIGHBOR_ID}`;
+const NEIGHBOR_ENTRY = `PUT /api/v1/journal/positions/${NEIGHBOR_ID}/entry`;
+const NEIGHBOR_REFLECTION = `PUT /api/v1/journal/positions/${NEIGHBOR_ID}/reflection`;
 
 function account(): Account {
   return {
@@ -223,9 +230,35 @@ function bodyOf(calls: MockedCall[], path: string): Record<string, unknown> {
   return call.body as Record<string, unknown>;
 }
 
+/**
+ * Подменить `AbortSignal.timeout` управляемым сигналом. Иначе таймаут сохранения нечем
+ * привести в действие: он длиной в пятнадцать секунд, а `AbortSignal.timeout` заводит свой
+ * таймер мимо подменённых часов vitest.
+ */
+function stubAbortTimeout(signal: AbortSignal): () => void {
+  const original = Object.getOwnPropertyDescriptor(AbortSignal, 'timeout');
+  Object.defineProperty(AbortSignal, 'timeout', {
+    value: () => signal,
+    configurable: true,
+    writable: true,
+  });
+  return () => {
+    if (original === undefined) {
+      Reflect.deleteProperty(AbortSignal, 'timeout');
+      return;
+    }
+    Object.defineProperty(AbortSignal, 'timeout', original);
+  };
+}
+
 beforeEach(() => {
   window.localStorage.clear();
   useAccountSelectionStore.setState({ mode: 'all', ids: [] });
+});
+
+afterEach(() => {
+  // Состояние `onlineManager` глобальное: оставленный офлайн подвесил бы соседние тесты.
+  onlineManager.setOnline(true);
 });
 
 describe('карточка позиции: что видно', () => {
@@ -360,6 +393,69 @@ describe('карточка позиции: автосохранение', () => 
     expect(screen.queryByText(t.position.saved)).not.toBeInTheDocument();
   });
 
+  it('выключенная сеть даёт ошибку сразу, а не вечное «Сохранение…»', async () => {
+    // По умолчанию TanStack Query **ставит мутацию на паузу**, пока браузер считает себя
+    // офлайн, и отправляет её при возвращении связи. Индикатор при этом навсегда застывает
+    // на «Сохранение…» — то есть на «сохранено» в глазах человека. Ради этого на обеих
+    // мутациях стоит `networkMode: 'always'`, и проверяется здесь именно пауза: в jsdom
+    // `navigator.onLine` всегда `true`, поэтому решает состояние `onlineManager`.
+    const { calls } = installFetchMock({
+      ...routesFor(card()),
+      [ENTRY]: () => {
+        throw new TypeError('Failed to fetch');
+      },
+    });
+    const user = userEvent.setup();
+    await openCard();
+
+    onlineManager.setOnline(false);
+    const notes = screen.getByLabelText(t.position.notesLabel);
+    await user.type(notes, 'офлайн');
+    await user.tab();
+
+    expect(await screen.findAllByText(t.position.saveFailed)).not.toHaveLength(0);
+    expect(calls.some((call) => call.method === 'PUT')).toBe(true);
+    expect(notes).toHaveValue('офлайн');
+  });
+
+  it('молчащее соединение обрывается по таймауту и не выдаёт себя за «Сохранение…»', async () => {
+    // Отказ приходит сразу только там, где сеть о себе сообщает. Соединение, оставшееся без
+    // ответа (уснувший Wi-Fi, прокси в середине), не падает вовсе — и без своего предела
+    // ожидания индикатор застывал бы на «Сохранение…» насовсем.
+    const timeout = new AbortController();
+    const restoreTimeout = stubAbortTimeout(timeout.signal);
+    try {
+      installFetchMock({
+        ...routesFor(card()),
+        [ENTRY]: ({ signal }) =>
+          new Promise<Response>((_, reject) => {
+            signal?.addEventListener('abort', () => {
+              reject(new DOMException('истекло время ожидания', 'TimeoutError'));
+            });
+          }),
+      });
+      const user = userEvent.setup();
+      await openCard();
+
+      const notes = screen.getByLabelText(t.position.notesLabel);
+      await user.type(notes, 'сервер молчит');
+      await user.tab();
+      expect(await screen.findAllByText(t.position.saving)).not.toHaveLength(0);
+
+      await act(async () => {
+        timeout.abort(new DOMException('истекло время ожидания', 'TimeoutError'));
+      });
+
+      expect(await screen.findAllByText(t.position.saveFailed)).not.toHaveLength(0);
+      // Текст отличается от обрыва сети: соединение могло быть цело, а запись — примениться.
+      expect(screen.getAllByText(t.errors.timeout).length).toBeGreaterThan(0);
+      expect(screen.queryByText(t.errors.network)).not.toBeInTheDocument();
+      expect(notes).toHaveValue('сервер молчит');
+    } finally {
+      restoreTimeout();
+    }
+  });
+
   it('перечитанная запись подхватывается формой, а не затирается ею', async () => {
     // Найдено в браузере: карточка висела открытой, запись перечиталась (её изменили
     // рядом — другой вкладкой или переименованием тега, SPEC.md 5.4), а форма осталась с
@@ -468,6 +564,72 @@ describe('карточка позиции: соседи', () => {
     const next = screen.getByRole('link', { name: new RegExp(t.position.next) });
     expect(prev).toHaveAttribute('href', `/journal/${positionId(0)}`);
     expect(next).toHaveAttribute('href', `/journal/${positionId(2)}`);
+  });
+
+  it('переход стрелкой дописывает набранное в ту позицию, где его набрали', async () => {
+    // Найдено в браузере: сосед, уже побывавший в кэше, приходит без единого ожидания, и
+    // блоки формы при переходе не размонтируются вовсе. Незаписанная правка тогда
+    // переезжает на чужую карточку и записывается ей — с рефлексией нагляднее всего:
+    // оценка, поставленная позиции A, не сохранялась ей вообще и уходила соседу B.
+    const puts = () => calls.filter((call) => call.method === 'PUT');
+    const { calls } = installFetchMock(
+      routesFor(card(), {
+        list: [listItem(1, 'EURUSD'), listItem(2, 'USDJPY')],
+        extra: {
+          [NEIGHBOR]: () =>
+            jsonResponse(
+              200,
+              card({ id: NEIGHBOR_ID, symbol_raw: 'USDJPY.m', symbol_norm: 'USDJPY' }),
+            ),
+          [ENTRY]: ({ body }) => jsonResponse(200, { ...(body as object), updated_at: 'x' }),
+          [NEIGHBOR_ENTRY]: ({ body }) =>
+            jsonResponse(200, { ...(body as object), updated_at: 'x' }),
+          [REFLECTION]: ({ body }) =>
+            jsonResponse(200, { ...(body as object), filled_at: null, updated_at: 'x' }),
+          [NEIGHBOR_REFLECTION]: ({ body }) =>
+            jsonResponse(200, { ...(body as object), filled_at: null, updated_at: 'x' }),
+        },
+      }),
+    );
+    const user = userEvent.setup({ delay: null });
+    await openCard();
+
+    // Сосед должен побывать в кэше: на незагруженном соседе всё и так правильно.
+    await user.click(screen.getByRole('link', { name: new RegExp(t.position.next) }));
+    await screen.findByRole('heading', { name: 'USDJPY' });
+    await user.click(screen.getByRole('link', { name: new RegExp(t.position.prev) }));
+    await screen.findByRole('heading', { name: 'EURUSD' });
+
+    // Ввод одним событием, а не по клавише: `user.type` в jsdom тратит на шестнадцать
+    // символов больше 800 мс, и правка успевала бы сохраниться до перехода — то есть
+    // сценарий разваливался бы сам, ничего не проверив.
+    fireEvent.change(screen.getByLabelText(t.position.notesLabel), {
+      target: { value: 'мысль про EURUSD' },
+    });
+    await user.click(
+      screen.getByRole('button', { name: t.position.gradeOption(t.position.setupGrade, 'B') }),
+    );
+    // Условие сценария: человек уходит раньше, чем истекли 800 мс.
+    expect(puts()).toHaveLength(0);
+
+    await user.click(screen.getByRole('link', { name: new RegExp(t.position.next) }));
+    await screen.findByRole('heading', { name: 'USDJPY' });
+    await new Promise((resolve) => setTimeout(resolve, AUTOSAVE_DELAY_MS + 300));
+
+    expect(new Set(puts().map((call) => call.path))).toEqual(
+      new Set([
+        `/api/v1/journal/positions/${CARD_ID}/entry`,
+        `/api/v1/journal/positions/${CARD_ID}/reflection`,
+      ]),
+    );
+    expect(bodyOf(calls, `/api/v1/journal/positions/${CARD_ID}/entry`)['notes']).toBe(
+      'мысль про EURUSD',
+    );
+    expect(bodyOf(calls, `/api/v1/journal/positions/${CARD_ID}/reflection`)['setup_grade']).toBe(
+      'B',
+    );
+    // И форма соседа пуста: чужого текста в ней нет ни на экране, ни на пути к серверу.
+    expect(inCard().getByLabelText(t.position.notesLabel)).toHaveValue('');
   });
 
   it('позиции нет в загруженном списке — стрелок нет, и сказано почему', async () => {
