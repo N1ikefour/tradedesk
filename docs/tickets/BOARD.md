@@ -45,12 +45,12 @@ Updated: 2026-09-05
 
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
-| S2-01 | Journal API: список и карточка | backend | In Progress | `feat/S2-01-journal-api` |
-| S2-02 | Journal API: entry, reflection, tags, vocab | backend | Backlog | — |
+| S2-01 | Journal API: список и карточка | backend | **Done** | [PR #20](https://github.com/N1ikefour/tradedesk/pull/20) |
+| S2-02 | Journal API: entry, reflection, tags, vocab | backend | In Progress | `feat/S2-02-journal-write` |
 | S2-03 | Ручные сделки | backend | Backlog | — |
 | S2-04 | Вложения | backend | Backlog | — |
 | S2-05 | Календарь API + `analytics/summary` | backend | Backlog | — |
-| S2-06 | UI Journal таблица | frontend | Backlog | — |
+| S2-06 | UI Journal таблица | frontend | In Progress | `feat/S2-06-journal-table` |
 | S2-07 | UI Position card | frontend | Backlog | — |
 | S2-08 | UI Скриншоты | frontend | Backlog | — |
 | S2-09 | UI Calendar | frontend | Backlog | — |
@@ -100,7 +100,7 @@ Updated: 2026-09-05
 | X-22 | Комиссии с тремя знаками ломают сверку | backend | Todo | — |
 | X-23 | Сервер молча переинтерпретирует то, что файл отвергает | backend | Todo | — |
 | X-24 | Объявления ошибок сверяются не на всех статусах | backend | Todo | — |
-| X-25 | Нет worker'а: `check_collectors` никто не зовёт | infra | In Progress | `feat/X-25-worker-arq` |
+| X-25 | Нет worker'а: `check_collectors` никто не зовёт | infra | **Done** | [PR #19](https://github.com/N1ikefour/tradedesk/pull/19) |
 | X-26 | Счёт не освобождается от умершего коллектора | backend | Отложен | решение принципала, см. тикет |
 | X-27 | Нет лимита попыток на маршрутах коллектора | backend | Todo | — |
 | X-28 | Правки документов в `main` идут мимо гейта | infra | Todo | — |
