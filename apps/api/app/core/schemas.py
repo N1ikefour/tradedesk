@@ -1,4 +1,14 @@
-"""Примитивы схем, общие для всех доменов — SPEC.md 5.1.
+"""Примитивы схем ответа, общие для всех доменов — SPEC.md 5.1.
+
+Здесь живут два решения о представлении чисел и времени **наружу**. Оба задаются один
+раз, чтобы у второго домена не появилось второго написания: расхождение видно только на
+фронте и только на нужных данных.
+
+Суффикс `Out` — не украшение. У `domains/ingest/schemas.py` есть свои `Money` и
+`Quantity`, и это другие типы с другой работой: там ограничения на входе (`gt`, `lt`,
+`allow_inf_nan`), проверяющие присланное коллектором, здесь — сериализация в строку на
+выходе. Под одним именем импорт не по тому пути молча дал бы не тот тип: у `MoneyOut` нет
+ни одной границы, и число вне `numeric(18,2)` прошло бы валидацию тела запроса насквозь.
 
 Время в API — ISO 8601 с `Z`. Pydantic по умолчанию печатает `+00:00`, и разница не
 косметическая: `Date.parse` понимает оба написания, а вот `datetime.fromisoformat` до
@@ -9,6 +19,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Annotated
 
 from pydantic import PlainSerializer, WithJsonSchema
@@ -34,4 +45,31 @@ UtcDatetime = Annotated[
     datetime,
     PlainSerializer(to_utc_z, return_type=str, when_used="json"),
     WithJsonSchema({"type": "string", "format": "date-time"}),
+]
+
+
+def to_decimal_string(value: Decimal) -> str:
+    """Деньги, цены и объёмы уходят строкой, а не числом JSON.
+
+    В JSON нет десятичного типа: число распаковывается в double, и `numeric(18,2)`
+    теряет и точность на больших суммах, и масштаб — «10.50» превращается в 10.5.
+    Строка сохраняет ровно то, что лежит в колонке, включая хвостовые нули, а разбор
+    на фронте всё равно нужен: складывать деньги в double там тоже нельзя.
+    """
+    return str(value)
+
+
+# Аннотация схемы обязательна по той же причине, что у `UtcDatetime`, только острее:
+# pydantic описывает `Decimal` как `anyOf[number, string]`, и `make types` дал бы фронту
+# `number | string` — тип, который заставляет проверять форму в каждом месте показа.
+MoneyOut = Annotated[
+    Decimal,
+    PlainSerializer(to_decimal_string, return_type=str, when_used="json"),
+    WithJsonSchema({"type": "string", "description": "Десятичное число, numeric(18,2)"}),
+]
+
+QuantityOut = Annotated[
+    Decimal,
+    PlainSerializer(to_decimal_string, return_type=str, when_used="json"),
+    WithJsonSchema({"type": "string", "description": "Десятичное число, numeric(18,8)"}),
 ]
