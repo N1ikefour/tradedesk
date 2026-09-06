@@ -46,7 +46,7 @@ Updated: 2026-09-06
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
 | S2-01 | Journal API: список и карточка | backend | **Done** | [PR #20](https://github.com/N1ikefour/tradedesk/pull/20) |
-| S2-02 | Journal API: entry, reflection, tags, vocab | backend | Review | [PR #21](https://github.com/N1ikefour/tradedesk/pull/21) |
+| S2-02 | Journal API: entry, reflection, tags, vocab | backend | **Done** | [PR #21](https://github.com/N1ikefour/tradedesk/pull/21) |
 | S2-03 | Ручные сделки | backend | Backlog | — |
 | S2-04 | Вложения | backend | Backlog | — |
 | S2-05 | Календарь API + `analytics/summary` | backend | Backlog | — |
