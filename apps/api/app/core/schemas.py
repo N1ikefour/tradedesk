@@ -73,3 +73,13 @@ QuantityOut = Annotated[
     PlainSerializer(to_decimal_string, return_type=str, when_used="json"),
     WithJsonSchema({"type": "string", "description": "Десятичное число, numeric(18,8)"}),
 ]
+
+# Доли (`winrate`, `profit_factor`) — не деньги, но уходят строкой по той же причине:
+# в JSON нет десятичного типа, а ответ, где часть чисел строки, а часть числа, заставляет
+# проверять форму в каждом месте показа. Масштаб задаёт домен (`docs/metrics.md` §3.2),
+# здесь только форма: сериализация в строку и описание для генератора типов фронта.
+RatioOut = Annotated[
+    Decimal,
+    PlainSerializer(to_decimal_string, return_type=str, when_used="json"),
+    WithJsonSchema({"type": "string", "description": "Десятичная дробь"}),
+]

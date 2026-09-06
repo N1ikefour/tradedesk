@@ -481,6 +481,54 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/analytics/summary': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read Summary
+     * @description Сводка за период — шапка журнала и дашборд.
+     *
+     *     Считаются **закрытые** позиции: у открытой в `net_pnl` лежат накопленные издержки, а
+     *     не результат. Открытые видны отдельным счётчиком `open_positions`, и он же объясняет
+     *     разницу между этой суммой и суммой колонки в списке (`docs/metrics.md` §1.1).
+     */
+    get: operations['read_summary_api_v1_analytics_summary_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/journal/calendar': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read Calendar
+     * @description Дни месяца в зоне пользователя — SPEC.md 5.4.
+     *
+     *     Границы каждого дня приходят готовыми: их и надо подставлять в `?from=&to=` журнала,
+     *     чтобы список за день совпал с днём календаря. Пересчитывать день на клиенте не нужно
+     *     (`docs/metrics.md` §2.2).
+     */
+    get: operations['read_calendar_api_v1_journal_calendar_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/ingest/heartbeat': {
     parameters: {
       query?: never;
@@ -796,6 +844,80 @@ export interface components {
        * @enum {string}
        */
       status: 'pending' | 'connected' | 'needs_attention' | 'paused' | 'archived';
+    };
+    /**
+     * CalendarAccountDay
+     * @description Вклад счёта в день — SPEC.md 5.4: `by_account: [{account_id, net_pnl, trades}]`.
+     */
+    CalendarAccountDay: {
+      /**
+       * Account Id
+       * Format: uuid
+       */
+      account_id: string;
+      /**
+       * Net Pnl
+       * @description Десятичное число, numeric(18,2)
+       */
+      net_pnl: string;
+      /** Trades */
+      trades: number;
+    };
+    /**
+     * CalendarDay
+     * @description День календаря. Считаются только закрытые позиции — `docs/metrics.md` §5.
+     */
+    CalendarDay: {
+      /**
+       * Day
+       * Format: date
+       */
+      day: string;
+      /**
+       * Starts At
+       * Format: date-time
+       * @description Начало торгового дня в UTC — это значение и надо слать в ?from=
+       */
+      starts_at: string;
+      /**
+       * Ends At
+       * Format: date-time
+       * @description Конец торгового дня в UTC, не включая границу
+       */
+      ends_at: string;
+      /** Trades */
+      trades: number;
+      /** Wins */
+      wins: number;
+      /** Losses */
+      losses: number;
+      /** Breakeven */
+      breakeven: number;
+      /**
+       * Net Pnl
+       * @description Десятичное число, numeric(18,2)
+       */
+      net_pnl: string;
+      /** By Account */
+      by_account: components['schemas']['CalendarAccountDay'][];
+    };
+    /**
+     * CalendarResponse
+     * @description Месяц календаря.
+     *
+     *     Зона и час границы возвращаются вместе с днями не для красоты: по ним видно, по какому
+     *     правилу нарезаны дни. Пересчитывать день на клиенте не нужно и не следует — у каждого
+     *     дня уже есть готовые границы (`docs/metrics.md` §2.2).
+     */
+    CalendarResponse: {
+      /** Month */
+      month: string;
+      /** Timezone */
+      timezone: string;
+      /** Day Boundary Hour */
+      day_boundary_hour: number;
+      /** Days */
+      days: components['schemas']['CalendarDay'][];
     };
     /**
      * DealResponse
@@ -1440,6 +1562,82 @@ export interface components {
        * @constant
        */
       status: 'accepted';
+    };
+    /**
+     * SummaryResponse
+     * @description Сводка периода — SPEC.md 5.5, формулы `docs/metrics.md` §3.
+     */
+    SummaryResponse: {
+      /**
+       * Trades
+       * @description Закрытых позиций за период
+       */
+      trades: number;
+      /** Wins */
+      wins: number;
+      /** Losses */
+      losses: number;
+      /**
+       * Breakeven
+       * @description Закрыты в точный ноль
+       */
+      breakeven: number;
+      /**
+       * Open Positions
+       * @description Открытых позиций за период. В денежные суммы не входят: у открытой позиции в net_pnl лежат накопленные издержки, а не плавающий результат
+       */
+      open_positions: number;
+      /**
+       * Winrate
+       * @description Доля выигрышных от всех закрытых, 0…1
+       */
+      winrate: string | null;
+      /**
+       * Net Pnl
+       * @description Десятичное число, numeric(18,2)
+       */
+      net_pnl: string;
+      /**
+       * Gross Pnl
+       * @description Результат до издержек, как считает брокер
+       */
+      gross_pnl: string;
+      /**
+       * Commission
+       * @description Десятичное число, numeric(18,2)
+       */
+      commission: string;
+      /**
+       * Swap
+       * @description Десятичное число, numeric(18,2)
+       */
+      swap: string;
+      /**
+       * Fee
+       * @description Десятичное число, numeric(18,2)
+       */
+      fee: string;
+      /**
+       * Profit Factor
+       * @description Прибыль на единицу убытка. null — убыточных сделок не было вовсе
+       */
+      profit_factor: string | null;
+      /** Avg Win */
+      avg_win: string | null;
+      /**
+       * Avg Loss
+       * @description Отрицателен: это деньги, а не модуль
+       */
+      avg_loss: string | null;
+      /**
+       * Expectancy
+       * @description Средний результат сделки
+       */
+      expectancy: string | null;
+      /** Best Trade */
+      best_trade: string | null;
+      /** Worst Trade */
+      worst_trade: string | null;
     };
     /**
      * SyncNowResponse
@@ -5344,11 +5542,11 @@ export interface operations {
       query?: {
         /** @description UUID счетов через запятую. Пусто — все неархивированные счета */
         account_ids?: string | null;
-        status?: ('open' | 'closed') | null;
         /** @description Начало периода включительно. Сравнивается с временем закрытия, а у ещё открытых позиций — с временем открытия */
         from?: string | null;
         /** @description Конец периода, не включая границу */
         to?: string | null;
+        status?: ('open' | 'closed') | null;
         /** @description Точное совпадение с symbol_norm */
         symbol?: string | null;
         direction?: ('long' | 'short') | null;
@@ -6867,6 +7065,418 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  read_summary_api_v1_analytics_summary_get: {
+    parameters: {
+      query?: {
+        /** @description UUID счетов через запятую. Пусто — все неархивированные счета */
+        account_ids?: string | null;
+        /** @description Начало периода включительно. Сравнивается с временем закрытия, а у ещё открытых позиций — с временем открытия */
+        from?: string | null;
+        /** @description Конец периода, не включая границу */
+        to?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SummaryResponse'];
+        };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (account_not_found, not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'account_not_found' | 'not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  read_calendar_api_v1_journal_calendar_get: {
+    parameters: {
+      query: {
+        /** @description UUID счетов через запятую. Пусто — все неархивированные счета */
+        account_ids?: string | null;
+        /** @description Месяц в зоне пользователя, YYYY-MM */
+        month: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CalendarResponse'];
+        };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (account_not_found, not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'account_not_found' | 'not_found';
               message: string;
               details: {
                 [key: string]: unknown;

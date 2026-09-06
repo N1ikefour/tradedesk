@@ -17,11 +17,11 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import ValidationError
 
+from app.core.query import MAX_ACCOUNT_IDS
 from app.domains.ingest import models as ingest_models
 from app.domains.journal.cursor import encode_cursor, parse_sort
 from app.domains.journal.schemas import (
     DEFAULT_LIMIT,
-    MAX_ACCOUNT_IDS,
     MAX_LIMIT,
     MAX_SEARCH_LENGTH,
     MAX_SYMBOL_LENGTH,

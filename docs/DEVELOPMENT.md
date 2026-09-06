@@ -103,7 +103,7 @@ make types                     # openapi запущенного api → apps/web
 - **Frontend** — `vitest` + Testing Library (`make test-web`).
 - **Смоук входа** — Playwright, цель `make smoke`, против поднятого окружения. В `make ci` не входит.
 - Тестовая БД защищена guard'ом: имя обязано содержать `_test`, guard падает до первого запроса (`apps/api/tests/unit/test_db_guard.py`).
-- Порог покрытия `domains/ingest` и `domains/analytics` — 90 % (`SPEC.md` §2.2). Мерить пока нечего и нечем: в `domains/ingest` лежат только модели, `domains/analytics` не существует, `pytest-cov` в зависимости не добавлен. Подключается вместе с первым кодом ингеста (`S1-02`).
+- Порог покрытия `domains/ingest` и `domains/analytics` — 90 % (`SPEC.md` §2.2). Мерить по-прежнему нечем: `pytest-cov` в зависимости не добавлен. Оба домена уже не пусты — нормализатор и символы в `ingest` (`S1-02`, `S1-07`), формулы и календарь в `analytics` (`S2-05`), — так что подключение измерения теперь упирается только в зависимость.
 
 ---
 

@@ -24,10 +24,18 @@ from pathlib import Path
 from types import ModuleType
 
 # Имена и атрибуты, обращение к которым означает выход из чистоты: часы машины, окружение,
-# зона ОС, ввод-вывод. Нужны отдельно от белого списка builtins, потому что `datetime`
-# импортировать можно, а `datetime.now()` вызывать нельзя — атрибуты белым списком не
-# покрыть, не перечисляя заодно все поля предметной области. `astimezone` и `fromtimestamp`
-# здесь потому, что на наивном времени они молча спрашивают зону процесса.
+# зона ОС, ввод-вывод, контекст `decimal`. Нужны отдельно от белого списка builtins, потому
+# что `datetime` импортировать можно, а `datetime.now()` вызывать нельзя — атрибуты белым
+# списком не покрыть, не перечисляя заодно все поля предметной области. `astimezone` и
+# `fromtimestamp` здесь потому, что на наивном времени они молча спрашивают зону процесса.
+#
+# `getcontext`, `setcontext` и `localcontext` — та же природа, только источник окружения не
+# часы, а поток: точность и режим округления `Decimal` лежат в контексте потока, и поменять
+# их может любой код в процессе. Модуль, который их читает, считает по чужим правилам —
+# метрики разъезжаются между машинами, а тесты остаются зелёными на обеих (`S2-05`,
+# `docs/metrics.md` §3.3). Обе формы обращения закрыты: `decimal.getcontext()` ловится по
+# атрибуту, а `from decimal import getcontext` — проверкой `guarded`, потому что импорт
+# связывает имя.
 IMPURE_NAMES = frozenset(
     {
         "astimezone",
@@ -35,13 +43,16 @@ IMPURE_NAMES = frozenset(
         "environ",
         "execute",
         "fromtimestamp",
+        "getcontext",
         "getenv",
+        "localcontext",
         "localtime",
         "monotonic",
         "now",
         "open",
         "perf_counter",
         "random",
+        "setcontext",
         "time",
         "today",
         "utcnow",
@@ -54,8 +65,9 @@ DYNAMIC_ENTRY_POINTS = frozenset(
     {"getattr", "eval", "exec", "__import__", "globals", "locals", "vars", "compile", "input"}
 )
 
-# Три обхода, каждый из которых прошлая версия проверки пропускала. Держатся здесь как
-# образцы для теста проверки: механизм, который их не ловит, бесполезен.
+# Обходы, каждый из которых прошлая версия проверки пропускала (первые три — S1-02,
+# четвёртый — контекст `decimal`, S2-05). Держатся здесь как образцы для теста проверки:
+# механизм, который их не ловит, бесполезен.
 IMPURE_SNIPPETS = {
     "module_level": "from datetime import datetime\n_BUILD_HOUR = datetime.now().hour\n",
     "class_method": (
@@ -63,6 +75,12 @@ IMPURE_SNIPPETS = {
         "class NormalizedDeal:\n"
         "    def stamped_at(self) -> datetime:\n"
         "        return datetime.now(UTC)\n"
+    ),
+    "decimal_context_from_thread": (
+        "import decimal\n"
+        "def rate(a: decimal.Decimal, b: decimal.Decimal) -> decimal.Decimal:\n"
+        "    decimal.getcontext().prec = 6\n"
+        "    return a / b\n"
     ),
     "name_assembled_at_runtime": (
         "from datetime import datetime\n"

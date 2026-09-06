@@ -1,6 +1,6 @@
 # ARCHITECTURE — as-built
 
-Updated: 2026-09-05
+Updated: 2026-09-06
 
 Этот документ описывает **то, что реально построено**. Проектное намерение живёт в `SPEC.md` и здесь не дублируется.
 
@@ -78,7 +78,7 @@ Updated: 2026-09-05
 
 Дальше ревизия `8f4c1d90ae27` (`S0-04`) добавила четырнадцатую таблицу `dev_outbox` — почты нет, письма с кодами складываются туда — и индексы `ix_sessions_user_id`, `ix_trading_accounts_user_id`. Диаграмма и разбор ниже описывают **ядро**: `dev_outbox` в них не входит — у неё только PK, внешних ключей нет ни в одну сторону, наполняет её единственный писатель `ConsoleEmailProvider`.
 
-`daily_stats` здесь нет — она создаётся в `S2-05`.
+`daily_stats` создана ревизией `e5d7c9a1b348` (`S2-05`) и в диаграмму ниже не входит: она висит на `trading_accounts` одним внешним ключом и никем не читается — календарь и сводка считают по `positions`, а таблица заполняется задачей `refresh_daily_stats` как заготовка под тяжёлую аналитику этапа 3 (`docs/metrics.md` §6).
 
 ### ER-диаграмма
 
@@ -186,7 +186,7 @@ erDiagram
 - **`unique (account_id, position_id)` на `positions`** — единственная опора UPSERT'а пересборки. Пересборка обязана обновлять строку по этому ключу, а не удалять и вставлять заново: `positions.id` — родитель `journal_entries`, `reflections`, `attachments` с `on delete cascade`. `DELETE` вместо `UPDATE` тихо унесёт весь пользовательский слой.
 - **`unique (account_id, deal_ticket)` на `deals`** — на нём стоит идемпотентность `POST /ingest/deals`. Без него повторная отправка того же батча удвоит сделки, и пересборка честно посчитает удвоенный P&L.
 - **`uq_trading_accounts_mt5_identity` — частичный индекс** (`where platform = 'mt5'`). У `csv` и `manual` `server` и `login` произвольны и повторяются; сделать индекс полным — значит запретить второй ручной счёт с теми же полями.
-- **Каскадов ровно четыре**: `account_credentials → trading_accounts` и `journal_entries` / `reflections` / `attachments` → `positions`. Остальные FK — `NO ACTION`: удаление пользователя или счёта с данными падает громко, а не вычищает журнал молча.
+- **Каскадов пять, и четыре из них про факты**: `account_credentials → trading_accounts` и `journal_entries` / `reflections` / `attachments` → `positions`. Пятый — `daily_stats → trading_accounts` (`S2-05`), и он единственный на производных данных: строка кэша пересчитывается из `positions` в любой момент, удерживать ею удаление счёта не за что. Остальные FK — `NO ACTION`: удаление пользователя или счёта с данными падает громко, а не вычищает журнал молча.
 - **UUID v7 генерирует приложение**, не БД: в Postgres 16 нет `uuidv7()`, а в stdlib Python 3.12 нет `uuid.uuid7()`. Генератор — `apps/api/app/core/ids.py`, значение по умолчанию стоит в модели (`default=uuid7`), поэтому `INSERT` в обход ORM обязан задавать `id` сам.
 - **Имена ограничений заданы конвенцией** `NAMING_CONVENTION` в `apps/api/app/core/db.py`. Новая модель без неё получит имя от Postgres, и `downgrade` следующей задачи придётся писать по факту, а не по модели.
 
@@ -198,4 +198,4 @@ erDiagram
 | `index (email, created_at desc)` на `otp_codes` | с `desc` | без `desc` | btree сканируется в обе стороны, для `where email = … order by created_at desc limit 1` разницы нет. Колоночный индекс сравним с отражением схемы, выражение — нет |
 | `sessions.id` | `uuid pk` | `uuid pk`, без `default` | значение cookie: v7 раскрывает время создания и оставляет 62 бита случайности. Генератор выбирает `S0-04` |
 | `attachments.position_id`, `sync_runs.account_id` | индексов нет | `ix_attachments_position_id`, `ix_sync_runs_account_id` | `attachments` — единственная дочерняя таблица `positions`, где `position_id` не PK: без индекса каждый `delete from positions` проверяет каскад сиквенс-сканом, и «скриншоты этой позиции» в `S2-02` читаются так же. `sync_runs` по определению читается как «прогоны этого счёта». Индексов на `sessions.user_id`, `tags.user_id`, `trading_accounts.user_id` в этой ревизии нет намеренно — они приходят вместе с запросами: `sessions` и `trading_accounts` получили свои в `8f4c1d90ae27` (`S0-04`), у `tags.user_id` индекса по-прежнему нет — запросов к нему пока никто не пишет |
-| `daily_stats` | описана в §3.4 | не создаётся | `SPEC.md` §12: таблица заводится в `S2-05` |
+| `daily_stats` | описана в §3.4 | плюс `fee`, `timezone`, `day_boundary_hour`, `computed_at`; FK с `on delete cascade` | `fee` входит в `net_pnl`, без него строка не сходится сама с собой. Остальные три — правило, по которому нарезан день, и момент расчёта: день зависит от настроек пользователя, и смена зоны делает неверными все строки разом. Без этих колонок протухшая строка неотличима от свежей (`docs/metrics.md` §6) |

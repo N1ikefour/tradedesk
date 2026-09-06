@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -15,6 +15,8 @@ from app.core.config import Settings
 from app.worker import (
     CHECK_COLLECTORS_NAME,
     CRON_JOBS,
+    FUNCTIONS,
+    REFRESH_DAILY_STATS_NAME,
     worker_redis_settings,
     worker_settings,
 )
@@ -54,12 +56,53 @@ def test_every_cron_job_is_unique() -> None:
     assert [job.name for job in CRON_JOBS if not job.unique] == []
 
 
-def test_worker_settings_registers_cron_jobs() -> None:
-    """arq отбирает ключи по именам параметров `Worker`: опечатка молча теряет расписание."""
+def test_worker_settings_registers_cron_jobs_and_functions() -> None:
+    """arq отбирает ключи по именам параметров `Worker`: опечатка молча теряет расписание.
+
+    С задачами по вызову цена опечатки другая и хуже: api поставит задачу в очередь,
+    получит job_id, а worker ответит «нет такой функции» — уже после ответа клиенту.
+    """
     worker = create_worker(worker_settings())
 
     assert CHECK_COLLECTORS_NAME in worker.functions
+    assert REFRESH_DAILY_STATS_NAME in worker.functions
     assert worker.redis_settings is not None
+
+
+def test_refresh_daily_stats_has_no_schedule() -> None:
+    """Пересчёт кэша ходит по вызову, а не по кругу: читателей у таблицы пока нет.
+
+    Решение записано в `docs/metrics.md` §6, и цена ошибки тут не в лишнем CPU: cron на
+    все счета скрыл бы отсутствие постановки задачи из ингеста (`S1-04`) — таблица
+    выглядела бы свежей, не будучи связанной с событиями.
+    """
+    assert REFRESH_DAILY_STATS_NAME not in {job.name for job in CRON_JOBS}
+    assert [function.__name__ for function in FUNCTIONS] == [REFRESH_DAILY_STATS_NAME]
+
+
+async def test_refresh_daily_stats_parses_its_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Очередь несёт строки — типы восстанавливаются на входе задачи, а не в домене."""
+    seen: list[tuple[Any, Any]] = []
+
+    class FakeSession:
+        async def __aenter__(self) -> FakeSession:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+    async def fake_refresh(_session: Any, account_id: UUID, days: Any) -> int:
+        seen.append((account_id, days))
+        return 2
+
+    monkeypatch.setattr(worker_module, "get_session_factory", lambda: lambda: FakeSession())
+    monkeypatch.setattr(worker_module.daily_stats, "refresh", fake_refresh)
+
+    account_id = "0199a0f0-0000-7000-8000-000000000002"
+    written = await worker_module.refresh_daily_stats({}, account_id, ["2026-09-02"])
+
+    assert written == 2
+    assert seen == [(UUID(account_id), [date(2026, 9, 2)])]
 
 
 async def test_check_collectors_task_calls_domain(monkeypatch: pytest.MonkeyPatch) -> None:
