@@ -49,7 +49,7 @@ Updated: 2026-09-06
 | S2-02 | Journal API: entry, reflection, tags, vocab | backend | **Done** | [PR #21](https://github.com/N1ikefour/tradedesk/pull/21) |
 | S2-03 | Ручные сделки | backend | Backlog | — |
 | S2-04 | Вложения | backend | Backlog | — |
-| S2-05 | Календарь API + `analytics/summary` | backend | In Progress | `feat/S2-05-analytics` |
+| S2-05 | Календарь API + `analytics/summary` | backend | Review | [PR #23](https://github.com/N1ikefour/tradedesk/pull/23) |
 | S2-06 | UI Journal таблица | frontend | **Done** | [PR #22](https://github.com/N1ikefour/tradedesk/pull/22) |
 | S2-07 | UI Position card | frontend | In Progress | `feat/S2-07-position-card` |
 | S2-08 | UI Скриншоты | frontend | Backlog | — |
@@ -115,3 +115,4 @@ Updated: 2026-09-06
 | X-37 | Нечем засеять позиции: UI проверяется на пустом экране | backend | Todo | — |
 | X-38 | NUL в query-параметре роняет журнал в 500 | backend | Todo | — |
 | X-39 | Виртуализация журнала держится на константе высоты | frontend | Todo | — |
+| X-40 | Границу торгового дня считают двое, общих примеров нет | frontend | Todo | — |
