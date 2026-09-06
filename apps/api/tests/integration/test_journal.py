@@ -23,14 +23,21 @@
 всех 12 параметризациях ниже, uuid7 — в 8 из 12; мутацию `_after` обе убивают в 12 из 12.
 То есть ложно зелёным uuid7 тест не сделал бы, но слабее делает.
 
-Во второй половине главных тестов два, и оба про то, что человек увидел бы как враньё
+Во второй половине главных тестов четыре. Два — про то, что человек увидел бы как враньё
 интерфейса: `test_filled_at_survives_later_edits` (отметка о разборе не переставляется) и
 `test_same_tag_in_another_case_does_not_create_a_second_row` (`Trend` и `trend` — один тег).
+Ещё два держат то, что сломалось бы молча:
+`test_the_tag_dictionary_lock_keeps_two_saves_out_of_the_window` открывает окно между
+чтением словаря и вставкой тега и требует, чтобы второй запрос в него не попал (без
+advisory-блокировки словарь раздваивается), а пара `..._leaves_the_same_tag_of_another_user_alone`
+проверяет скоуп массового `UPDATE` тегов — единственного места, где запрос правит строки
+пачкой и мог бы задеть чужие.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
@@ -44,13 +51,16 @@ from alembic.config import Config
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import event, text
+from sqlalchemy.ext.asyncio import AsyncSession
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.redis import RedisContainer
 
 from alembic import command
 from app.core.config import get_settings
 from app.core.db import get_engine
+from app.core.origin import SAFE_METHODS
 from app.core.redis import get_redis
+from app.domains.journal import service
 from app.domains.journal.cursor import SORT_DIRECTIONS, SORT_FIELDS
 
 pytestmark = pytest.mark.integration
@@ -1119,6 +1129,31 @@ def reflection_url(position_id: UUID | str) -> str:
     return f"{POSITIONS}/{position_id}/reflection"
 
 
+# Несуществующие идентификаторы: маршруты ниже проверяются на входе в приложение, до
+# того как хоть что-то ищется в базе.
+_ABSENT_POSITION = UUID("00000000-0000-4000-8000-0000000000fe")
+_ABSENT_TAG = UUID("00000000-0000-4000-8000-0000000000ff")
+
+# Все шесть маршрутов S2-02 с валидным телом там, где оно есть. Один список на две
+# проверки границы — сессия и `Origin`: разъехавшись, они молча перестали бы совпадать.
+WRITE_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
+    ("GET", "/journal/vocab", None),
+    ("GET", "/journal/tags", None),
+    ("POST", "/journal/tags", {"name": "Trend", "color": None}),
+    ("DELETE", f"/journal/tags/{_ABSENT_TAG}", None),
+    ("PUT", f"/journal/positions/{_ABSENT_POSITION}/entry", EMPTY_ENTRY),
+    ("PUT", f"/journal/positions/{_ABSENT_POSITION}/reflection", EMPTY_REFLECTION),
+]
+WRITE_ROUTE_IDS = [
+    "get-vocab",
+    "get-tags",
+    "post-tag",
+    "delete-tag",
+    "put-entry",
+    "put-reflection",
+]
+
+
 async def put_entry(
     client: AsyncClient, position_id: UUID | str, **overrides: Any
 ) -> dict[str, Any]:
@@ -1536,6 +1571,52 @@ async def test_deleting_a_tag_takes_it_off_every_position(
     assert (await card(client, untouched))["journal_entry"]["tags"] == ["Breakout"]
 
 
+async def test_renaming_a_tag_leaves_the_same_tag_of_another_user_alone(
+    client: AsyncClient, other_client: AsyncClient, account: str
+) -> None:
+    """Массовый `UPDATE` тегов ходит только по своим позициям — `service._owned_positions`.
+
+    Пара к `..._deleting_a_tag_...` ниже: это единственные два теста, которые видят скоуп
+    массовой правки, и оба нужны — переписывание и снятие тега приходят к нему разными
+    путями (`array_replace` и `array_remove`). Проверено мутацией: `user_id == user_id`
+    заменён на `user_id.isnot(None)` — краснеют оба и больше ничего во всём файле.
+    """
+    stranger_account = await create_account(other_client, login=7009997)
+    mine = await seed_position(account)
+    theirs = await seed_position(stranger_account)
+    await put_entry(client, mine, tags=["Trend"])
+    await put_entry(other_client, theirs, tags=["Trend"])
+
+    renamed = await create_tag(client, "TREND")
+
+    # Число в ответе — это и есть счётчик строк массового UPDATE: чужая позиция в нём
+    # означала бы, что запрос её тронул.
+    assert renamed["usage_count"] == 1
+    assert (await card(client, mine))["journal_entry"]["tags"] == ["TREND"]
+    assert (await card(other_client, theirs))["journal_entry"]["tags"] == ["Trend"]
+    assert [tag["name"] for tag in await tag_items(other_client)] == ["Trend"]
+
+
+async def test_deleting_a_tag_leaves_the_same_tag_of_another_user_alone(
+    client: AsyncClient, other_client: AsyncClient, account: str
+) -> None:
+    """Снятие тега — тот же массовый `UPDATE`, тот же скоуп, см. тест выше."""
+    stranger_account = await create_account(other_client, login=7009996)
+    mine = await seed_position(account)
+    theirs = await seed_position(stranger_account)
+    await put_entry(client, mine, tags=["Trend"])
+    await put_entry(other_client, theirs, tags=["Trend"])
+    tag = (await tag_items(client))[0]
+
+    response = await client.delete(f"{TAGS}/{tag['id']}")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"name": "Trend", "positions_updated": 1}
+    assert (await card(client, mine))["journal_entry"]["tags"] == []
+    assert (await card(other_client, theirs))["journal_entry"]["tags"] == ["Trend"]
+    assert [tag["name"] for tag in await tag_items(other_client)] == ["Trend"]
+
+
 async def test_deleting_someone_elses_tag_is_a_404(
     client: AsyncClient, other_client: AsyncClient, account: str
 ) -> None:
@@ -1589,12 +1670,45 @@ async def test_vocab_forbids_serving_a_stale_copy(client: AsyncClient) -> None:
     assert response.headers["cache-control"] == "private, no-cache"
 
 
-@pytest.mark.parametrize("path", ["/journal/vocab", "/journal/tags"])
-async def test_write_side_routes_require_a_session(app: FastAPI, path: str) -> None:
+@pytest.mark.parametrize(("method", "path", "body"), WRITE_ROUTES, ids=WRITE_ROUTE_IDS)
+async def test_write_side_routes_require_a_session(
+    app: FastAPI, method: str, path: str, body: dict[str, Any] | None
+) -> None:
+    """Все шесть маршрутов S2-02 под сессией — список полный, а не выборка.
+
+    Тело валидное: иначе `401` можно было бы получить и от разбора тела, и тест перестал
+    бы отличать «не пустили» от «не поняли».
+    """
     async with make_client(app) as anonymous:
-        response = await anonymous.get(f"{API}{path}")
+        response = await anonymous.request(method, f"{API}{path}", json=body)
 
     assert response.status_code == 401, response.text
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [route for route in WRITE_ROUTES if route[0] not in SAFE_METHODS],
+    ids=[
+        route_id
+        for route_id, route in zip(WRITE_ROUTE_IDS, WRITE_ROUTES, strict=True)
+        if route[0] not in SAFE_METHODS
+    ],
+)
+async def test_mutations_are_guarded_by_origin(
+    client: AsyncClient, method: str, path: str, body: dict[str, Any] | None
+) -> None:
+    """Проверка `Origin` из SPEC.md 4 — с живой сессией: она обязана бить раньше неё.
+
+    Middleware общий на приложение, и одной строки хватило бы. Список полный по той же
+    причине, что и в `test_accounts_contract`: рядом лежит полный список в проверке
+    сессии, и выборка здесь читалась бы как забытая.
+    """
+    response = await client.request(
+        method, f"{API}{path}", json=body, headers={"origin": "http://evil.example"}
+    )
+
+    assert response.status_code == 403, response.text
+    assert error_code(response) == "forbidden_origin"
 
 
 async def test_parallel_saves_of_one_tag_neither_hang_nor_split_it(
@@ -1602,16 +1716,14 @@ async def test_parallel_saves_of_one_tag_neither_hang_nor_split_it(
 ) -> None:
     """Шесть одновременных сохранений одного тега разным регистром — один тег и ни одной ошибки.
 
-    ⚠️ **Этот тест не воспроизводит саму гонку, и это измерено.** Мутация «убрать
-    advisory-блокировку» (`service._lock_tag_dictionary`) оставляет его зелёным: под
-    `ASGITransport` шесть запросов доходят до вставки по очереди, и окна между `SELECT`
-    словаря и `INSERT` не возникает. То есть защита от гонки тестом **не доказана** —
-    она обоснована рассуждением в `_TAG_LOCK_NAMESPACE`, а закрыть её по-настоящему
-    может только уникальный индекс по `(user_id, lower(name))`, то есть миграция.
+    Тест про **живучесть**, а не про гонку: блокировка не роняет параллельную запись и не
+    встаёт намертво. Это единственное место, где сохранения карточки идут одновременно, и
+    взаимная блокировка здесь была бы зависанием у пользователя.
 
-    Что тест доказывает: сама блокировка не ломает параллельную запись — не роняет
-    запросы и не встаёт намертво. Это единственное место, где два сохранения карточки
-    идут одновременно, и взаимная блокировка здесь была бы зависанием у пользователя.
+    ⚠️ Саму гонку он не воспроизводит, и это измерено: мутация «убрать
+    `service._lock_tag_dictionary`» оставляет его зелёным. Под `ASGITransport` шесть
+    запросов доходят до вставки по очереди, и окна между чтением словаря и `INSERT` не
+    возникает само. Гонку ловит следующий тест — он это окно открывает.
     """
     positions = [await seed_position(account) for _ in range(6)]
     spellings = ["Trend", "trend", "TREND", "TrEnD", "tREND", "trEnd"]
@@ -1625,3 +1737,70 @@ async def test_parallel_saves_of_one_tag_neither_hang_nor_split_it(
 
     assert [response.status_code for response in responses] == [200] * 6
     assert len(await tag_rows(account)) == 1
+
+
+# Верхняя граница ожидания напарника в окне между чтением словаря и вставкой тега, а не
+# задержка: как только в окно приходит второй запрос, ждать перестают оба. Тратится
+# целиком ровно в успешном случае — когда блокировка второго до окна не пускает.
+TAG_RACE_WINDOW_SECONDS = 3.0
+
+
+async def test_the_tag_dictionary_lock_keeps_two_saves_out_of_the_window(
+    client: AsyncClient, account: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Гонка на словаре тегов, воспроизведённая честно.
+
+    Окно между `SELECT` словаря и `INSERT` тега открывается монкипатчем
+    `service._dictionary`: прочитав словарь, запрос ждёт напарника. Меряется пик
+    одновременности — сколько запросов оказалось в окне разом.
+
+    * с блокировкой: пик 1. Второй запрос до окна физически не доходит — он стоит на
+      `pg_advisory_xact_lock`, пока первый не закоммитит, и приходит уже к готовому
+      словарю. В `tags` одна строка;
+    * мутация «убрать `service._lock_tag_dictionary`»: пик 2 — оба видят пустой словарь
+      и заводят каждый свой тег, в `tags` оказывается `Trend` и `trend`.
+
+    `asyncio.Barrier` тут не годится: он **требует** одновременности, а доказывать надо
+    ровно обратное — что второй в окно не попал. Отсюда ожидание с таймаутом.
+    """
+    original = service._dictionary
+    inside = 0
+    peak = 0
+    arrived = 0
+    both_arrived = asyncio.Event()
+
+    async def watched(session: AsyncSession, user_id: UUID) -> dict[str, Any]:
+        nonlocal inside, peak, arrived
+        known = await original(session, user_id)
+        inside += 1
+        arrived += 1
+        peak = max(peak, inside)
+        # Сигнал даёт пришедший вторым — кто бы он ни был. Дождавшись, оба уходят из окна
+        # сразу; таймаут остаётся страховкой на случай, когда второй не придёт вовсе.
+        if arrived == 2:
+            both_arrived.set()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(both_arrived.wait(), TAG_RACE_WINDOW_SECONDS)
+        inside -= 1
+        return known
+
+    monkeypatch.setattr(service, "_dictionary", watched)
+    first = await seed_position(account)
+    second = await seed_position(account)
+
+    responses = await asyncio.gather(
+        client.put(entry_url(first), json={**EMPTY_ENTRY, "tags": ["Trend"]}),
+        client.put(entry_url(second), json={**EMPTY_ENTRY, "tags": ["trend"]}),
+    )
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert arrived == 2, "второй запрос до окна не дошёл вовсе — тест ничего не проверил"
+    assert peak == 1, "оба запроса оказались в окне разом: словарь читается без блокировки"
+    # Какое из двух написаний победит, решает то, кто первым взял блокировку, — это гонка,
+    # и фиксировать её исход тестом значило бы получить мигающий тест. Проверяется то, что
+    # от исхода не зависит: строка одна, и обе позиции несут именно её написание.
+    rows = await tag_rows(account)
+    assert len(rows) == 1, f"словарь раздвоился: {rows}"
+    winner = rows[0][0]
+    assert winner in {"Trend", "trend"}
+    assert [response.json()["tags"] for response in responses] == [[winner], [winner]]

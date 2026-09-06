@@ -633,7 +633,6 @@ TAG_COMMA_ERROR = "Тег не может содержать запятую: п�
 TOO_MANY_ENTRY_TAGS_ERROR = f"Не больше {MAX_TAGS} тегов на позиции"
 TAG_COLOR_ERROR = "Цвет тега — шестизначный hex в нижнем регистре, например #2563eb, либо null"
 CONFIDENCE_ERROR = f"Уверенность — целое от {CONFIDENCE_MIN} до {CONFIDENCE_MAX}"
-TOO_MANY_MISTAKES_ERROR = f"Не больше {len(MISTAKES)} ошибок"
 
 # Тела запросов принимают и число, и строку — как и контракт ингеста (SPEC.md 5.3).
 # Наружу то же самое уходит только строкой (`MoneyOut`, `QuantityOut`): в JSON нет
@@ -687,7 +686,20 @@ def normalize_tag(value: str) -> str:
 
 
 def fold_tag(value: str) -> str:
-    """Ключ сравнения тегов. `casefold`, а не `lower`: словарь пользователя русский тоже."""
+    """Ключ сравнения тегов. `casefold`, а не `lower`: словарь пользователя русский тоже.
+
+    ⚠️ Складывается только регистр, и этого мало для «выглядят одинаково». Юникод сюда
+    доезжает как есть: NFKC-нормализации нет, поэтому `Trend` латиницей и `Тrend` с
+    кириллической `Т` — два разных тега. Так же проходят невидимки и переопределители
+    направления — `U+200B`, `U+202E`, а внутри строки и `U+2028/29`: `_TAG_CONTROL_RE`
+    ловит только C0/C1, а `strip` в `normalize_tag` снимает по краям лишь то, что Python
+    считает пробелом. В обратную сторону `casefold` складывает больше, чем ждёшь: `ß` и
+    `SS` — один ключ.
+
+    Дырой это не является: словарь висит на `tags.user_id`, чужого тега им не достать и
+    не подменить — обмануть можно только себя. Но два одинаковых на вид чипа в `S2-06`
+    объясняются именно этим, и искать причину надо здесь.
+    """
     return value.casefold()
 
 
@@ -800,11 +812,12 @@ class ReflectionUpdate(BaseModel):
     @field_validator("mistakes")
     @classmethod
     def _mistakes(cls, value: list[Mistake]) -> list[Mistake]:
-        """Повторы схлопываются, порядок ввода сохраняется: два одинаковых чипа — один чип."""
-        unique = list(dict.fromkeys(value))
-        if len(unique) > len(MISTAKES):
-            raise PydanticCustomError("mistakes", TOO_MANY_MISTAKES_ERROR)
-        return unique
+        """Повторы схлопываются, порядок ввода сохраняется: два одинаковых чипа — один чип.
+
+        Длина после этого не проверяется: значения сужены `Literal` по словарю SPEC.md 3.5,
+        и список без повторов длиннее самого словаря быть не может.
+        """
+        return list(dict.fromkeys(value))
 
     @field_validator("confidence", mode="before")
     @classmethod
