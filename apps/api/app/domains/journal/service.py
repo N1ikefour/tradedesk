@@ -16,23 +16,42 @@
 4. **Запросов на страницу — фиксированное число, не по строке на позицию.** Запись
    журнала и рефлексия приходят внешними соединениями (обе 1:1 к позиции), вложения —
    одним запросом на всю страницу.
+
+Вторая половина модуля — запись (S2-02): `save_entry`, `save_reflection` и словарь тегов.
+Правило 1 действует и там: любой маршрут записи начинается с `ensure_owned_position`, и
+чужая позиция даёт тот же `404`, что и на чтении. Про `filled_at` и про то, какое
+написание тега побеждает, — в docstring соответствующих функций.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, Select, UnaryExpression, and_, func, or_, select
+from sqlalchemy import (
+    ColumnElement,
+    CursorResult,
+    Select,
+    UnaryExpression,
+    and_,
+    func,
+    null,
+    or_,
+    select,
+    update,
+)
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
 from app.core.errors import ApiError
+from app.core.ids import uuid7
 from app.domains.accounts import models as account_models
 from app.domains.accounts import service as accounts_service
 from app.domains.ingest import models as ingest_models
-from app.domains.journal import models
+from app.domains.journal import models, schemas
 from app.domains.journal.cursor import Cursor, Sort, encode_cursor
 from app.domains.journal.schemas import PositionsQuery
 
@@ -368,3 +387,363 @@ async def position_deals(
         .order_by(ingest_models.Deal.time_utc, ingest_models.Deal.deal_ticket)
     )
     return list((await session.execute(statement)).scalars().all())
+
+
+# --- запись: entry, reflection, словарь тегов (S2-02) --------------------------
+
+TAG_NOT_FOUND_CODE = "tag_not_found"
+TAG_NOT_FOUND_MESSAGE = "Тег не найден"
+
+# Ключ транзакционной advisory-блокировки словаря тегов. Нужна потому, что уникальность
+# тегов без учёта регистра держится **кодом**, а не индексом: в схеме S0-03 стоит
+# `unique (user_id, name)`, то есть `Trend` и `trend` для Postgres разные строки. Два
+# одновременных сохранения карточки с разным написанием нового тега завели бы обе.
+# Блокировка одна на пользователя, а не по тегу: с блокировкой на тег два запроса с
+# пересекающимися наборами могли бы взять их в разном порядке и встать намертво.
+#
+# Держится она до конца транзакции запроса, а берётся в `resolve_tags` — то есть до записи
+# самих `journal_entries`. Поэтому закрыта не только «две вставки одного тега», но и
+# «переименование посреди сохранения карточки»: `upsert_tag` и `delete_tag` берут тот же
+# ключ, и массовый `UPDATE` тегов не может встать между чтением словаря и записью строки
+# журнала. Второе следует из механики, а не из теста: под тестом стоит первое —
+# `test_the_tag_dictionary_lock_keeps_two_saves_out_of_the_window` меряет пик
+# одновременности в окне между чтением словаря и вставкой тега и требует единицы.
+#
+# ⚠️ Настоящее место этому правилу — уникальный индекс по `(user_id, lower(name))` (X-35);
+# он требует миграции, которой в этой задаче нет. Блокировка закрывает гонку, но не
+# защищает от строк, заведённых мимо этого кода.
+_TAG_LOCK_NAMESPACE = "journal_tags"
+
+
+def tag_not_found() -> ApiError:
+    return ApiError(TAG_NOT_FOUND_CODE, TAG_NOT_FOUND_MESSAGE, status_code=404)
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+async def ensure_owned_position(session: AsyncSession, user_id: UUID, position_id: UUID) -> None:
+    """Позиция принадлежит пользователю — иначе `404`, как и на чтении.
+
+    Берётся только `positions.id`, без пользовательского слоя: строки `journal_entries` и
+    `reflections` этот запрос всё равно перезапишет, а загруженные в сессию ORM-копии
+    разошлись бы с тем, что вернёт `RETURNING` после UPSERT.
+
+    Архив счёта здесь не проверяется намеренно: карточка архивного счёта открывается
+    (S2-01), и запретить дописать к ней заметку значило бы показать поле, которое молча
+    не сохраняется.
+    """
+    statement = (
+        select(ingest_models.Position.id)
+        .join(
+            account_models.TradingAccount,
+            account_models.TradingAccount.id == ingest_models.Position.account_id,
+        )
+        .where(
+            ingest_models.Position.id == position_id,
+            account_models.TradingAccount.user_id == user_id,
+        )
+    )
+    if (await session.execute(statement)).scalar_one_or_none() is None:
+        raise position_not_found()
+
+
+async def _lock_tag_dictionary(session: AsyncSession, user_id: UUID) -> None:
+    """Блокировка держится до конца транзакции запроса — см. `_TAG_LOCK_NAMESPACE`."""
+    key = f"{_TAG_LOCK_NAMESPACE}:{user_id}"
+    await session.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(key, 0))))
+
+
+async def _dictionary(session: AsyncSession, user_id: UUID) -> dict[str, models.Tag]:
+    """Словарь тегов пользователя по ключу сравнения без учёта регистра.
+
+    Читается целиком и сводится в Python, а не сравнивается `lower()` в SQL: правило
+    складывания регистров должно быть одно на всю систему, а `lower()` Postgres и
+    `casefold()` Python совпадают не везде. Словарь одного человека — десятки строк.
+    """
+    statement = select(models.Tag).where(models.Tag.user_id == user_id).order_by(models.Tag.name)
+    found: dict[str, models.Tag] = {}
+    for tag in (await session.execute(statement)).scalars():
+        # Дубль по регистру возможен только у строк, заведённых мимо этого кода
+        # (см. `_TAG_LOCK_NAMESPACE`). `order_by` здесь ради него: без порядка выбор между
+        # двумя такими строками менялся бы от запроса к запросу, а с ним — 500 на
+        # `scalar_one` не случается вовсе, и написание остаётся одним и тем же.
+        found.setdefault(schemas.fold_tag(tag.name), tag)
+    return found
+
+
+async def resolve_tags(session: AsyncSession, user_id: UUID, names: Sequence[str]) -> list[str]:
+    """Написания тегов, которые уйдут в `journal_entries.tags`, и заведение недостающих.
+
+    Три решения, и все три человек видит.
+
+    1. **Тега, которого нет в словаре, достаточно назвать.** Он заводится сам, без цвета.
+       Отвергать значило бы заставить карточку сначала звать `POST /journal/tags`, то есть
+       ломать автосохранение на втором запросе; а сохранить мимо словаря — получить тег,
+       которого нет ни в подсказках, ни в фильтре, ни в удалении.
+    2. **Написание берёт словарь, а не последний ввод.** `trend` при заведённом `Trend`
+       сохранится как `Trend`. Обратное правило означало бы, что одна опечатка с CapsLock
+       переименовывает тег на всех прошлых позициях разом.
+    3. **Поменять написание можно ровно одним способом** — `POST /journal/tags` с новым
+       написанием: это явное действие над словарём, а не побочный эффект сохранения
+       заметки. Оно же переписывает тег на всех позициях (`upsert_tag`).
+    """
+    if not names:
+        return []
+    await _lock_tag_dictionary(session, user_id)
+    known = await _dictionary(session, user_id)
+    canonical: list[str] = []
+    created: list[models.Tag] = []
+    for name in names:
+        key = schemas.fold_tag(name)
+        existing = known.get(key)
+        if existing is not None:
+            canonical.append(existing.name)
+            continue
+        fresh = models.Tag(id=uuid7(), user_id=user_id, name=name, color=None)
+        known[key] = fresh
+        created.append(fresh)
+        canonical.append(name)
+    if created:
+        session.add_all(created)
+        await session.flush()
+    return canonical
+
+
+def _owned_positions(user_id: UUID) -> Select[Any]:
+    """Идентификаторы позиций пользователя — подзапрос для массовых правок тегов.
+
+    В `_rewrite_tag_in_entries` это **единственное**, что отделяет свои строки от чужих, а
+    сам он — единственное место домена, где запрос правит строки пачкой. Поэтому скоуп
+    держится тестом, а не только чтением: пара `..._leaves_the_same_tag_of_another_user_alone`
+    краснеет, если условие по `user_id` отсюда убрать. Второй потребитель — `tag_usage`.
+    """
+    return (
+        select(ingest_models.Position.id)
+        .join(
+            account_models.TradingAccount,
+            account_models.TradingAccount.id == ingest_models.Position.account_id,
+        )
+        .where(account_models.TradingAccount.user_id == user_id)
+    )
+
+
+async def _rewrite_tag_in_entries(
+    session: AsyncSession, user_id: UUID, old: str, new: str | None
+) -> int:
+    """Переписывает или снимает тег на всех позициях пользователя. Возвращает их число.
+
+    `updated_at` двигается: содержимое записи журнала действительно изменилось, и
+    оставить прежнюю отметку значило бы соврать всякому, кто по ней сверяется.
+
+    Сами заметки, рефлексии и вложения не трогаются — правится ровно колонка `tags`
+    (`CLAUDE.md` §2: пользовательский слой не затирается целиком ради одной колонки).
+    """
+    tags = models.JournalEntry.tags
+    changed = func.array_remove(tags, old) if new is None else func.array_replace(tags, old, new)
+    statement = (
+        update(models.JournalEntry)
+        .where(
+            models.JournalEntry.position_id.in_(_owned_positions(user_id)),
+            tags.contains([old]),
+        )
+        .values(tags=changed, updated_at=_now())
+    )
+    result = await session.execute(statement)
+    # UPDATE всегда возвращает CursorResult, но типы SQLAlchemy обещают только Result.
+    return cast(CursorResult[Any], result).rowcount
+
+
+def _usage_counts(user_id: UUID) -> Select[Any]:
+    """Сколько позиций несёт каждый тег. `unnest` в подзапросе, а не в группировке:
+    Postgres вычисляет генераторы строк после агрегации, и `group by unnest(...)` не
+    выполняется вовсе."""
+    expanded = (
+        select(func.unnest(models.JournalEntry.tags).label("name"))
+        .select_from(models.JournalEntry)
+        .join(
+            ingest_models.Position,
+            ingest_models.Position.id == models.JournalEntry.position_id,
+        )
+        .join(
+            account_models.TradingAccount,
+            account_models.TradingAccount.id == ingest_models.Position.account_id,
+        )
+        .where(account_models.TradingAccount.user_id == user_id)
+        .subquery()
+    )
+    return select(expanded.c.name, func.count().label("uses")).group_by(expanded.c.name)
+
+
+async def list_tags(session: AsyncSession, user_id: UUID) -> list[tuple[models.Tag, int]]:
+    """Словарь тегов пользователя со счётчиком употреблений.
+
+    Счётчик нужен не для украшения списка: удаление тега снимает его со всех позиций, и
+    без числа интерфейсу нечего показать в подтверждении — человек соглашался бы вслепую.
+
+    Порядок — по написанию без учёта регистра: `Trend` и `trend` в списке не разъезжаются
+    (второе, впрочем, может появиться только мимо этого кода, см. `_TAG_LOCK_NAMESPACE`).
+    """
+    usage = _usage_counts(user_id).subquery()
+    statement = (
+        select(models.Tag, func.coalesce(usage.c.uses, 0))
+        .outerjoin(usage, usage.c.name == models.Tag.name)
+        .where(models.Tag.user_id == user_id)
+        .order_by(func.lower(models.Tag.name), models.Tag.name)
+    )
+    return [(tag, count) for tag, count in (await session.execute(statement)).all()]
+
+
+async def tag_usage(session: AsyncSession, user_id: UUID, name: str) -> int:
+    statement = select(func.count()).select_from(
+        select(models.JournalEntry.position_id)
+        .where(
+            models.JournalEntry.position_id.in_(_owned_positions(user_id)),
+            models.JournalEntry.tags.contains([name]),
+        )
+        .subquery()
+    )
+    return (await session.execute(statement)).scalar_one()
+
+
+async def upsert_tag(
+    session: AsyncSession, user_id: UUID, name: str, color: str | None
+) -> tuple[models.Tag, int]:
+    """Заводит тег или задаёт существующему написание и цвет.
+
+    `POST`, который не только создаёт, — намеренно. Это **единственное** место, где
+    написание тега меняется: `PUT entry` его только использует (`resolve_tags`), а
+    переименования у словаря по SPEC.md 5.4 нет вовсе. Без этого исправить регистр
+    можно было бы только удалением, то есть потеряв тег на всех позициях.
+
+    Смена написания переносится на позиции: в `journal_entries.tags` лежат написания из
+    словаря, и оставить их старыми значило бы развести словарь с чипами в таблице.
+    """
+    await _lock_tag_dictionary(session, user_id)
+    known = await _dictionary(session, user_id)
+    existing = known.get(schemas.fold_tag(name))
+    if existing is None:
+        created = models.Tag(id=uuid7(), user_id=user_id, name=name, color=color)
+        session.add(created)
+        await session.commit()
+        return created, 0
+
+    renamed_from = existing.name
+    existing.name = name
+    existing.color = color
+    usage = (
+        await _rewrite_tag_in_entries(session, user_id, renamed_from, name)
+        if renamed_from != name
+        else await tag_usage(session, user_id, name)
+    )
+    await session.commit()
+    return existing, usage
+
+
+async def delete_tag(session: AsyncSession, user_id: UUID, tag_id: UUID) -> tuple[str, int]:
+    """Удаляет тег из словаря и снимает его со всех позиций пользователя.
+
+    Второе — не побочный эффект, а единственный непротиворечивый вариант. Оставить тег на
+    позициях значило бы получить чип, которого нет ни в подсказках, ни в списке словаря, —
+    и который вернётся в словарь сам при первом же сохранении такой карточки
+    (`resolve_tags` заводит незнакомое). Удаление, которое отменяется автосохранением, —
+    хуже, чем удаление, которое видно.
+
+    Сколько позиций затронуто, возвращается наружу: спросить об этом заранее клиент может
+    по `usage_count` из `GET /journal/tags`, а подтвердить факт — только этим числом.
+    """
+    await _lock_tag_dictionary(session, user_id)
+    statement = select(models.Tag).where(models.Tag.id == tag_id, models.Tag.user_id == user_id)
+    tag = (await session.execute(statement)).scalar_one_or_none()
+    if tag is None:
+        raise tag_not_found()
+    name = tag.name
+    updated = await _rewrite_tag_in_entries(session, user_id, name, None)
+    await session.delete(tag)
+    await session.commit()
+    return name, updated
+
+
+async def save_entry(
+    session: AsyncSession,
+    user_id: UUID,
+    position_id: UUID,
+    payload: schemas.JournalEntryUpdate,
+) -> models.JournalEntry:
+    """Полная замена записи журнала. Строка заводится первым же сохранением."""
+    await ensure_owned_position(session, user_id, position_id)
+    tags = await resolve_tags(session, user_id, payload.tags)
+    values: dict[str, Any] = {
+        "notes": payload.notes,
+        "tags": tags,
+        "planned_entry": payload.planned_entry,
+        "planned_sl": payload.planned_sl,
+        "planned_tp": payload.planned_tp,
+        "risk_amount": payload.risk_amount,
+        "updated_at": _now(),
+    }
+    statement = (
+        pg_insert(models.JournalEntry)
+        .values(position_id=position_id, **values)
+        .on_conflict_do_update(index_elements=[models.JournalEntry.position_id], set_=values)
+        .returning(models.JournalEntry)
+    )
+    entry = (await session.execute(statement)).scalar_one()
+    await session.commit()
+    return entry
+
+
+async def save_reflection(
+    session: AsyncSession,
+    user_id: UUID,
+    position_id: UUID,
+    payload: schemas.ReflectionUpdate,
+) -> models.Reflection:
+    """Полная замена рефлексии. Всё содержательное решение — в `filled_at`.
+
+    SPEC.md 5.4: отметка ставится «при первом сохранении с хотя бы одним заполненным
+    полем». Отсюда ровно три перехода, и все три считаются на стороне Postgres — одним
+    выражением в `DO UPDATE`, а не чтением с последующей записью: два автосохранения
+    подряд иначе могли бы разъехаться и переставить время.
+
+    * пусто → заполнено: `filled_at = сейчас`;
+    * заполнено → заполнено: `filled_at` не двигается (`coalesce` со старым значением),
+      сколько бы правок ни было. Это дата, когда человек разобрал сделку, а не дата
+      последней запятой; «когда трогали» показывает `updated_at`;
+    * заполнено → пусто: `filled_at` снимается. Иначе фильтр `has_reflection=true` из
+      S2-01 возвращал бы позицию с пустой рефлексией, а иконка в таблице обещала бы
+      разбор, которого больше нет.
+
+    Что считается заполненным — `ReflectionUpdate.is_filled`, там же и почему.
+    """
+    await ensure_owned_position(session, user_id, position_id)
+    now = _now()
+    filled = payload.is_filled
+    values: dict[str, Any] = {
+        "setup_grade": payload.setup_grade,
+        "execution_grade": payload.execution_grade,
+        "followed_plan": payload.followed_plan,
+        "emotion_before": payload.emotion_before,
+        "emotion_during": payload.emotion_during,
+        "emotion_after": payload.emotion_after,
+        "mistakes": list(payload.mistakes),
+        "confidence": payload.confidence,
+        "free_text": payload.free_text,
+        "updated_at": now,
+    }
+    # Без квалификации колонка в `set_` означает существующую строку, а не вставляемую:
+    # `coalesce` здесь читает `filled_at`, который уже лежит в базе.
+    kept = func.coalesce(models.Reflection.__table__.c.filled_at, now)
+    statement = (
+        pg_insert(models.Reflection)
+        .values(position_id=position_id, filled_at=now if filled else None, **values)
+        .on_conflict_do_update(
+            index_elements=[models.Reflection.position_id],
+            set_={**values, "filled_at": kept if filled else null()},
+        )
+        .returning(models.Reflection)
+    )
+    reflection = (await session.execute(statement)).scalar_one()
+    await session.commit()
+    return reflection

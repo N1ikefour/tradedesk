@@ -349,6 +349,138 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/journal/positions/{position_id}/entry': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /**
+     * Save Entry
+     * @description Заметки, теги, план и риск — полной заменой.
+     *
+     *     ⚠️ Тело обязано нести **все** поля модели: `PUT` из SPEC.md 5.4 заменяет запись
+     *     целиком, и отсутствие поля означало бы «сотри его». Пропущенное поле — `400`, а не
+     *     молчаливая потеря; очистка выражается явным `null` (у `tags` — пустым массивом).
+     *
+     *     В ответе теги приходят в написании словаря, которое может отличаться от присланного
+     *     регистром: `trend` при заведённом `Trend` сохранится как `Trend` (`service.resolve_tags`).
+     *     Незнакомый тег заводится в словаре сам, без цвета, поэтому появление в ответе тега,
+     *     которого нет в загруженном списке, — повод перечитать `GET /journal/tags`.
+     */
+    put: operations['save_entry_api_v1_journal_positions__position_id__entry_put'];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/journal/positions/{position_id}/reflection': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /**
+     * Save Reflection
+     * @description Рефлексия — полной заменой, с теми же правилами обязательности полей, что у entry.
+     *
+     *     `filled_at` считает сервер: он ставится первым сохранением, в котором есть хоть одно
+     *     заполненное поле, не переставляется последующими правками и снимается, если рефлексию
+     *     очистили целиком. Что считается заполненным — `ReflectionUpdate.is_filled`.
+     */
+    put: operations['save_reflection_api_v1_journal_positions__position_id__reflection_put'];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/journal/tags': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List Tags
+     * @description Словарь тегов пользователя со счётчиком позиций у каждого.
+     *
+     *     Счётчик — то, что показывают в подтверждении удаления: тег снимается со всех позиций,
+     *     и это единственный способ узнать масштаб до, а не после.
+     */
+    get: operations['list_tags_api_v1_journal_tags_get'];
+    put?: never;
+    /**
+     * Create Tag
+     * @description Заводит тег или задаёт существующему написание и цвет.
+     *
+     *     ⚠️ Не `201`, и это не оплошность: маршрут не только создаёт. Тег с таким же именем
+     *     без учёта регистра — не конфликт, а он же самый, и запрос задаёт ему присланное
+     *     написание и цвет, переписывая тег на всех позициях пользователя. Это единственное
+     *     место, где написание тега меняется: `PUT entry` только пользуется словарём и ничего
+     *     в нём не переименовывает.
+     */
+    post: operations['create_tag_api_v1_journal_tags_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/journal/tags/{tag_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /**
+     * Delete Tag
+     * @description Удаляет тег из словаря и снимает его со всех позиций пользователя.
+     *
+     *     ⚠️ Не `204`: изменились не только словарь, но и позиции, и сколько их было — клиенту
+     *     после факта взять неоткуда. Чужой тег неотличим от несуществующего, оба — `404`.
+     */
+    delete: operations['delete_tag_api_v1_journal_tags__tag_id__delete'];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/journal/vocab': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read Vocab
+     * @description Словари эмоций, ошибок и оценок — SPEC.md 3.5.
+     *
+     *     Под сессией, как и `/users/timezones`: анонимного потребителя у словаря нет.
+     *     Заголовок кэширования — единственная защита от устаревшей копии, см. `VOCAB_CACHE_CONTROL`.
+     */
+    get: operations['read_vocab_api_v1_journal_vocab_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/ingest/heartbeat': {
     parameters: {
       query?: never;
@@ -843,6 +975,53 @@ export interface components {
        */
       updated_at: string;
     };
+    /**
+     * JournalEntryUpdate
+     * @description Тело `PUT /journal/positions/{id}/entry` — полная замена записи журнала.
+     *
+     *     ⚠️ **Все поля обязательны.** Это не придирка к форме, а единственная защита от того,
+     *     ради чего маршрут и существует: `PUT` заменяет запись целиком, поэтому тело без
+     *     `notes` означает «сотри заметку». Автосохранение карточки (`S2-07`), приславшее
+     *     частичное тело, молча уничтожило бы написанное — и человек узнал бы об этом при
+     *     следующем открытии позиции. С обязательными полями такой запрос — `400
+     *     validation_error` с именем пропущенного поля в `details.fields`, то есть ошибка
+     *     клиента, видимая в разработке, а не потеря данных у пользователя.
+     *
+     *     Очистка поля выражается явным `null` (у `tags` — пустым массивом). Разница между
+     *     «не прислал» и «прислал null» здесь единственное, что отделяет ошибку от намерения.
+     */
+    JournalEntryUpdate: {
+      /**
+       * Notes
+       * @description Заметка, не длиннее 20000 символов. `null` или строка из пробелов очищают заметку
+       */
+      notes: string | null;
+      /**
+       * Tags
+       * @description Теги позиции, не больше 20. Пустой массив снимает все теги. Отсутствующие в словаре заводятся автоматически; написание берётся из словаря, если тег там уже есть
+       */
+      tags: string[];
+      /**
+       * Planned Entry
+       * @description Планируемая цена входа
+       */
+      planned_entry: number | string | null;
+      /**
+       * Planned Sl
+       * @description Планируемый стоп-лосс
+       */
+      planned_sl: number | string | null;
+      /**
+       * Planned Tp
+       * @description Планируемый тейк-профит
+       */
+      planned_tp: number | string | null;
+      /**
+       * Risk Amount
+       * @description Риск в валюте счёта, строго больше нуля. От него считается R
+       */
+      risk_amount: number | string | null;
+    };
     /** OutboxEntry */
     OutboxEntry: {
       /**
@@ -1137,6 +1316,114 @@ export interface components {
        */
       updated_at: string;
     };
+    /**
+     * ReflectionUpdate
+     * @description Тело `PUT /journal/positions/{id}/reflection` — полная замена рефлексии.
+     *
+     *     ⚠️ **Все поля обязательны** — по той же причине, что и у записи журнала, см.
+     *     `JournalEntryUpdate`.
+     *
+     *     Значения эмоций и ошибок проверяются по словарям SPEC.md 3.5 здесь, на границе:
+     *     ключ вне словаря сохранился бы, но подписи у него на фронте нет, и в карточке он
+     *     остался бы пустым местом, которое нечем объяснить.
+     */
+    ReflectionUpdate: {
+      /**
+       * Setup Grade
+       * @description Оценка сетапа
+       */
+      setup_grade: ('A' | 'B' | 'C' | 'D') | null;
+      /**
+       * Execution Grade
+       * @description Оценка исполнения
+       */
+      execution_grade: ('A' | 'B' | 'C' | 'D') | null;
+      /**
+       * Followed Plan
+       * @description Следовал ли плану
+       */
+      followed_plan: boolean | null;
+      /**
+       * Emotion Before
+       * @description Эмоция до входа
+       */
+      emotion_before:
+        | (
+            | 'calm'
+            | 'focused'
+            | 'edgy'
+            | 'fomo'
+            | 'frustrated'
+            | 'bored'
+            | 'euphoric'
+            | 'fearful'
+            | 'tired'
+          )
+        | null;
+      /**
+       * Emotion During
+       * @description Эмоция в позиции
+       */
+      emotion_during:
+        | (
+            | 'calm'
+            | 'focused'
+            | 'edgy'
+            | 'fomo'
+            | 'frustrated'
+            | 'bored'
+            | 'euphoric'
+            | 'fearful'
+            | 'tired'
+          )
+        | null;
+      /**
+       * Emotion After
+       * @description Эмоция после выхода
+       */
+      emotion_after:
+        | (
+            | 'calm'
+            | 'focused'
+            | 'edgy'
+            | 'fomo'
+            | 'frustrated'
+            | 'bored'
+            | 'euphoric'
+            | 'fearful'
+            | 'tired'
+          )
+        | null;
+      /**
+       * Mistakes
+       * @description Ошибки из словаря. Пустой массив — их нет
+       */
+      mistakes: (
+        | 'no_plan'
+        | 'early_entry'
+        | 'late_entry'
+        | 'chased'
+        | 'moved_sl'
+        | 'no_sl'
+        | 'oversized'
+        | 'revenge'
+        | 'early_exit'
+        | 'held_too_long'
+        | 'against_trend'
+        | 'news_ignored'
+        | 'overtrading'
+      )[];
+      /**
+       * Confidence
+       * @description Уверенность — целое от 1 до 5
+       */
+      confidence: number | null;
+      /**
+       * Free Text
+       * @description Свободный текст, не длиннее 20000 символов
+       */
+      free_text: string | null;
+    };
     /** RequestCodeRequest */
     RequestCodeRequest: {
       /** Email */
@@ -1212,6 +1499,74 @@ export interface components {
       items: components['schemas']['SyncRunResponse'][];
     };
     /**
+     * TagCreateRequest
+     * @description Тело `POST /journal/tags` — завести тег или задать существующему написание и цвет.
+     *
+     *     ⚠️ **Оба поля обязательны**, как и в остальных телах этой задачи: `color: null`
+     *     очищает цвет, отсутствие поля — ошибка. Иначе «сохранил тег без цвета» и «не трогал
+     *     цвет» выглядели бы одинаково.
+     */
+    TagCreateRequest: {
+      /**
+       * Name
+       * @description Название тега, не длиннее 64 символов
+       */
+      name: string;
+      /**
+       * Color
+       * @description Цвет тега — шестизначный hex в нижнем регистре, например #2563eb, либо null
+       */
+      color: string | null;
+    };
+    /**
+     * TagDeletedResponse
+     * @description Итог `DELETE /journal/tags/{tag_id}`.
+     *
+     *     Не `204`: удаление тега из словаря снимает его со **всех** позиций пользователя, и
+     *     сколько их было — единственное, чего клиент не может узнать после факта. Без числа
+     *     интерфейсу нечего показать вместо «удалено», хотя изменились десятки позиций.
+     */
+    TagDeletedResponse: {
+      /**
+       * Name
+       * @description Название удалённого тега — для сообщения пользователю
+       */
+      name: string;
+      /**
+       * Positions Updated
+       * @description Со скольких позиций тег снят
+       */
+      positions_updated: number;
+    };
+    /**
+     * TagResponse
+     * @description Тег словаря пользователя — SPEC.md 3.4.
+     */
+    TagResponse: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Name */
+      name: string;
+      /** Color */
+      color: string | null;
+      /**
+       * Usage Count
+       * @description На скольких позициях пользователя стоит этот тег
+       */
+      usage_count: number;
+    };
+    /**
+     * TagsResponse
+     * @description Конверт списка SPEC.md 5.1. Курсора нет: словарь тегов человека помещается целиком.
+     */
+    TagsResponse: {
+      /** Items */
+      items: components['schemas']['TagResponse'][];
+    };
+    /**
      * TimezonesResponse
      * @description Список имён зон, которые принимает `PATCH /users/me`.
      */
@@ -1282,6 +1637,20 @@ export interface components {
       version: string;
     };
     /**
+     * VocabResponse
+     * @description Словари SPEC.md 3.5. Ключи стабильны, русские подписи — на фронте.
+     */
+    VocabResponse: {
+      /** Emotions */
+      emotions: string[];
+      /** Mistakes */
+      mistakes: string[];
+      /** Setup Grades */
+      setup_grades: string[];
+      /** Execution Grades */
+      execution_grades: string[];
+    };
+    /**
      * ErrorCode
      * @description Словарь кодов ошибок API — SPEC.md 5.1.
      * @enum {string}
@@ -1301,6 +1670,7 @@ export interface components {
       | 'not_mt5_account'
       | 'position_not_found'
       | 'rate_limited'
+      | 'tag_not_found'
       | 'too_many_attempts'
       | 'unauthorized'
       | 'unprocessable_entity'
@@ -5279,6 +5649,1224 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'not_found' | 'position_not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  save_entry_api_v1_journal_positions__position_id__entry_put: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        position_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['JournalEntryUpdate'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['JournalEntryDetail'];
+        };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (not_found, position_not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'not_found' | 'position_not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  save_reflection_api_v1_journal_positions__position_id__reflection_put: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        position_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ReflectionUpdate'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ReflectionDetail'];
+        };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (not_found, position_not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'not_found' | 'position_not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  list_tags_api_v1_journal_tags_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TagsResponse'];
+        };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  create_tag_api_v1_journal_tags_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TagCreateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TagResponse'];
+        };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  delete_tag_api_v1_journal_tags__tag_id__delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        tag_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TagDeletedResponse'];
+        };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (not_found, tag_not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'not_found' | 'tag_not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  read_vocab_api_v1_journal_vocab_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['VocabResponse'];
+        };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'not_found';
               message: string;
               details: {
                 [key: string]: unknown;
