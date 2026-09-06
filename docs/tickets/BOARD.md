@@ -1,6 +1,6 @@
 # BOARD — доска задач
 
-Updated: 2026-09-05
+Updated: 2026-09-06
 
 Статусы и переходы — `docs/WORKFLOW.md` §2. Формулировки задач и Definition of Done — **`SPEC.md` §12**, здесь не дублируются. Файл тикета `docs/tickets/<ID>.md` заводится в момент взятия задачи в работу.
 
@@ -46,11 +46,11 @@ Updated: 2026-09-05
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
 | S2-01 | Journal API: список и карточка | backend | **Done** | [PR #20](https://github.com/N1ikefour/tradedesk/pull/20) |
-| S2-02 | Journal API: entry, reflection, tags, vocab | backend | In Progress | `feat/S2-02-journal-write` |
+| S2-02 | Journal API: entry, reflection, tags, vocab | backend | Review | [PR #21](https://github.com/N1ikefour/tradedesk/pull/21) |
 | S2-03 | Ручные сделки | backend | Backlog | — |
 | S2-04 | Вложения | backend | Backlog | — |
 | S2-05 | Календарь API + `analytics/summary` | backend | Backlog | — |
-| S2-06 | UI Journal таблица | frontend | In Progress | `feat/S2-06-journal-table` |
+| S2-06 | UI Journal таблица | frontend | Review | [PR #22](https://github.com/N1ikefour/tradedesk/pull/22) |
 | S2-07 | UI Position card | frontend | Backlog | — |
 | S2-08 | UI Скриншоты | frontend | Backlog | — |
 | S2-09 | UI Calendar | frontend | Backlog | — |
@@ -110,3 +110,8 @@ Updated: 2026-09-05
 | X-32 | Тело ошибки не сверяется с объявленной формой | backend | Todo | — |
 | X-33 | Повторённый query-параметр теряет данные | backend | Todo | — |
 | X-34 | Длину символа не ограничивает никто | backend | Todo | — |
+| X-35 | Уникальность тегов без учёта регистра держится кодом | backend | Todo | — |
+| X-36 | Переключатель ужал меню на телефоне до одного пункта | frontend | Todo | — |
+| X-37 | Нечем засеять позиции: UI проверяется на пустом экране | backend | Todo | — |
+| X-38 | NUL в query-параметре роняет журнал в 500 | backend | Todo | — |
+| X-39 | Виртуализация журнала держится на константе высоты | frontend | Todo | — |
