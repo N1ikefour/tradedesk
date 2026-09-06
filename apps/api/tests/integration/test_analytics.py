@@ -473,6 +473,57 @@ async def test_foreign_account_is_not_found(
     assert error_code(response) == "account_not_found"
 
 
+# --- повторённый параметр ------------------------------------------------------
+
+# Все маршруты, принимающие `?account_ids=`: список журнала (S2-01), сводка и календарь.
+# Список ведётся здесь целиком, а не по одному тесту на домен: правило общее
+# (`core/query.py`), и следующий такой маршрут обязан попасть в эту таблицу, а не завести
+# четвёртую копию проверки.
+ACCOUNT_SCOPED_ROUTES = [
+    pytest.param(POSITIONS, {}, id="positions"),
+    pytest.param(SUMMARY, {}, id="summary"),
+    pytest.param(CALENDAR, {"month": "2026-09"}, id="calendar"),
+]
+
+
+def closed_positions_seen(endpoint: str, payload: dict[str, Any]) -> int:
+    """Сколько закрытых позиций видит маршрут — одним числом для трёх разных форм ответа."""
+    if endpoint == POSITIONS:
+        return len(payload["items"])
+    if endpoint == SUMMARY:
+        return int(payload["trades"])
+    return sum(int(day["trades"]) for day in payload["days"])
+
+
+@pytest.mark.parametrize(("endpoint", "extra"), ACCOUNT_SCOPED_ROUTES)
+async def test_repeated_account_ids_are_rejected_on_every_account_scoped_route(
+    client: AsyncClient, account: str, endpoint: str, extra: dict[str, str]
+) -> None:
+    """`?account_ids=A&account_ids=B` — 400 на каждом маршруте, а не выборка по одному счёту.
+
+    Так массивы сериализуют `URLSearchParams.append` и `qs` в режиме repeat, то есть
+    попасть сюда клиент может без единой ошибки в своём коде. Проверка стоит зависимостью
+    маршрута (`core/query.py`), и снять её можно двумя строками: без этого теста маршруты
+    аналитики молча показали бы сводку и календарь по половине выбранных счетов.
+    """
+    second = await create_account(client, label="Второй счёт")
+    await seed_position(account)
+    await seed_position(second)
+    tail = "".join(f"&{name}={value}" for name, value in extra.items())
+
+    response = await client.get(f"{endpoint}?account_ids={account}&account_ids={second}{tail}")
+
+    assert response.status_code == 400, response.text
+    assert error_code(response) == "validation_error"
+    assert "query.account_ids" in response.json()["error"]["details"]["fields"]
+
+    # Оба счёта свои, и списком через запятую тот же фильтр отдаёт обе позиции: 400 выше
+    # именно за повтор, а не за чужой идентификатор.
+    allowed = await client.get(endpoint, params={"account_ids": f"{account},{second}", **extra})
+    assert allowed.status_code == 200, allowed.text
+    assert closed_positions_seen(endpoint, allowed.json()) == 2
+
+
 # --- торговый день -------------------------------------------------------------
 
 # `docs/metrics.md` §2.4: (зона, граница, момент закрытия, торговый день).
@@ -695,11 +746,21 @@ async def refresh(account_id: str, days: list[date] | None = None) -> int:
         return await daily_stats.refresh(session, UUID(account_id), days)
 
 
-async def test_cache_repeats_what_the_calendar_counts(client: AsyncClient, account: str) -> None:
+# Денежные колонки `daily_stats`, которых нет в ответе календаря. Все — `numeric(18,2)`,
+# то есть перестановка двух `sum()` в INSERT не даёт ни ошибки типа, ни красного теста:
+# поймать её может только независимый пересчёт тех же строк.
+CACHED_MONEY_COLUMNS = ("gross_pnl", "net_pnl", "commission", "swap", "fee")
+
+
+async def test_cache_repeats_what_the_source_counts(client: AsyncClient, account: str) -> None:
     """Инвариант таблицы: строка кэша обязана совпадать с тем, что считает источник.
 
     Без него `daily_stats` — таблица, которую никто не читает и никто не проверяет, то
     есть заготовленное расхождение для этапа 3.
+
+    Счётчики сверяются с календарём, деньги — со сводкой за границы того же дня: денежных
+    колонок календарь не отдаёт, и без сводки четыре суммы в INSERT не сверялись бы ни с
+    чем — перестановка двух из них прошла бы молча.
     """
     await set_day_rule(client, "Europe/Berlin", 6)
     await seed_worked_example(account)
@@ -719,6 +780,20 @@ async def test_cache_repeats_what_the_calendar_counts(client: AsyncClient, accou
         assert row["losses"] == expected["losses"]
         assert row["breakeven"] == expected["breakeven"]
         assert row["net_pnl"] == Decimal(expected["net_pnl"])
+
+        summary = await client.get(
+            SUMMARY,
+            params={
+                "account_ids": account,
+                "from": expected["starts_at"],
+                "to": expected["ends_at"],
+            },
+        )
+        assert summary.status_code == 200, summary.text
+        totals = summary.json()
+        assert totals["trades"] == expected["trades"], expected["day"]
+        for column in CACHED_MONEY_COLUMNS:
+            assert row[column] == Decimal(totals[column]), (expected["day"], column)
 
 
 async def test_cache_records_the_rule_it_was_computed_with(

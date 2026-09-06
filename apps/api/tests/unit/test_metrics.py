@@ -171,6 +171,65 @@ def test_expectancy_agrees_with_the_classic_formula() -> None:
     assert summary.expectancy == Decimal("14.63")
 
 
+def test_lossrate_is_not_one_minus_winrate() -> None:
+    """`lossrate = losses / trades` (`docs/metrics.md` §3.1), и сделка в ноль их разводит.
+
+    Естественное чтение «доля убыточных — это оставшаяся часть» верно ровно до первой
+    сделки, закрытой в ноль: она не в числителе ни одной из долей, но в знаменателе обеих.
+    В примере §4 такая сделка есть, и подстановка `1 − winrate` уводит проверку на 4.17.
+    """
+    summary = metrics.summarize(EXAMPLE_TOTALS)
+    assert summary.avg_win is not None
+    assert EXAMPLE_TOTALS.breakeven == 1
+
+    win_rate = Decimal(EXAMPLE_TOTALS.wins) / Decimal(EXAMPLE_TOTALS.trades)
+    exact_avg_loss = EXAMPLE_TOTALS.gross_loss / Decimal(EXAMPLE_TOTALS.losses)
+    documented = Decimal(EXAMPLE_TOTALS.losses) / Decimal(EXAMPLE_TOTALS.trades)
+    guessed = Decimal(1) - win_rate
+
+    assert documented == Decimal("0.375")
+    assert guessed == Decimal("0.5")
+    assert win_rate * summary.avg_win + documented * exact_avg_loss == Decimal("14.625")
+    assert metrics.money(win_rate * summary.avg_win + guessed * exact_avg_loss) == Decimal("10.46")
+
+
+def test_recomputing_expectancy_from_published_averages_can_differ_by_a_cent() -> None:
+    """Тождество верно для точных средних, а в ответ они уходят округлёнными.
+
+    Человек с калькулятором подставит именно опубликованные числа, и на этих трёх сделках
+    получит 13.34 вместо 13.33. Случай описан в `docs/metrics.md` §3.1 теми же числами;
+    тест держит описание от протухания и заодно фиксирует, что авторитетно
+    `net_pnl / trades`, а не пересчёт по ответу.
+    """
+    summary = metrics.summarize(
+        empty_totals(
+            trades=3,
+            wins=2,
+            losses=1,
+            gross_pnl=Decimal("40.00"),
+            net_pnl=Decimal("40.00"),
+            gross_profit=Decimal("100.00"),
+            gross_loss=Decimal("-60.00"),
+            best_trade=Decimal("90.00"),
+            worst_trade=Decimal("-60.00"),
+        )
+    )
+    assert summary.winrate is not None
+    assert summary.avg_win is not None
+    assert summary.avg_loss is not None
+
+    assert (summary.winrate, summary.avg_win, summary.avg_loss) == (
+        Decimal("0.6667"),
+        Decimal("50.00"),
+        Decimal("-60.00"),
+    )
+    assert summary.expectancy == Decimal("13.33")
+
+    loss_rate = Decimal(summary.losses) / Decimal(summary.trades)
+    by_published = summary.winrate * summary.avg_win + loss_rate * summary.avg_loss
+    assert metrics.money(by_published) == Decimal("13.34")
+
+
 def test_rounding_is_half_up_not_bankers() -> None:
     """14.625 → 14.63. По умолчанию Python округлил бы до 14.62, и это заметит человек."""
     assert metrics.summarize(EXAMPLE_TOTALS).expectancy == Decimal("14.63")
