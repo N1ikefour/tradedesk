@@ -6,7 +6,7 @@ ORM-объекта, по той же причине, что и в домене �
 колонка `raw` с полным ответом терминала, и `model_validate` вынес бы её наружу целиком
 первым же добавлением поля в модель.
 
-Деньги, цены и объёмы уходят строками (`core.schemas.Money`, `Quantity`): в JSON нет
+Деньги, цены и объёмы уходят строками (`core.schemas.MoneyOut`, `QuantityOut`): в JSON нет
 десятичного типа, и число здесь означало бы double на фронте (`CLAUDE.md` §2 — никакого
 float в денежных расчётах).
 """
@@ -21,7 +21,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
-from app.core.schemas import Money, Quantity, UtcDatetime
+from app.core.schemas import MoneyOut, QuantityOut, UtcDatetime
 from app.core.text import sanitize_external_text
 from app.domains.accounts import models as account_models
 from app.domains.ingest import models as ingest_models
@@ -305,7 +305,7 @@ class JournalEntryBrief(BaseModel):
     tags: list[str]
     has_notes: bool
     notes_preview: str | None
-    risk_amount: Money | None
+    risk_amount: MoneyOut | None
     updated_at: UtcDatetime
 
     @classmethod
@@ -326,10 +326,10 @@ class JournalEntryDetail(BaseModel):
 
     notes: str | None
     tags: list[str]
-    planned_entry: Quantity | None
-    planned_sl: Quantity | None
-    planned_tp: Quantity | None
-    risk_amount: Money | None
+    planned_entry: QuantityOut | None
+    planned_sl: QuantityOut | None
+    planned_tp: QuantityOut | None
+    risk_amount: MoneyOut | None
     updated_at: UtcDatetime
 
     @classmethod
@@ -409,15 +409,15 @@ class PositionFields(BaseModel):
     result: PositionResult | None = Field(description="Только у закрытых позиций")
     open_time: UtcDatetime
     close_time: UtcDatetime | None
-    volume_opened: Quantity
-    volume_closed: Quantity
-    avg_entry_price: Quantity
-    avg_exit_price: Quantity | None
-    gross_pnl: Money
-    commission: Money
-    swap: Money
-    fee: Money
-    net_pnl: Money
+    volume_opened: QuantityOut
+    volume_closed: QuantityOut
+    avg_entry_price: QuantityOut
+    avg_exit_price: QuantityOut | None
+    gross_pnl: MoneyOut
+    commission: MoneyOut
+    swap: MoneyOut
+    fee: MoneyOut
+    net_pnl: MoneyOut
     deals_count: int
     duration_seconds: int | None
     close_reason: str | None
@@ -492,12 +492,12 @@ class DealResponse(BaseModel):
     deal_type: str
     entry: str
     reason: str | None
-    volume: Quantity
-    price: Quantity
-    profit: Money
-    commission: Money
-    swap: Money
-    fee: Money
+    volume: QuantityOut
+    price: QuantityOut
+    profit: MoneyOut
+    commission: MoneyOut
+    swap: MoneyOut
+    fee: MoneyOut
     time_utc: UtcDatetime
     comment: str | None
     magic: int | None

@@ -78,7 +78,26 @@ _KEYS = frozenset({_FIELD_KEY, _DIRECTION_KEY, _VALUE_KEY, _ID_KEY})
 
 # Значение всегда строка, даже целое: одно правило разбора вместо разбора по типу JSON,
 # в котором `1` и `"1"` разъезжаются молча.
-_MAX_VALUE_LENGTH = 64
+
+# Предел стоит на всём токене, а не на значении ключа, и это не стилистика. `encode_cursor`
+# длину не проверяет — предел на значении был бы несимметричен ему: символ длиннее предела
+# уезжал бы в `next_cursor`, который наш же декодер отвергает, то есть делал бы хвост списка
+# недостижимым. Ограничить обе стороны одинаково нечем: `positions.symbol_norm` — `text`,
+# длины у него нет.
+#
+# Поэтому предел означает здесь ровно одно — сколько работы мы готовы потратить на токен,
+# которого не выдавали, — и снимается до base64, раньше любой аллокации. 1024 символа
+# токена это ~700 символов `symbol_norm`: MT5 отдаёт поле символа шириной 31 байт, а `S2-03`
+# и вход CSV печатает человек в поле на 32 символа (`schemas.MAX_SYMBOL_LENGTH`).
+_MAX_CURSOR_LENGTH = 1024
+
+# Всё остальное курсор проверяет не длиной, а границами колонки, из которой значение могло
+# взяться: `positions.net_pnl` — `numeric(18,2)`, `positions.duration_seconds` — `integer`.
+# Длина такое не ловит вовсе: `1E+999999999` — двенадцать символов, из нашей таблицы прийти
+# не могло и до сравнения не доживёт — переполнится в драйвере, то есть 500 вместо 400.
+_NET_PNL_LIMIT = Decimal(10) ** 16
+_NET_PNL_EXPONENT = -2
+_DURATION_LIMIT = 2**31
 
 
 class InvalidCursorError(ValueError):
@@ -159,8 +178,6 @@ def decode_cursor(raw: str, sort: Sort) -> Cursor:
         raise InvalidCursorError("пустое значение ключа у поля, которое не бывает пустым")
     if encoded is not None and not isinstance(encoded, str):
         raise InvalidCursorError("значение ключа не строка")
-    if isinstance(encoded, str) and len(encoded) > _MAX_VALUE_LENGTH:
-        raise InvalidCursorError("значение ключа длиннее допустимого")
 
     identifier = payload.get(_ID_KEY)
     if not isinstance(identifier, str):
@@ -177,6 +194,8 @@ def decode_cursor(raw: str, sort: Sort) -> Cursor:
 def _payload(raw: str) -> dict[str, object]:
     if not raw:
         raise InvalidCursorError("пустой курсор")
+    if len(raw) > _MAX_CURSOR_LENGTH:
+        raise InvalidCursorError("курсор длиннее допустимого")
     # Паддинг снят при кодировании: b64decode без него падает, а длина восстанавливается
     # однозначно.
     padded = raw + "=" * (-len(raw) % 4)
@@ -225,10 +244,20 @@ def _deserialize(field: str, encoded: str) -> CursorValue:
         # NaN сравнивается со всем подряд неверно, а в numeric-колонку он и не попадёт.
         if not amount.is_finite():
             raise InvalidCursorError("значение ключа не конечное число")
+        if not -_NET_PNL_LIMIT < amount < _NET_PNL_LIMIT:
+            raise InvalidCursorError("значение ключа шире numeric(18,2)")
+        exponent = amount.as_tuple().exponent
+        # isinstance: нечисловая экспонента бывает у NaN и Inf — они отсеяны строкой выше,
+        # но для mypy `exponent` остаётся `int | str`.
+        if not isinstance(exponent, int) or exponent < _NET_PNL_EXPONENT:
+            raise InvalidCursorError("у значения ключа больше знаков, чем у numeric(18,2)")
         return amount
     if field == "duration_seconds":
         try:
-            return int(encoded)
+            seconds = int(encoded)
         except ValueError as error:
             raise InvalidCursorError("значение ключа не целое") from error
+        if not -_DURATION_LIMIT <= seconds < _DURATION_LIMIT:
+            raise InvalidCursorError("значение ключа шире integer")
+        return seconds
     return encoded

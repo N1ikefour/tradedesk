@@ -24,6 +24,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from app.domains.journal import cursor as cursor_module
 from app.domains.journal.cursor import (
     DEFAULT_SORT,
     NULLABLE_SORT_FIELDS,
@@ -46,6 +47,23 @@ VALUES: dict[str, CursorValue] = {
     "net_pnl": Decimal("-10.50"),
     "symbol_norm": "EURUSD",
     "duration_seconds": 3600,
+}
+
+# Предельное значение своей колонки: `positions.net_pnl` — numeric(18,2),
+# `duration_seconds` — integer, времена — timestamptz. У `symbol_norm` колонка `text`,
+# предела нет вовсе, поэтому берётся заведомо щедрая ширина — восемь фильтров `?symbol=`
+# подряд (`schemas.MAX_SYMBOL_LENGTH` = 32).
+# Сколько строки запроса нам вообще достаётся: h11 под uvicorn отдаёт на строку запроса и
+# все заголовки 16 КиБ суммарно. Предел курсора выше этого числа проверять было бы нечем —
+# такой токен до приложения не доедет, и проверка стала бы мёртвым кодом.
+_URL_BUDGET = 4096
+
+WIDEST: dict[str, CursorValue] = {
+    "close_time": datetime(9999, 12, 31, 23, 59, 59, 999999, tzinfo=UTC),
+    "open_time": datetime(9999, 12, 31, 23, 59, 59, 999999, tzinfo=UTC),
+    "net_pnl": Decimal("-9999999999999999.99"),
+    "symbol_norm": "S" * 256,
+    "duration_seconds": 2**31 - 1,
 }
 
 
@@ -124,6 +142,85 @@ def test_empty_value_on_a_not_null_field_is_rejected(field: str) -> None:
         decode_cursor(token, parse_sort(f"{field}:asc"))
 
 
+# --- симметрия кодировщика и декодера -----------------------------------------
+
+
+@pytest.mark.parametrize("length", [64, 65, 100, 255])
+def test_long_symbol_still_round_trips(length: int) -> None:
+    """Курсор с длинным символом обязан читаться назад — иначе хвост списка недостижим.
+
+    Предел на длине значения ключа этим и был плох: `encode_cursor` его не проверял, и на
+    символе в 65 символов API отдавал `next_cursor`, который его же декодер отвергал
+    как `400`. Ни из чего, кроме следующей страницы, такой курсор клиенту взяться не может.
+    `positions.symbol_norm` — `text`, длины у него нет, и ручной ввод `S2-03` и CSV
+    (SPEC.md 5.3) печатает туда что угодно.
+    """
+    sort = parse_sort("symbol_norm:asc")
+    symbol = "X" * length
+
+    decoded = decode_cursor(encode_cursor(sort, symbol, uuid4()), sort)
+
+    assert decoded.value == symbol
+
+
+@pytest.mark.parametrize("field", SPEC_SORT_FIELDS)
+@pytest.mark.parametrize("direction", ("asc", "desc"))
+def test_encoder_never_outgrows_the_decoder(field: str, direction: str) -> None:
+    """Предел стоит на всём токене и обязан быть заведомо шире всего, что мы кодируем.
+
+    Значения берутся предельные для своей колонки: `numeric(18,2)` целиком, `integer`
+    целиком, символ в восемь раз длиннее того, что принимает фильтр `?symbol=`
+    (`schemas.MAX_SYMBOL_LENGTH`). Проверяется именно связь двух чисел: изменить предел,
+    не заметив, что кодировщик уже его перерос, здесь нельзя.
+    """
+    sort = parse_sort(f"{field}:{direction}")
+
+    token = encode_cursor(sort, WIDEST[field], uuid4())
+
+    assert len(token) <= cursor_module._MAX_CURSOR_LENGTH
+    assert decode_cursor(token, sort).value == WIDEST[field]
+
+
+def test_cursor_cap_is_boxed_from_both_sides() -> None:
+    """У предела две границы, и обе со смыслом — иначе он «настраивается» в любую сторону.
+
+    Снизу его держит `test_encoder_never_outgrows_the_decoder`: ниже собственного
+    кодировщика предел делает хвост списка недостижимым. Сверху — строка запроса: предел
+    шире неё проверять нечего, такой токен до приложения не доедет.
+    """
+    assert cursor_module._MAX_CURSOR_LENGTH <= _URL_BUDGET
+
+
+@pytest.mark.parametrize(
+    ("field", "bogus"),
+    [
+        pytest.param("net_pnl", "1E+999999999", id="net_pnl шире numeric(18,2)"),
+        pytest.param("net_pnl", "-99999999999999999", id="net_pnl шире по модулю"),
+        pytest.param("net_pnl", "0.001", id="net_pnl точнее двух знаков"),
+        pytest.param("duration_seconds", str(2**31), id="duration шире integer"),
+        pytest.param("duration_seconds", str(-(2**31) - 1), id="duration шире integer вниз"),
+    ],
+)
+def test_value_outside_its_column_is_rejected(field: str, bogus: str) -> None:
+    """Проверка идёт по границам колонки, а не по длине: `1E+999999999` — двенадцать символов.
+
+    Из нашей таблицы такое значение не приходило, а до сравнения не доживёт: драйвер
+    переполнится на параметре запроса, и клиент получит 500 вместо 400.
+    """
+    token = _token({"s": field, "d": "asc", "v": bogus, "i": str(uuid4())})
+
+    with pytest.raises(InvalidCursorError):
+        decode_cursor(token, parse_sort(f"{field}:asc"))
+
+
+@pytest.mark.parametrize("field", ("net_pnl", "duration_seconds"))
+def test_value_at_the_edge_of_its_column_is_accepted(field: str) -> None:
+    """Граница колонки — не запрет: такие значения в `positions` лежат и в курсор попадают."""
+    sort = parse_sort(f"{field}:asc")
+
+    assert decode_cursor(encode_cursor(sort, WIDEST[field], uuid4()), sort).value == WIDEST[field]
+
+
 def test_token_survives_a_url() -> None:
     """Курсор уезжает в query — там же, где живут все фильтры журнала (S2-06)."""
     token = encode_cursor(parse_sort(DEFAULT_SORT), MOMENT, uuid4())
@@ -153,10 +250,7 @@ def test_token_survives_a_url() -> None:
             _token({"s": "close_time", "d": "desc", "v": 12345, "i": str(uuid4())}),
             id="значение не строка",
         ),
-        pytest.param(
-            _token({"s": "close_time", "d": "desc", "v": "x" * 65, "i": str(uuid4())}),
-            id="значение длиннее предела",
-        ),
+        pytest.param("A" * (_URL_BUDGET * 2), id="токен длиннее предела"),
         pytest.param(
             _token({"s": "close_time", "d": "desc", "v": None, "i": str(uuid4()), "x": 1}),
             id="лишний ключ",

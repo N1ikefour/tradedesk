@@ -12,7 +12,8 @@ GET /api/v1/journal/positions/{id}   -> 200 PositionCard
 
 Испорченный курсор своего кода не получает: он разбирается на границе, в
 `PositionsQuery`, и уходит обычным `400 validation_error` с `details.fields`
-(разбор — в шапке `cursor.py`).
+(разбор — в шапке `cursor.py`). Повторённый параметр — тоже `400`, а не молча выборка по
+последнему из значений (`core/query.py`).
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
 from app.core.openapi import domain_errors
+from app.core.query import reject_repeated_query_params
 from app.domains.accounts import service as accounts_service
 from app.domains.auth.dependencies import CurrentUser
 from app.domains.journal import service
@@ -45,6 +47,9 @@ Filters = Annotated[PositionsQuery, Query()]
     "/positions",
     response_model=PositionsPage,
     responses=domain_errors({404: [accounts_service.ACCOUNT_NOT_FOUND_CODE]}),
+    # Зависимость, а не проверка в теле: она обязана отработать до того, как FastAPI
+    # схлопнет повторённый параметр в одно значение (разбор — в `core/query.py`).
+    dependencies=[Depends(reject_repeated_query_params)],
 )
 async def list_positions(user: CurrentUser, session: Session, filters: Filters) -> PositionsPage:
     """Страница журнала.

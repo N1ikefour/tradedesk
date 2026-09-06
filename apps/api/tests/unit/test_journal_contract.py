@@ -94,7 +94,7 @@ DEAL_FIELDS = frozenset(
 
 FORBIDDEN_DEAL_FIELDS = ("raw", "time_server", "ingested_at", "id", "account_id")
 
-# Всё, что в базе `numeric`. В JSON уходит строкой (`core.schemas.Money`, `Quantity`).
+# Всё, что в базе `numeric`. В JSON уходит строкой (`core.schemas.MoneyOut`, `QuantityOut`).
 DECIMAL_FIELDS = {
     "PositionListItem": (
         "volume_opened",

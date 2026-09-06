@@ -11,8 +11,11 @@
 ещё нет, и подстраиваться под него будет уже он сам.
 
 Идентификаторы позиций — `uuid4`, а не `uuid7`: uuid7 возрастает вместе со временем
-вставки, и порядок по `id` совпал бы с порядком вставки случайно. На случайных
-идентификаторах такое совпадение исключено.
+вставки, порядок по `id` совпадает с порядком вставки, и ошибка порядка прячется за этим
+совпадением. Насколько — измерено на двух мутациях `service.py`: снять `positions.id`
+из `_order_by` и снять его же из предиката `_after`. Мутацию `_order_by` uuid4 убивает во
+всех 12 параметризациях ниже, uuid7 — в 8 из 12; мутацию `_after` обе убивают в 12 из 12.
+То есть ложно зелёным uuid7 тест не сделал бы, но слабее делает.
 """
 
 from __future__ import annotations
@@ -419,6 +422,27 @@ async def test_pages_cover_open_positions_with_no_sort_value(
     assert set(collected[:5]) == opened
 
 
+async def test_tail_is_reachable_when_the_sort_value_is_long(
+    client: AsyncClient, account: str
+) -> None:
+    """Курсор, который выдал API, обязан быть принят API — при любой длине значения ключа.
+
+    Предел на длине значения ключа этого не давал: `next_cursor` с символом длиннее предела
+    возвращался клиенту и на следующем же запросе получал `400`, то есть хвост списка был
+    недостижим. `positions.symbol_norm` — `text`; такие символы придут с ручными сделками
+    (`S2-03`) и входом CSV (SPEC.md 5.3), где символ печатает человек.
+    """
+    long_symbol = "X" * 80
+    seeded = {
+        str(await seed_position(account, symbol_norm=long_symbol, symbol_raw=long_symbol))
+        for _ in range(3)
+    }
+
+    collected = await walk(client, expected=3, limit=1, sort="symbol_norm:asc")
+
+    assert set(collected) == seeded
+
+
 async def test_last_page_has_no_cursor(client: AsyncClient, account: str) -> None:
     await seed_position(account)
     await seed_position(account)
@@ -761,6 +785,108 @@ async def test_search_wildcards_are_escaped(client: AsyncClient, account: str) -
     items, _ = await page(client, q="%")
 
     assert items == []
+
+
+async def test_search_underscore_is_a_character_not_a_wildcard(
+    client: AsyncClient, account: str
+) -> None:
+    """`_` в LIKE — «любой один символ», то есть незаэкранированный он находит вообще всё.
+
+    Отдельно от `%`: снять из списка подстановок одно только подчёркивание — правка в один
+    символ, а видна она лишь на запросе, который его содержит.
+    """
+    underscored = await seed_position(account, symbol_norm="EUR_USD", symbol_raw="EUR_USD")
+    await seed_position(account, symbol_norm="EURUSD", symbol_raw="EURUSD")
+
+    items, _ = await page(client, q="_")
+
+    assert [item["id"] for item in items] == [str(underscored)]
+
+
+async def test_search_backslash_is_a_character_not_an_escape(
+    client: AsyncClient, account: str
+) -> None:
+    """Сам символ экранирования тоже экранируется — иначе он съедает следующую букву.
+
+    Без удвоения `\\` в `%C:\\trade%` Postgres читает `\\t` как «буква t», шаблон
+    превращается в `%C:trade%`, и поиск находит не ту строку. В заметках путь к скриншоту
+    или к логу терминала — ровно тот текст, который человек ищет.
+    """
+    windows_path = await seed_position(account, symbol_norm="GBPJPY", symbol_raw="GBPJPY")
+    await seed_entry(windows_path, notes="скрин в C:\\trade\\log")
+    decoy = await seed_position(account, symbol_norm="AUDUSD", symbol_raw="AUDUSD")
+    await seed_entry(decoy, notes="скрин в C:trade")
+
+    items, _ = await page(client, q="C:\\trade")
+
+    assert [item["id"] for item in items] == [str(windows_path)]
+
+
+# --- повторённый параметр -----------------------------------------------------
+
+
+async def test_repeated_account_ids_do_not_silently_narrow_the_page(
+    client: AsyncClient, account: str
+) -> None:
+    """`?account_ids=A&account_ids=B` — 400, а не `200` с выборкой по одному счёту из двух.
+
+    Так массивы сериализуют `URLSearchParams.append` и `qs` в режиме repeat, то есть
+    попасть сюда клиент может без единой ошибки в своём коде. Молча вернуть строки только
+    последнего счёта значит показать половину журнала как целый.
+    """
+    second = await create_account(client, label="Второй счёт", login=7003333)
+    mine = await seed_position(account)
+    other = await seed_position(second)
+
+    response = await client.get(f"{POSITIONS}?account_ids={account}&account_ids={second}")
+
+    assert response.status_code == 400, response.text
+    assert error_code(response) == "validation_error"
+    assert "query.account_ids" in response.json()["error"]["details"]["fields"]
+    # Оба счёта — свои: 400 здесь именно за повтор, а не за чужой идентификатор.
+    both, _ = await page(client, account_ids=f"{account},{second}")
+    assert {item["id"] for item in both} == {str(mine), str(other)}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        pytest.param("status=open&status=closed", id="status"),
+        pytest.param("symbol=EURUSD&symbol=XAUUSD", id="symbol"),
+        pytest.param("limit=1&limit=50", id="limit"),
+        pytest.param("q=один&q=два", id="q"),
+        pytest.param("sort=net_pnl:asc&sort=close_time:desc", id="sort"),
+    ],
+)
+async def test_repeated_scalar_filter_is_rejected(
+    client: AsyncClient, account: str, query: str
+) -> None:
+    """Повтор ломает любой скалярный фильтр одинаково: побеждает последний, первый исчезает."""
+    response = await client.get(f"{POSITIONS}?{query}")
+
+    assert response.status_code == 400, response.text
+    assert error_code(response) == "validation_error"
+    name = query.split("=", 1)[0]
+    assert f"query.{name}" in response.json()["error"]["details"]["fields"]
+
+
+async def test_every_repeated_parameter_is_named_at_once(client: AsyncClient, account: str) -> None:
+    """Клиент, который сериализует массивы повтором, прислал так все свои фильтры сразу."""
+    response = await client.get(f"{POSITIONS}?tags=a&tags=b&status=open&status=closed")
+
+    assert response.status_code == 400, response.text
+    assert set(response.json()["error"]["details"]["fields"]) == {"query.tags", "query.status"}
+
+
+async def test_a_single_parameter_is_not_mistaken_for_a_repeat(
+    client: AsyncClient, account: str
+) -> None:
+    """Границу видно только с обеих сторон: одиночные параметры проходят как раньше."""
+    target = await seed_position(account, symbol_norm="XAUUSD", symbol_raw="XAUUSD")
+
+    items, _ = await page(client, symbol="XAUUSD", status="closed", limit=10)
+
+    assert [item["id"] for item in items] == [str(target)]
 
 
 async def test_filters_combine(client: AsyncClient, account: str) -> None:
