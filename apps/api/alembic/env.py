@@ -14,6 +14,7 @@ from app.core.logging import configure_logging
 # Импорт ради побочного эффекта: без него модели не зарегистрированы в Base.metadata
 # и autogenerate предложит удалить все таблицы. Новый домен с моделями — новая строка здесь.
 from app.domains.accounts import models as accounts_models  # noqa: F401
+from app.domains.analytics import models as analytics_models  # noqa: F401
 from app.domains.auth import models as auth_models  # noqa: F401
 from app.domains.ingest import models as ingest_models  # noqa: F401
 from app.domains.journal import models as journal_models  # noqa: F401

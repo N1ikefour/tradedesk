@@ -21,6 +21,12 @@
 должно действовать до их появления, а не после первого продублированного письма.
 `unique=False` в этом модуле запрещён, проверяет `tests/unit/test_worker.py`.
 
+`refresh_daily_stats` (§10) зарегистрирована как задача **по вызову**, а не по расписанию:
+`daily_stats` — кэш, который никто пока не читает (`docs/metrics.md` §6), и гонять его по
+кругу незачем. Ставит её в очередь тот, кто изменил сделки, — `POST /ingest/deals` (`S1-04`)
+и ручные сделки (`S2-03`); ни того, ни другого ещё нет, поэтому сегодня очередь наполняют
+только тесты.
+
 `cleanup_otp()` из §10 здесь не зарегистрирован: функции в коде нет (просроченный код
 входа не пускает по проверке `expires_at`, см. `domains/auth/service.py`). Появится
 вместе со своей задачей — писать домен в инфраструктурной обёртке не место.
@@ -28,7 +34,9 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
+from uuid import UUID
 
 from arq import cron
 from arq.connections import RedisSettings
@@ -40,10 +48,12 @@ from app.core.db import dispose_engine, get_session_factory
 from app.core.logging import configure_logging, get_logger
 from app.core.security import master_key_scrub_values
 from app.domains.accounts import service as accounts_service
+from app.domains.analytics import daily_stats
 
 log = get_logger(__name__)
 
 CHECK_COLLECTORS_NAME = "check_collectors"
+REFRESH_DAILY_STATS_NAME = "refresh_daily_stats"
 
 
 async def check_collectors(ctx: dict[str, Any]) -> int:
@@ -66,6 +76,26 @@ CRON_JOBS: list[CronJob] = [
 ]
 
 
+async def refresh_daily_stats(
+    ctx: dict[str, Any], account_id: str, days: list[str] | None = None
+) -> int:
+    """Пересчитывает суточную агрегацию счёта (SPEC.md §10).
+
+    Аргументы примитивные (строки, а не `UUID` и `date`) намеренно: их сериализует
+    очередь, и через неё они переживают перезапуск worker'а вместе с версией кода,
+    которая их положила. Разбор — здесь, на входе задачи; домен получает уже типы.
+    """
+    parsed = None if days is None else [date.fromisoformat(day) for day in days]
+    async with get_session_factory()() as session:
+        written = await daily_stats.refresh(session, UUID(account_id), parsed)
+    log.info("worker.daily_stats_refreshed", account_id=account_id, days=written)
+    return written
+
+
+# Задачи по вызову: в очередь их ставит api, расписания у них нет.
+FUNCTIONS: list[Any] = [refresh_daily_stats]
+
+
 def worker_redis_settings(settings: Settings | None = None) -> RedisSettings:
     return RedisSettings.from_dsn((settings or get_settings()).redis_url.get_secret_value())
 
@@ -77,11 +107,9 @@ async def on_shutdown(ctx: dict[str, Any]) -> None:
 def worker_settings() -> dict[str, Any]:
     """Аргументы `arq.worker.Worker`. Словарь, а не класс с атрибутами: arq принимает обе
     формы, но класс читает `REDIS_URL` в момент импорта модуля, а не запуска процесса.
-
-    `functions` (задачи по вызову из SPEC.md §10) здесь нет: очередь пока никто не
-    наполняет, а Worker и без них не пуст — cron_jobs попадают в тот же реестр.
     """
     return {
+        "functions": FUNCTIONS,
         "cron_jobs": CRON_JOBS,
         "redis_settings": worker_redis_settings(),
         "on_shutdown": on_shutdown,
@@ -103,6 +131,7 @@ def main() -> None:
         "worker.starting",
         app_env=settings.app_env,
         cron_jobs=[job.name for job in CRON_JOBS],
+        functions=[function.__name__ for function in FUNCTIONS],
         secrets=settings.secret_presence(),
     )
     run_worker(worker_settings())

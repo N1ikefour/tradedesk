@@ -62,10 +62,10 @@ make ci                                              # перед сдачей �
 
 Узкий прогон — из `apps/api`, а не сырым `pytest` из корня: ровно это делают цели `Makefile` (`cd apps/api && pytest`), то есть узкий прогон совпадает с тем, что гоняет CI. `make test` — это api и web сразу, `make lint` — api, collector и web; для своих файлов беру `-api`-варианты.
 
-- `mypy --strict` обязателен для `domains/ingest` и `domains/analytics` (набор флагов — в `apps/api/pyproject.toml`). `domains/analytics` пока не существует; правило начнёт действовать вместе с ним.
+- `mypy --strict` обязателен для `domains/ingest` и `domains/analytics` (набор флагов — в `apps/api/pyproject.toml`). Оба домена существуют и оба под ним ходят: `analytics` появился с `S2-05`.
 - Интеграционные тесты — через testcontainers. Сейчас поднимаются Postgres и Redis; minio добавится с вложениями в `S2-04`. Базу не мокать там, где тестируется SQL.
 - Тестовая БД: имя обязано содержать `_test`; guard падает до первого запроса. Если guard сработал — это находка, а не помеха.
-- Порог покрытия `ingest` и `analytics` — 90 %. **Пока не измеряется:** `pytest-cov` не в зависимостях, а `domains/analytics` не существует. Порог включается вместе с этими доменами.
+- Порог покрытия `ingest` и `analytics` — 90 %. **Пока не измеряется:** `pytest-cov` нет в зависимостях. Оба домена уже есть; порог включится вместе с `pytest-cov`.
 
 ## Ask First
 

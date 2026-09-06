@@ -27,6 +27,7 @@ from app.core.db import Base, get_engine
 from app.core.ids import uuid7
 from app.core.logging import configure_logging, get_logger
 from app.domains.accounts.models import TradingAccount
+from app.domains.analytics.models import DailyStat  # noqa: F401 — регистрация в Base.metadata
 from app.domains.auth.models import User
 from app.domains.ingest.models import Position
 from app.domains.journal.models import Attachment, JournalEntry, Reflection
@@ -35,7 +36,9 @@ pytestmark = pytest.mark.integration
 
 API_DIR = Path(__file__).resolve().parents[2]
 
-# SPEC.md 3 целиком, кроме daily_stats: она создаётся в S2-05.
+# SPEC.md 3 целиком. `daily_stats` пришла в S2-05 и несёт три колонки сверх эскиза 3.4:
+# `fee` (он входит в `net_pnl`), `timezone` и `day_boundary_hour` — правило, по которому
+# нарезан день, иначе протухшая строка неотличима от свежей (`docs/metrics.md` §6).
 # dev_outbox в SPEC.md 3 не описана: её требуют раздел 4 и DoD S0-04, схема — из
 # docs/tickets/S0-04.md.
 EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
@@ -55,6 +58,23 @@ EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
         "height": "int4 null",
         "size_bytes": "int4 null",
         "created_at": "timestamptz not null",
+    },
+    "daily_stats": {
+        "account_id": "uuid not null",
+        "day": "date not null",
+        "trades": "int4 not null",
+        "wins": "int4 not null",
+        "losses": "int4 not null",
+        "breakeven": "int4 not null",
+        "gross_pnl": "numeric(18,2) not null",
+        "net_pnl": "numeric(18,2) not null",
+        "commission": "numeric(18,2) not null",
+        "swap": "numeric(18,2) not null",
+        "fee": "numeric(18,2) not null",
+        "volume": "numeric(18,8) not null",
+        "timezone": "text not null",
+        "day_boundary_hour": "int2 not null",
+        "computed_at": "timestamptz not null",
     },
     "deals": {
         "id": "int8 not null",
@@ -217,6 +237,7 @@ EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
 EXPECTED_INDEXES: dict[str, set[str]] = {
     "account_credentials": {"pk_account_credentials"},
     "attachments": {"pk_attachments", "ix_attachments_position_id"},
+    "daily_stats": {"pk_daily_stats"},
     "deals": {
         "pk_deals",
         "uq_deals_account_id_deal_ticket",
@@ -245,9 +266,12 @@ EXPECTED_INDEXES: dict[str, set[str]] = {
     "users": {"pk_users", "uq_users_email"},
 }
 
-# SPEC.md 3 ставит cascade ровно в четырёх местах — они и держат пользовательский слой.
+# SPEC.md 3 ставит cascade в четырёх местах — они держат пользовательский слой. Пятый
+# добавила S2-05 на `daily_stats`, и он единственный на производных данных: строка кэша
+# пересчитывается из `positions` в любой момент, удерживать ею удаление счёта не за что.
 EXPECTED_FK_DELETE_RULES: dict[str, str] = {
     "fk_account_credentials_account_id": "CASCADE",
+    "fk_daily_stats_account_id": "CASCADE",
     "fk_attachments_position_id": "CASCADE",
     "fk_journal_entries_position_id": "CASCADE",
     "fk_reflections_position_id": "CASCADE",

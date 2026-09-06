@@ -142,11 +142,15 @@ async def resolve_account_ids(
     return unique
 
 
-def _event_time() -> ColumnElement[Any]:
+def event_time() -> ColumnElement[Any]:
     """Время, по которому фильтруется период: закрытие, а у открытой позиции — открытие.
 
     Иначе фильтр по датам выбрасывал бы из журнала все открытые позиции разом: у них
     `close_time` пуст, и любое сравнение с ним ложно.
+
+    Публичное, потому что тем же выражением период считает аналитика (`S2-05`): шапка
+    журнала обязана суммировать ровно те строки, которые видны в списке. Две копии этого
+    `coalesce` разъехались бы молча — на открытых позициях у границы периода.
     """
     return func.coalesce(ingest_models.Position.close_time, ingest_models.Position.open_time)
 
@@ -158,12 +162,12 @@ def _filters(query: PositionsQuery, account_ids: Sequence[UUID]) -> list[ColumnE
     if query.status is not None:
         clauses.append(position.status == query.status)
     if query.date_from is not None:
-        clauses.append(_event_time() >= query.date_from)
+        clauses.append(event_time() >= query.date_from)
     if query.date_to is not None:
         # Полуинтервал: с включённой правой границей «до 1 октября» либо теряет сделки
         # последней секунды, либо тянет за собой день октября — в зависимости от того,
         # что фронт подставит во время.
-        clauses.append(_event_time() < query.date_to)
+        clauses.append(event_time() < query.date_to)
     if query.symbol is not None:
         clauses.append(position.symbol_norm == query.symbol)
     if query.direction is not None:

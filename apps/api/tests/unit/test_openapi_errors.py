@@ -72,6 +72,10 @@ EXPECTED_DOMAIN_CODES: dict[tuple[str, str, int], set[str]] = {
     (f"{_POSITIONS}/{{position_id}}/entry", "put", 404): {"position_not_found"},
     (f"{_POSITIONS}/{{position_id}}/reflection", "put", 404): {"position_not_found"},
     (f"{API}/journal/tags/{{tag_id}}", "delete", 404): {"tag_not_found"},
+    # Аналитика (S2-05): чужой счёт в фильтре роняет весь запрос тем же кодом, что и в
+    # журнале, — пустая сводка выглядела бы как «сделок не было».
+    (f"{API}/analytics/summary", "get", 404): {"account_not_found"},
+    (f"{API}/journal/calendar", "get", 404): {"account_not_found"},
 }
 
 

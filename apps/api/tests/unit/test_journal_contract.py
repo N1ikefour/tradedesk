@@ -31,8 +31,11 @@ from app.domains.journal import vocab
 API = "/api/v1"
 JOURNAL = f"{API}/journal"
 
-# Чтение из S2-01 плюс запись из S2-02. Ручные сделки, вложения и календарь — S2-03…S2-05.
+# Чтение из S2-01 плюс запись из S2-02, плюс календарь из S2-05: он остался на своём пути
+# из SPEC.md 5.4, но объявлен доменом аналитики — считает он то же, что и сводка, и его
+# состав проверяет `test_analytics_contract.py`. Ручные сделки и вложения — S2-03 и S2-04.
 EXPECTED_ROUTES = {
+    (f"{JOURNAL}/calendar", "get"),
     (f"{JOURNAL}/positions", "get"),
     (f"{JOURNAL}/positions/{{position_id}}", "get"),
     (f"{JOURNAL}/positions/{{position_id}}/entry", "put"),
@@ -216,7 +219,7 @@ def _journal_success_schemas(document: dict[str, Any]) -> list[tuple[str, dict[s
 
 
 def test_journal_declares_exactly_the_routes_of_its_two_tasks(document: dict[str, Any]) -> None:
-    """S2-01 и S2-02; ручные сделки, вложения и календарь приходят своими задачами."""
+    """S2-01, S2-02 и календарь S2-05; ручные сделки и вложения приходят своими задачами."""
     declared = {
         (path, method)
         for path, item in document["paths"].items()
