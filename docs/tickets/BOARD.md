@@ -50,7 +50,7 @@ Updated: 2026-09-06
 | S2-03 | Ручные сделки | backend | Backlog | — |
 | S2-04 | Вложения | backend | Backlog | — |
 | S2-05 | Календарь API + `analytics/summary` | backend | Backlog | — |
-| S2-06 | UI Journal таблица | frontend | In Progress | `feat/S2-06-journal-table` |
+| S2-06 | UI Journal таблица | frontend | Review | [PR #22](https://github.com/N1ikefour/tradedesk/pull/22) |
 | S2-07 | UI Position card | frontend | Backlog | — |
 | S2-08 | UI Скриншоты | frontend | Backlog | — |
 | S2-09 | UI Calendar | frontend | Backlog | — |
@@ -111,3 +111,5 @@ Updated: 2026-09-06
 | X-33 | Повторённый query-параметр теряет данные | backend | Todo | — |
 | X-34 | Длину символа не ограничивает никто | backend | Todo | — |
 | X-35 | Уникальность тегов без учёта регистра держится кодом | backend | Todo | — |
+| X-36 | Переключатель ужал меню на телефоне до одного пункта | frontend | Todo | — |
+| X-37 | Нечем засеять позиции: UI проверяется на пустом экране | backend | Todo | — |
