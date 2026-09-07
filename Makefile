@@ -31,8 +31,8 @@ endif
 SCRIPTS := $(ROOT)/infra/scripts
 
 .PHONY: help install hooks ci ci-api ci-web ci-target lint lint-api lint-collector lint-web \
-        lint-hooks test test-api test-web build-web smoke format guard-python guard-precommit \
-        guard-web init up down migrate downgrade revision types
+        lint-hooks test test-api test-web test-release build-web smoke format guard-python \
+        guard-precommit guard-web init up down migrate downgrade revision types release
 
 ## ----------------------------------------------------------------------------
 ## Справка
@@ -49,7 +49,8 @@ help:
 	@echo "    make down            остановка окружения, данные в volume остаются"
 	@echo "    make ci              ВЕСЬ гейт: то же самое и в том же составе, что гоняет GitHub Actions"
 	@echo "                         (ci-api + ci-web). Перед PR прогоняется именно она"
-	@echo "    make ci-api          джоб api: lint-api + lint-collector + lint-hooks + test-api"
+	@echo "    make ci-api          джоб api: lint-api + lint-collector + lint-hooks +"
+	@echo "                         test-api + test-release"
 	@echo "    make ci-web          джоб web: lint-web + test-web + build-web"
 	@echo "    make ci-target       ruff + mypy + unit-тесты в контейнере python:$(PY_VERSION)-slim —"
 	@echo "                         на целевой версии, которой нет на машине. ДОПОЛНЯЕТ make ci,"
@@ -64,6 +65,8 @@ help:
 	@echo "    make test            тесты: pytest (api) + vitest (web)"
 	@echo "    make test-api        pytest для apps/api"
 	@echo "    make test-web        vitest run для apps/web"
+	@echo "    make test-release    тесты сборщика релизного архива (состав, симлинки,"
+	@echo "                         секреты, форма тега). Входит в make ci-api"
 	@echo "    make build-web       vite build для apps/web"
 	@echo "    make smoke           playwright-смоук входа против поднятого make up."
 	@echo "                         В make ci НЕ входит: браузеры ставятся отдельно"
@@ -71,6 +74,10 @@ help:
 	@echo "    make types           openapi запущенного api → apps/web/src/api/schema.d.ts."
 	@echo "                         Требует make up (профиль local)"
 	@echo "    make format          ruff format + prettier --write"
+	@echo "    make release VERSION=vX.Y.Z"
+	@echo "                         релизный zip в dist/ (ADR-0005). Тег проставляется"
+	@echo "                         в версию пакета: /api/v1/version отдаст ровно его."
+	@echo "                         Ту же цель по тегу вызывает .github/workflows/release.yml"
 	@echo "    make migrate         alembic upgrade head (в .venv; в контейнере это делает старт api)"
 	@echo "    make revision m=\"…\"  новая alembic-миграция (autogenerate)"
 	@echo "    make downgrade       откат на шаг назад, make downgrade to=base"
@@ -113,7 +120,10 @@ guard-web:
 
 ci: ci-api ci-web
 
-ci-api: lint-api lint-collector lint-hooks test-api
+# test-release живёт в этом джобе, а не в web: ему нужны python3, git и zip — ровно то,
+# что уже стоит на api-раннере. Гейт на артефакт больше нигде не появится: релизный
+# workflow запускается по тегу, то есть после того, как ломать уже поздно.
+ci-api: lint-api lint-collector lint-hooks test-api test-release
 
 ci-web: lint-web test-web build-web
 
@@ -157,6 +167,11 @@ test-web: guard-web
 
 build-web: guard-web
 	cd $(WEB_DIR) && $(NPM) run build
+
+# Тесты сборщика релизного архива. Единственная проверка того, что уезжает пользователю:
+# ни один другой прогон в проекте состав архива не смотрит.
+test-release:
+	@$(SCRIPTS)/test-make-release.sh
 
 # Смоук входа (SPEC.md 13) против поднятого `make up`. Отдельная цель, а не часть `make ci`:
 # браузеры Playwright ставятся сотнями мегабайт и нужны одному тесту, а из набора SPEC.md 13
@@ -204,3 +219,22 @@ revision: guard-python
 # с API молча. Профиль обязан быть local — только там объявлен /api/v1/dev/outbox.
 types: guard-web
 	cd $(WEB_DIR) && $(NPM) run gen:types
+
+## ----------------------------------------------------------------------------
+## Релиз (ADR-0005). Пользователь получает zip со страницы релизов, не клон репозитория.
+## CI зовёт эту же цель по тегу — расхождение сборки «у человека» и «в CI» здесь стоило бы
+## дороже обычного: артефакт и есть продукт, другого способа его получить у человека нет.
+## ----------------------------------------------------------------------------
+
+# VERSION приходит рецепту окружением, а не подстановкой $(VERSION) в тело: подстановку
+# make делает ДО того, как строку увидит sh, поэтому тег вида `v1.0.0"; rm -rf /; echo "`
+# выполнялся бы как код. Значение тега контролирует любой, кто может запушить тег, а джоб
+# release.yml ходит с contents: write — то есть это был бы путь от тега до чужой команды
+# в раннере. Проверка формы в самом скрипте от этого не спасает: она получает уже
+# расщеплённый шеллом аргумент. Через окружение sh значение не интерпретирует.
+export VERSION
+export OUT
+
+release:
+	@test -n "$$VERSION" || { echo 'Нужна версия: make release VERSION=v0.1.0'; exit 1; }
+	@$(SCRIPTS)/make-release.sh "$$VERSION" "$${OUT:-$(ROOT)/dist}"

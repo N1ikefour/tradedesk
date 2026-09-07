@@ -1,0 +1,162 @@
+# Релиз по тегу (ADR-0005, X-19): пользователь получает zip со страницы релизов,
+# а не клонирует репозиторий.
+#
+# Сборка не описана здесь шагами — она вся в `make release`, той же цели, что зовёт человек
+# у себя. Артефакт и есть продукт: расхождение «собрано в CI» и «собрано руками» означало бы,
+# что проверить релиз до публикации нечем.
+#
+# Гейт на исходники здесь не повторяется — он переиспользуется: ci.yml уже прогнала этот
+# коммит на main. Но «уже прогнала» — это инвариант, а не факт: триггер срабатывает на теге
+# в ЛЮБОЙ ветке, а тег на main можно запушить одним движением вместе с коммитом, и тогда
+# release.yml обгонит ci.yml. Поэтому оба условия проверяются явно, до сборки. Дальше идёт
+# то, чего ci.yml не видит в принципе: собирается ли из АРХИВА образ и та ли в нём версия.
+#
+# Чего эти проверки НЕ дают: workflow берётся из коммита тега, поэтому тот, кто может
+# запушить тег, может запушить и ветку с вырезанными проверками. Это защита от ошибки
+# («не с той ветки», «тег вперёд гейта»), а не от злого умысла. От второго защищает
+# только правило на теги в настройках репозитория — см. docs/RELEASE.md.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Запись нужна ровно одному шагу — созданию релиза. Остальному хватает чтения.
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: zip → страница релизов
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # Прочитать заключение ci.yml на этом же коммите. Записи не даёт.
+      actions: read
+    steps:
+      # fetch-depth: 0 — иначе клон мелкий и `merge-base --is-ancestor` ниже
+      # отвечает не «нет», а «не знаю», то есть врёт в сторону отказа.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: тег стоит на коммите из main
+        run: |
+          set -eu
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "::error::Тег $GITHUB_REF_NAME указывает на $GITHUB_SHA, а этого коммита нет в main."
+            echo "Релиз собирается только из main: иначе на страницу релизов уедет код," >&2
+            echo "который не проходил ci.yml." >&2
+            exit 1
+          fi
+
+      # Тег на main ещё не значит, что гейт по нему прошёл: `git push origin main --tags`
+      # запускает оба workflow одновременно, и этот может опередить ci.yml. Ждём её
+      # заключения ИМЕННО по $GITHUB_SHA — «последний прогон» здесь означает чужой.
+      - name: ci.yml на этом коммите зелёная
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          deadline=$(( $(date +%s) + 1800 ))
+          while :; do
+            # Сбой запроса — не приговор релизу: повторим на следующем витке, а если
+            # он не временный, цикл всё равно упрётся в дедлайн и упадёт.
+            if ! runs="$(gh api \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&per_page=100" \
+              --jq '.workflow_runs[] | "\(.status) \(.conclusion)"')"; then
+              runs=""
+            fi
+            case "$runs" in
+              *"completed success"*)
+                echo "ci.yml на $GITHUB_SHA: success."
+                break
+                ;;
+            esac
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::ci.yml не дала success на $GITHUB_SHA за 30 минут."
+              echo "Что видно сейчас: ${runs:-прогонов по этому коммиту нет}" >&2
+              echo "Отменённый прогон (два коммита в main подряд) — тот же случай:" >&2
+              echo "перезапустите ci.yml на этом коммите и запушите тег заново." >&2
+              exit 1
+            fi
+            echo "жду ci.yml на $GITHUB_SHA; сейчас: ${runs:-прогона ещё нет}"
+            sleep 30
+          done
+
+      # Версию берёт .python-version — как в ci.yml и в apps/api/Dockerfile.
+      # Скрипту сборки python нужен, чтобы разобрать проставленный pyproject.toml
+      # разбором toml, а не грепом.
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      # Тег приходит через окружение, а не подстановкой ${{ }} в тело скрипта:
+      # подстановка выполняется шеллом как код.
+      - name: собрать архив
+        env:
+          TAG: ${{ github.ref_name }}
+        run: make release VERSION="$TAG"
+
+      # Гейт на сам артефакт. Всё остальное в проекте проверяет исходники в репозитории;
+      # то, что из архива собирается работающий образ и что версия в нём равна тегу,
+      # не проверяет больше никто — а именно это и уезжает человеку.
+      - name: из архива собирается образ, версия в нём равна тегу
+        run: |
+          set -eu
+          ZIP="$(ls dist/tradedesk-*.zip)"
+          PKG="$(basename "$ZIP" .zip)"
+          VERSION="${PKG#tradedesk-}"
+          # mkdir отдельно: unzip -d создаёт только последний каталог, но не цепочку
+          # родителей, и на пустом RUNNER_TEMP шаг падал бы «No such file or directory».
+          mkdir -p "$RUNNER_TEMP/release"
+          unzip -q "$ZIP" -d "$RUNNER_TEMP/release"
+          cd "$RUNNER_TEMP/release/$PKG"
+          test "$(cat VERSION)" = "$VERSION"
+          docker build -f apps/api/Dockerfile -t tradedesk-release-check .
+          IN_IMAGE="$(docker run --rm --entrypoint python tradedesk-release-check \
+            -c 'from importlib.metadata import version; print(version("tradedesk-api"))')"
+          echo "версия в образе: $IN_IMAGE, ожидалась: $VERSION"
+          test "$IN_IMAGE" = "$VERSION"
+
+      - name: опубликовать релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          ZIP="$(ls dist/tradedesk-*.zip)"
+          PKG="$(basename "$ZIP" .zip)"
+          VERSION="${PKG#tradedesk-}"
+          SHA="$(cut -d' ' -f1 <"$ZIP.sha256")"
+
+          cat >"$RUNNER_TEMP/notes.md" <<NOTES
+          Установка TradeDesk $VERSION.
+
+          Скачайте \`$PKG.zip\`, распакуйте в отдельную папку и дальше — по \`SETUP.md\`
+          из архива. Клонировать репозиторий не нужно.
+
+          Приложение печатает свою версию на \`/api/v1/version\`; здесь это \`$VERSION\`.
+
+          **Контрольная сумма** (\`$PKG.zip.sha256\` рядом):
+
+          \`\`\`
+          $SHA
+          \`\`\`
+
+          Проверить — Windows: \`certutil -hashfile $PKG.zip SHA256\`,
+          macOS и Linux: \`shasum -a 256 -c $PKG.zip.sha256\`.
+
+          Обновление поверх существующей установки скриптом пока не поддержано — это \`T-02\`.
+          NOTES
+
+          PRERELEASE=""
+          case "$TAG" in *-rc*) PRERELEASE="--prerelease" ;; esac
+
+          # shellcheck disable=SC2086
+          gh release create "$TAG" \
+            "$ZIP" "$ZIP.sha256" \
+            --title "$TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            $PRERELEASE
