@@ -70,10 +70,13 @@ SPEC_SEVEN_CASES = {
     "два батча с перекрытием": "real-two-batches-overlap.json",
 }
 
-# Сверх перечня спеки. Оба — настоящие сделки, и оба про то, чего спека не перечисляла.
+# Сверх перечня спеки. Все три про то, чего спека не перечисляла.
 EXTRA_CASES = {
     "real-partial-close-in-four.json": "самая длинная настоящая позиция: вход и четыре выхода",
     "real-deposit-is-not-a-position.json": "депозит в батче не становится позицией (X-44)",
+    "synthetic-partial-close-still-open.json": (
+        "открытая позиция с реализованным результатом закрытой части"
+    ),
 }
 
 OFFSET = 120
@@ -198,6 +201,46 @@ def test_fixture_carries_no_payment_identifier(name: str) -> None:
             assert ":" not in comment, (name, comment)
 
 
+# Длинное число в прозе фикстуры: ряд цифр, не являющийся дробной частью. Дробную часть
+# приходится вычитать, потому что проза законно называет цены и шум `float64`
+# (`7.6899999999999995`, `avg_entry = 1.09250`), а идентификатором ни то, ни другое не
+# является. Правило слабее, чем у комментария, — там запрещены любые длинные числа и
+# двоеточия, здесь ни того, ни другого нельзя: прозе они нужны.
+PROSE_LONG_NUMBER = re.compile(r"(?<![\d.])\d{5,}")
+
+PROSE_KEYS = ("title", "source", "notes")
+
+
+def declared_identifiers(document: dict[str, Any]) -> set[str]:
+    """Номера, которые фикстура и так несёт: её собственные тикеты, ордера и позиции."""
+    declared = {str(item["position_id"]) for item in document["expected"]}
+    for batch in document["batches"]:
+        for deal in batch["deals"]:
+            declared |= {str(deal[key]) for key in ("ticket", "order", "position_id")}
+        for record in batch["open_positions"]:
+            declared.add(str(record["position_id"]))
+    return declared
+
+
+@pytest.mark.parametrize("name", fixture_names())
+def test_prose_of_a_fixture_names_no_foreign_identifier(name: str) -> None:
+    """Тот же карантин для свободного текста — и он нужнее, чем для комментариев.
+
+    Процитировать оригинал естественнее всего именно в прозе: `notes` депозита этот
+    номер платежа как раз обсуждает, и одна цитата «как было» вернула бы его в
+    репозиторий мимо проверки выше. Вешать сюда правило комментария нельзя — тикеты
+    девятизначные, `time_msc` тринадцатизначный, и `\\d{5,}` на весь файл краснел бы на
+    каждой сделке. Поэтому длинное число в прозе разрешено ровно одно: то, которое
+    фикстура и так содержит в своих же данных. Всякое другое — чужой идентификатор.
+    """
+    document = fixture(name)
+    declared = declared_identifiers(document)
+
+    for key in PROSE_KEYS:
+        found = set(PROSE_LONG_NUMBER.findall(document[key]))
+        assert found <= declared, (name, key, sorted(found - declared))
+
+
 @pytest.mark.parametrize("name", fixture_names())
 def test_fixture_batches_satisfy_the_published_contract(name: str) -> None:
     """Смысл X-44 на настоящих данных: батч с депозитом проходит опубликованный контракт.
@@ -283,6 +326,9 @@ def test_open_position_keeps_costs_not_floating_profit() -> None:
     Батч приносит плавающий результат открытой позиции, и в `net_pnl` его быть не должно:
     иначе объяснение «шапка журнала не сходится с колонкой на сумму открытых» превратится
     в число, меняющееся от котировки к котировке.
+
+    Позиция здесь без единого выхода, и только поэтому в `net_pnl` остаются одни
+    издержки. Общий инвариант формулируется иначе — см. тест ниже.
     """
     positions = built_positions(fixture("synthetic-open-position.json"))
     position = positions[800031]
@@ -291,6 +337,26 @@ def test_open_position_keeps_costs_not_floating_profit() -> None:
     assert position.net_pnl == Decimal("-1.40")
     assert position.net_pnl == position.commission
     assert position.gross_pnl == Decimal("0.00")
+
+
+def test_partially_closed_position_keeps_the_result_it_already_realized() -> None:
+    """Инвариант — «нет плавающего результата», а не «только издержки».
+
+    Частично закрытая позиция остаётся открытой и несёт результат уже закрытой части:
+    это факт брокера из `deals`, а не котировка, и терять его нельзя — иначе `net_pnl`
+    закрытой части появился бы только в момент полного закрытия. Формулировка «у открытой
+    позиции в `net_pnl` накопленные издержки» верна ровно для позиции без выходов, и на
+    неё ссылается S2-05: разница «шапка минус колонка» равна сумме `net_pnl` открытых
+    позиций, чем бы она ни была набрана.
+    """
+    position = built_positions(fixture("synthetic-partial-close-still-open.json"))[800041]
+
+    assert position.status == "open"
+    assert position.gross_pnl == Decimal("40.00")
+    assert position.net_pnl == Decimal("36.50")
+    assert position.net_pnl > 0, "издержками такой net_pnl не объяснить"
+    # Плавающего результата нет и здесь: 137.50 из `open_positions` в позицию не доехали.
+    assert position.volume_closed < position.volume_opened
 
 
 def test_the_snapshot_cannot_carry_floating_profit() -> None:
@@ -584,17 +650,28 @@ def test_builder_does_no_decimal_arithmetic_by_operator() -> None:
     Здесь это ловится по исходнику, потому что враждебный контекст на суммах денег
     проявился бы не всегда: точность по умолчанию 28 знаков, и разойтись такой расчёт
     может на данных, которых в тестах нет.
+
+    Форм у оператора три, и проверять надо все три. `a + b` — очевидная; `a += b` зовёт
+    тот же `__add__` и в исходнике самая естественная (`total += value` — первое, что
+    пишут, накапливая сумму); унарные `-x` и `+x` над `Decimal` тоже идут контекстом —
+    `+x` в этом типе ровно то и означает «примени текущий контекст». Проверка только по
+    `ast.BinOp` пропускала все, кроме первой.
     """
     tree = module_tree(position_builder)
     arithmetic = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow)
+    signs = (ast.USub, ast.UAdd)
 
-    offenders = [
+    offenders = sorted(
         ast.unparse(node)
         for node in ast.walk(tree)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, arithmetic)
-    ]
+        if (isinstance(node, ast.BinOp | ast.AugAssign) and isinstance(node.op, arithmetic))
+        or (isinstance(node, ast.UnaryOp) and isinstance(node.op, signs))
+    )
 
-    # Единственное исключение и оно записано: вычитание моментов времени контекста
-    # `decimal` не касается, а посчитать длительность иначе нечем. Список точный, а не
-    # «кроме datetime»: новая арифметика проступит в нём сразу.
-    assert offenders == ["close_time - open_time"], "арифметика обязана идти через POSITION_CONTEXT"
+    # Исключений два, и оба записаны поимённо, а не правилом «кроме datetime и int»:
+    # вычитание моментов времени контекста `decimal` не касается, а посчитать
+    # длительность иначе нечем; `deals_count` — обычный счётчик над `int`. Список точный,
+    # поэтому новая арифметика проступит в нём сразу, в какой бы из трёх форм ни пришла.
+    assert offenders == ["close_time - open_time", "deals_count += 1"], (
+        "арифметика обязана идти через POSITION_CONTEXT"
+    )

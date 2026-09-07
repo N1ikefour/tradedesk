@@ -390,8 +390,8 @@ DEPOSIT: dict[str, Any] = {
     "commission": "0",
     "swap": "0",
     "fee": "0",
-    "time_server": "2025-11-26T05:33:09",
-    "time_msc": 1764135189234,
+    "time_server": "2025-11-26T06:13:09",
+    "time_msc": 1764137589234,
     "comment": "Deposit",
     "magic": 0,
 }
