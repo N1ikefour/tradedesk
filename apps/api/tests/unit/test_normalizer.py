@@ -52,7 +52,7 @@ from app.domains.ingest.normalizer import (
     normalize_reason,
     to_utc,
 )
-from app.domains.ingest.schemas import IngestDeal, IngestDealsBatch
+from app.domains.ingest.schemas import TRADING_DEAL_TYPE_CODES, IngestDeal, IngestDealsBatch
 
 ACCOUNT_ID = "0199a5c1-7d7a-7c3e-8f2a-1b2c3d4e5f60"
 
@@ -205,6 +205,19 @@ def test_enum_tables_match_spec_6_2_line_by_line() -> None:
         5: "tp",
         6: "so",
     }
+
+
+def test_boundary_knows_the_same_trading_codes_as_the_mapping() -> None:
+    """Единственная копия таблицы 6.2 вне этого модуля — и она обязана совпадать.
+
+    Граница (`schemas.py`) не вправе импортировать нормализатор: он импортирует её.
+    Поэтому набор торговых кодов, по которому X-44 решает, обязателен ли инструмент,
+    записан там отдельно. Разъедься он с маппингом — и послабление начало бы пускать
+    торговую сделку без символа, не покраснев нигде.
+    """
+    trading = {code for code, name in DEAL_TYPE_BY_CODE.items() if name in ("buy", "sell")}
+
+    assert trading == set(TRADING_DEAL_TYPE_CODES)
 
 
 @pytest.mark.parametrize(

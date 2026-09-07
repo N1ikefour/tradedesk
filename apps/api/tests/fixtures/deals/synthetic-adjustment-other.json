@@ -1,0 +1,101 @@
+{
+  "title": "Корректировка other с ненулевым position_id",
+  "origin": "synthetic",
+  "source": "Выдумана. В выгрузке 7 сентября 2026 сделок type >= 4 нет вовсе",
+  "notes": "SPEC.md 6.2: сделка other с ненулевым position_id не приносит объёма и цены, но её деньги прибавляются к позиции. Здесь DEAL_TYPE_COMMISSION (7) списывает 1.25 уже после закрытия: commission = -3.00 - 1.25, deals_count остаётся 2 (считаются торговые сделки), close_time не сдвигается на корректировку.",
+  "batches": [
+    {
+      "account_id": "0199a5c1-7d7a-7c3e-8f2a-1b2c3d4e5f60",
+      "source": "collector",
+      "server_utc_offset_minutes": 120,
+      "account_info": {
+        "currency": "USD",
+        "margin_mode": "hedging",
+        "balance": 10000.0,
+        "equity": 10000.0
+      },
+      "deals": [
+        {
+          "ticket": 900021,
+          "order": 800021,
+          "position_id": 800021,
+          "type": 0,
+          "symbol": "XAUUSD",
+          "entry": 0,
+          "reason": 3,
+          "volume": 0.5,
+          "price": 2400.0,
+          "profit": 0.0,
+          "commission": -3.0,
+          "swap": 0.0,
+          "fee": 0.0,
+          "time_server": "2026-03-05T09:00:00",
+          "time_msc": 1772701200000,
+          "comment": "MarketBuy",
+          "magic": 0
+        },
+        {
+          "ticket": 900022,
+          "order": 800022,
+          "position_id": 800021,
+          "type": 1,
+          "symbol": "XAUUSD",
+          "entry": 1,
+          "reason": 0,
+          "volume": 0.5,
+          "price": 2410.0,
+          "profit": 500.0,
+          "commission": 0.0,
+          "swap": 0.0,
+          "fee": 0.0,
+          "time_server": "2026-03-05T12:00:00",
+          "time_msc": 1772712000000,
+          "comment": "MarketBuy[tp]",
+          "magic": 0
+        },
+        {
+          "ticket": 900023,
+          "order": 0,
+          "position_id": 800021,
+          "type": 7,
+          "symbol": "XAUUSD",
+          "entry": 0,
+          "reason": 0,
+          "volume": 0.0,
+          "price": 0.0,
+          "profit": 0.0,
+          "commission": -1.25,
+          "swap": 0.0,
+          "fee": 0.0,
+          "time_server": "2026-03-05T23:59:00",
+          "time_msc": 1772755140000,
+          "comment": "commission",
+          "magic": 0
+        }
+      ],
+      "open_positions": []
+    }
+  ],
+  "expected": [
+    {
+      "position_id": 800021,
+      "symbol_raw": "XAUUSD",
+      "direction": "long",
+      "status": "closed",
+      "open_time": "2026-03-05T07:00:00Z",
+      "close_time": "2026-03-05T10:00:00Z",
+      "volume_opened": "0.50000000",
+      "volume_closed": "0.50000000",
+      "avg_entry_price": "2400.00000000",
+      "avg_exit_price": "2410.00000000",
+      "gross_pnl": "500.00",
+      "commission": "-4.25",
+      "swap": "0.00",
+      "fee": "0.00",
+      "net_pnl": "495.75",
+      "deals_count": 2,
+      "duration_seconds": 10800,
+      "close_reason": "client"
+    }
+  ]
+}

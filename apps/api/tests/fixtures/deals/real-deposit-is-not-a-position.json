@@ -1,0 +1,101 @@
+{
+  "title": "Депозит в батче: сохраняется в deals, позицией не становится",
+  "origin": "real",
+  "source": "Боевой счёт E-Global (Forex4you), выгрузка 7 сентября 2026: пополнение (тикет 104238311) и позиция 120385937",
+  "notes": "Ровно та сделка, из-за которой батч отвергался целиком (X-44): symbol пуст. Комментарий обезличен — в оригинале в нём стоял внутренний номер платежа. position_id у пополнения 0, в сборке позиций оно не участвует (SPEC.md 6.2).",
+  "batches": [
+    {
+      "account_id": "0199a5c1-7d7a-7c3e-8f2a-1b2c3d4e5f60",
+      "source": "collector",
+      "server_utc_offset_minutes": 120,
+      "account_info": {
+        "currency": "USD",
+        "margin_mode": "hedging",
+        "balance": 343.1,
+        "equity": 343.1
+      },
+      "deals": [
+        {
+          "ticket": 104238311,
+          "order": 0,
+          "position_id": 0,
+          "type": 2,
+          "symbol": "",
+          "entry": 0,
+          "reason": 0,
+          "volume": 0.0,
+          "price": 0.0,
+          "profit": 615.46,
+          "commission": 0.0,
+          "swap": 0.0,
+          "fee": 0.0,
+          "time_server": "2025-11-26T06:13:09",
+          "time_msc": 1764137589234,
+          "comment": "Deposit",
+          "magic": 0
+        },
+        {
+          "ticket": 106143928,
+          "order": 120385937,
+          "position_id": 120385937,
+          "type": 0,
+          "symbol": "USDJPY",
+          "entry": 0,
+          "reason": 3,
+          "volume": 0.53,
+          "price": 156.307,
+          "profit": 0.0,
+          "commission": -3.71,
+          "swap": 0.0,
+          "fee": 0.0,
+          "time_server": "2025-11-27T16:10:00",
+          "time_msc": 1764259800325,
+          "comment": "LimitBuy",
+          "magic": 0
+        },
+        {
+          "ticket": 106153781,
+          "order": 120450251,
+          "position_id": 120385937,
+          "type": 1,
+          "symbol": "USDJPY",
+          "entry": 1,
+          "reason": 0,
+          "volume": 0.53,
+          "price": 156.29,
+          "profit": -5.76,
+          "commission": 0.0,
+          "swap": 0.0,
+          "fee": 0.0,
+          "time_server": "2025-11-27T16:19:11",
+          "time_msc": 1764260351331,
+          "comment": "",
+          "magic": 0
+        }
+      ],
+      "open_positions": []
+    }
+  ],
+  "expected": [
+    {
+      "position_id": 120385937,
+      "symbol_raw": "USDJPY",
+      "direction": "long",
+      "status": "closed",
+      "open_time": "2025-11-27T14:10:00Z",
+      "close_time": "2025-11-27T14:19:11Z",
+      "volume_opened": "0.53000000",
+      "volume_closed": "0.53000000",
+      "avg_entry_price": "156.30700000",
+      "avg_exit_price": "156.29000000",
+      "gross_pnl": "-5.76",
+      "commission": "-3.71",
+      "swap": "0.00",
+      "fee": "0.00",
+      "net_pnl": "-9.47",
+      "deals_count": 2,
+      "duration_seconds": 551,
+      "close_reason": "client"
+    }
+  ]
+}

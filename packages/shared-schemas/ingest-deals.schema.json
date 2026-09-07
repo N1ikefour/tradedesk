@@ -115,6 +115,30 @@
     },
     "IngestDeal": {
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  0,
+                  1
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "symbol": {
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ],
       "description": "Одна сделка из `mt5.history_deals_get()` как есть, без нормализации (SPEC.md 6.1).",
       "properties": {
         "ticket": {
@@ -135,17 +159,16 @@
           "minimum": 0,
           "type": "integer"
         },
-        "symbol": {
-          "description": "Символ как у брокера, с суффиксом: 'EURUSD.m'",
-          "maxLength": 64,
-          "minLength": 1,
-          "pattern": "^\\S+$",
-          "type": "string"
-        },
         "type": {
           "description": "MT5 `DEAL_TYPE_*`. Неизвестный код нормализуется в 'other' (SPEC.md 6.2)",
           "minimum": 0,
           "type": "integer"
+        },
+        "symbol": {
+          "description": "Символ как у брокера, с суффиксом: 'EURUSD.m'. Пустой — только у неторговой операции (пополнение, кредит, начисление): инструмента у неё нет",
+          "maxLength": 64,
+          "pattern": "^\\S*$",
+          "type": "string"
         },
         "entry": {
           "description": "MT5 `DEAL_ENTRY_*`: 0 in, 1 out, 2 inout, 3 out_by",
@@ -269,8 +292,8 @@
         "ticket",
         "order",
         "position_id",
-        "symbol",
         "type",
+        "symbol",
         "entry",
         "reason",
         "volume",

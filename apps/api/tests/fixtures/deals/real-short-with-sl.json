@@ -1,0 +1,82 @@
+{
+  "title": "Short, закрытый по стопу",
+  "origin": "real",
+  "source": "Боевой счёт E-Global (Forex4you), выгрузка 7 сентября 2026, позиция 119002027",
+  "notes": "Стоп виден только в комментарии выходной сделки (LimitSell[sl]); reason у неё равен 0 (client), а не 4 (sl). Поэтому ожидаемый close_reason здесь 'client': SPEC.md 7 берёт причину из reason, и фикстура фиксирует, чего это стоит.",
+  "batches": [
+    {
+      "account_id": "0199a5c1-7d7a-7c3e-8f2a-1b2c3d4e5f60",
+      "source": "collector",
+      "server_utc_offset_minutes": 120,
+      "account_info": {
+        "currency": "USD",
+        "margin_mode": "hedging",
+        "balance": 343.1,
+        "equity": 343.1
+      },
+      "deals": [
+        {
+          "ticket": 104823868,
+          "order": 119002027,
+          "position_id": 119002027,
+          "type": 1,
+          "symbol": "USDJPY",
+          "entry": 0,
+          "reason": 3,
+          "volume": 0.41,
+          "price": 156.479,
+          "profit": 0.0,
+          "commission": -2.87,
+          "swap": 0.0,
+          "fee": 0.0,
+          "time_server": "2025-11-26T14:30:02",
+          "time_msc": 1764167402818,
+          "comment": "LimitSell",
+          "magic": 0
+        },
+        {
+          "ticket": 104823875,
+          "order": 119011617,
+          "position_id": 119002027,
+          "type": 0,
+          "symbol": "USDJPY",
+          "entry": 1,
+          "reason": 0,
+          "volume": 0.41,
+          "price": 156.534,
+          "profit": -14.41,
+          "commission": 0.0,
+          "swap": 0.0,
+          "fee": 0.0,
+          "time_server": "2025-11-26T14:30:02",
+          "time_msc": 1764167402846,
+          "comment": "LimitSell[sl]",
+          "magic": 0
+        }
+      ],
+      "open_positions": []
+    }
+  ],
+  "expected": [
+    {
+      "position_id": 119002027,
+      "symbol_raw": "USDJPY",
+      "direction": "short",
+      "status": "closed",
+      "open_time": "2025-11-26T12:30:02Z",
+      "close_time": "2025-11-26T12:30:02Z",
+      "volume_opened": "0.41000000",
+      "volume_closed": "0.41000000",
+      "avg_entry_price": "156.47900000",
+      "avg_exit_price": "156.53400000",
+      "gross_pnl": "-14.41",
+      "commission": "-2.87",
+      "swap": "0.00",
+      "fee": "0.00",
+      "net_pnl": "-17.28",
+      "deals_count": 2,
+      "duration_seconds": 0,
+      "close_reason": "client"
+    }
+  ]
+}

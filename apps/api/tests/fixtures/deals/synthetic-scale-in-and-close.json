@@ -1,0 +1,101 @@
+{
+  "title": "Доливка: два входа и один общий выход",
+  "origin": "synthetic",
+  "source": "Выдумана. В выгрузке 7 сентября 2026 доливок нет вовсе",
+  "notes": "Ни одна из 238 настоящих позиций не имеет второй сделки входа: все 22 многосделочные позиции — это частичные закрытия. Проверяется следование SPEC.md 7 (взвешенный avg_entry), а не работа на данных брокера. avg_entry = (1.10000 * 0.10 + 1.09000 * 0.30) / 0.40 = 1.09250.",
+  "batches": [
+    {
+      "account_id": "0199a5c1-7d7a-7c3e-8f2a-1b2c3d4e5f60",
+      "source": "collector",
+      "server_utc_offset_minutes": 120,
+      "account_info": {
+        "currency": "USD",
+        "margin_mode": "hedging",
+        "balance": 10000.0,
+        "equity": 10000.0
+      },
+      "deals": [
+        {
+          "ticket": 900001,
+          "order": 800001,
+          "position_id": 800001,
+          "type": 0,
+          "symbol": "EURUSD",
+          "entry": 0,
+          "reason": 3,
+          "volume": 0.1,
+          "price": 1.1,
+          "profit": 0.0,
+          "commission": -0.35,
+          "swap": 0.0,
+          "fee": 0.0,
+          "time_server": "2026-03-02T10:00:00",
+          "time_msc": 1772445600000,
+          "comment": "LimitBuy",
+          "magic": 0
+        },
+        {
+          "ticket": 900002,
+          "order": 800002,
+          "position_id": 800001,
+          "type": 0,
+          "symbol": "EURUSD",
+          "entry": 0,
+          "reason": 3,
+          "volume": 0.3,
+          "price": 1.09,
+          "profit": 0.0,
+          "commission": -1.05,
+          "swap": 0.0,
+          "fee": 0.0,
+          "time_server": "2026-03-02T11:30:00",
+          "time_msc": 1772451000000,
+          "comment": "LimitBuy",
+          "magic": 0
+        },
+        {
+          "ticket": 900003,
+          "order": 800003,
+          "position_id": 800001,
+          "type": 1,
+          "symbol": "EURUSD",
+          "entry": 1,
+          "reason": 5,
+          "volume": 0.4,
+          "price": 1.105,
+          "profit": 65.0,
+          "commission": 0.0,
+          "swap": -1.2,
+          "fee": 0.0,
+          "time_server": "2026-03-03T09:15:00",
+          "time_msc": 1772529300000,
+          "comment": "LimitBuy[tp]",
+          "magic": 0
+        }
+      ],
+      "open_positions": []
+    }
+  ],
+  "expected": [
+    {
+      "position_id": 800001,
+      "symbol_raw": "EURUSD",
+      "direction": "long",
+      "status": "closed",
+      "open_time": "2026-03-02T08:00:00Z",
+      "close_time": "2026-03-03T07:15:00Z",
+      "volume_opened": "0.40000000",
+      "volume_closed": "0.40000000",
+      "avg_entry_price": "1.09250000",
+      "avg_exit_price": "1.10500000",
+      "gross_pnl": "65.00",
+      "commission": "-1.40",
+      "swap": "-1.20",
+      "fee": "0.00",
+      "net_pnl": "62.40",
+      "deals_count": 3,
+      "duration_seconds": 83700,
+      "close_reason": "tp"
+    }
+  ]
+}
