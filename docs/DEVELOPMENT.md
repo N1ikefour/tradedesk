@@ -52,8 +52,12 @@ make ci
 
 | Цель | Что внутри |
 |---|---|
-| `make ci-api` | `lint-api` + `lint-collector` + `lint-hooks` + `test-api` |
+| `make ci-api` | `lint-api` + `lint-collector` + `lint-hooks` + `test-api` + `test-release` + `test-scripts` |
 | `make ci-web` | `lint-web` + `test-web` + `build-web` |
+
+`test-release` (`X-19`) проверяет сборщик релизного архива, `test-scripts` (`T-02`) — то,
+чем `backup` и `restore` отличают целый дамп от обрезанного. Docker ни той, ни другой
+не нужен.
 
 `make lint && make test` — подмножество: они не собирают web.
 

@@ -29,7 +29,7 @@ Updated: 2026-09-03
 
 - Локальная и self-hosted установка — Docker Compose, профили `local` и `prod` (`SPEC.md` §11.1). Профиль `prod` добавляет Caddy с автосертификатом.
 - Миграции применяет контейнер `api` при старте (`alembic upgrade head`), отдельного шага в скрипте нет.
-- Скрипты `infra/scripts`: `start`, `stop`, `update`, `backup`, `restore` — в `.bat` и `.sh` (`SPEC.md` §11.3). Задача `T-02`.
+- Скрипты `infra/scripts`: `start`, `stop`, `update`, `backup`, `restore` — в `.bat` и `.sh` (`SPEC.md` §11.3). Написаны (`T-02`) и прогнаны **только локально, на macOS, на профиле `local`**: против сервера и профиля `prod` ни один из них не запускался.
 - `update` обязан снимать бэкап **до** миграций: обновление не должно потерять позиции и рефлексии тестировщика (`PLAN.md` §6).
 - Бэкапы — `pg_dump` в `backups/td-<date>.sql.gz`, хранить последние 14.
 
