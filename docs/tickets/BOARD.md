@@ -114,7 +114,7 @@ Updated: 2026-09-06
 | X-16 | Уход на страницу писем сбрасывает форму входа | frontend | Todo | — |
 | X-17 | На Windows нет `init.bat` | infra | Todo | — |
 | X-18 | Имя джоба в CI скрывает тесты web | infra | Todo | — |
-| X-19 | Релизный zip-артефакт | infra | In Progress | `feat/X-19-release-zip` |
+| X-19 | Релизный zip-артефакт | infra | Review | [PR #25](https://github.com/N1ikefour/tradedesk/pull/25) |
 | X-20 | Кэш `get_settings` отравляет соседние модули тестов | backend | Todo | — |
 | X-21 | Свободный текст коллектора может вынести пароль наружу | backend + collector | Todo | — |
 | X-22 | Комиссии с тремя знаками ломают сверку | backend | Todo | — |
