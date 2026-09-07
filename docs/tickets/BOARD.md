@@ -31,7 +31,7 @@ Updated: 2026-09-06
 | S1-01 | JSON Schema ингеста | backend | **Done** | [PR #13](https://github.com/N1ikefour/tradedesk/pull/13) |
 | S1-02 | Нормализатор deals | backend | **Done** | [PR #15](https://github.com/N1ikefour/tradedesk/pull/15) |
 | S1-03 | Сборщик позиций (+ `X-44`) | backend | **Done** | [PR #26](https://github.com/N1ikefour/tradedesk/pull/26) |
-| S1-04 | `POST /ingest/deals` | backend | Backlog | ждёт S1-03 |
+| S1-04 | `POST /ingest/deals` | backend | In Progress | `feat/S1-04-ingest-deals` |
 | S1-05 | `POST /ingest/heartbeat` + assignments | backend | **Done** | [PR #16](https://github.com/N1ikefour/tradedesk/pull/16) |
 | S1-06 | Accounts API | backend | **Done** | [PR #14](https://github.com/N1ikefour/tradedesk/pull/14) |
 | S1-07 | Символы | backend | **Done** | [PR #17](https://github.com/N1ikefour/tradedesk/pull/17) |
@@ -54,7 +54,7 @@ Updated: 2026-09-06
 | S2-07 | UI Position card | frontend | **Done** | [PR #24](https://github.com/N1ikefour/tradedesk/pull/24) |
 | S2-08 | UI Скриншоты | frontend | Backlog | — |
 | S2-09 | UI Calendar | frontend | Backlog | — |
-| S2-10 | UI Dashboard v1 | frontend | Review | [PR #27](https://github.com/N1ikefour/tradedesk/pull/27) |
+| S2-10 | UI Dashboard v1 | frontend | **Done** | [PR #27](https://github.com/N1ikefour/tradedesk/pull/27) |
 | S2-11 | Переключатель счетов: создание и полировка | frontend | Backlog | перенесён из S1-11 |
 
 ## Веха «Первый тест»
@@ -62,7 +62,7 @@ Updated: 2026-09-06
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
 | T-01 | SETUP.md финальный | infra | Backlog | — |
-| T-02 | Скрипты update/backup/restore | infra | Backlog | — |
+| T-02 | Скрипты update/backup/restore | infra | In Progress | `feat/T-02-update-backup-restore` |
 | T-03 | Экспорт/импорт данных пользователя | backend | Backlog | — |
 | T-04 | Кнопка «Сообщить о проблеме» | frontend + backend | Backlog | — |
 | T-05 | Чек-лист приёмки | оркестратор | Backlog | — |
