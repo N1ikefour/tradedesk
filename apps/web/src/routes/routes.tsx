@@ -10,7 +10,8 @@ import { AccountsPage } from '@/routes/accounts-page';
 import { JournalPage } from '@/routes/journal-page';
 import { SettingsPage } from '@/routes/settings-page';
 import { PositionPage } from '@/routes/position-page';
-import { CalendarPage, DashboardPage } from '@/routes/stub-pages';
+import { DashboardPage } from '@/routes/dashboard-page';
+import { CalendarPage } from '@/routes/stub-pages';
 import { DEV_OUTBOX_AVAILABLE } from '@/lib/env';
 
 /**

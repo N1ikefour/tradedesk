@@ -55,6 +55,15 @@ export function tradingDate(at: Date, timeZone: string, boundaryHour: number): D
   return hour < boundary ? addDays(day, -1) : day;
 }
 
+/**
+ * Дата торгового дня строкой `yyyy-MM-dd` — ключ, а не показ: ею сравнивается «сегодня»
+ * с днями календаря и из неё берётся месяц запроса. Отнесение **сделки** к дню этим не
+ * делается никогда — это работа сервера (`docs/metrics.md` §2.2).
+ */
+export function tradingDayIso(at: Date, timeZone: string, boundaryHour: number): string {
+  return formatDate(tradingDate(at, timeZone, boundaryHour), ISO_DAY_PATTERN);
+}
+
 /** Момент, с которого начинается торговый день `date` в зоне пользователя. */
 export function tradingDayStart(date: Date, timeZone: string, boundaryHour: number): Date {
   const zone = safeTimeZone(timeZone);
@@ -70,6 +79,18 @@ export function tradingDayStart(date: Date, timeZone: string, boundaryHour: numb
  * попасть в «сегодня», а `to` пришлось бы двигать вместе с часами — и каждое движение
  * перезапрашивало бы список.
  */
+export function periodStart(
+  preset: Exclude<PeriodPreset, 'all'>,
+  now: Date,
+  timeZone: string,
+  boundaryHour: number,
+): Date;
+export function periodStart(
+  preset: PeriodPreset,
+  now: Date,
+  timeZone: string,
+  boundaryHour: number,
+): Date | null;
 export function periodStart(
   preset: PeriodPreset,
   now: Date,

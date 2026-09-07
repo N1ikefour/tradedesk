@@ -1,6 +1,7 @@
+import { addDays } from 'date-fns';
 import { describe, expect, it } from 'vitest';
 
-import { periodStart, tradingDate, tradingDayStart } from '@/lib/trading-day';
+import { periodStart, tradingDate, tradingDayIso, tradingDayStart } from '@/lib/trading-day';
 
 const MOSCOW = 'Europe/Moscow';
 const NEW_YORK = 'America/New_York';
@@ -87,4 +88,55 @@ describe('periodStart', () => {
       '2026-09-05T04:00:00.000Z',
     );
   });
+});
+
+/**
+ * Примеры `docs/metrics.md` §2.4 — те же, по которым проверяется серверное правило дня.
+ * Долг на этот тест записан там же (§8): без него совпадение двух реализаций держалось
+ * на глазах ревьюера. Отнесение сделки к дню считает сервер, но «какой сейчас торговый
+ * день» фронт называет сам, и разойтись с сервером он не должен.
+ */
+describe('tradingDayIso: общие примеры с сервером', () => {
+  const YEKATERINBURG = 'Asia/Yekaterinburg';
+  const BERLIN = 'Europe/Berlin';
+
+  it.each([
+    [YEKATERINBURG, 0, '2026-09-01T18:30:00Z', '2026-09-01'],
+    [YEKATERINBURG, 0, '2026-09-01T19:30:00Z', '2026-09-02'],
+    [YEKATERINBURG, 6, '2026-09-02T00:30:00Z', '2026-09-01'],
+    [YEKATERINBURG, 6, '2026-09-02T01:30:00Z', '2026-09-02'],
+    // Ночь перевода часов: сутки длятся 25 часов, а день определён интервалом.
+    [BERLIN, 0, '2026-10-25T22:30:00Z', '2026-10-25'],
+    [BERLIN, 0, '2026-10-25T23:30:00Z', '2026-10-26'],
+  ])('%s, граница %i, %s → %s', (zone, boundary, moment, expected) => {
+    expect(tradingDayIso(new Date(moment), zone, boundary)).toBe(expected);
+  });
+
+  /**
+   * Вторая таблица §2.4 — границы дней. Ею проверяется `tradingDayStart`, то есть тот
+   * самый расчёт, из которого собирается `periodStart`: сутки в зоне со сдвигом длятся 23
+   * или 25 часов, и период, посчитанный как «−24 часа», промахнулся бы мимо границы дня.
+   *
+   * `ends_at` дня — это `starts_at` следующего: день определён полуинтервалом
+   * `[начало(D), начало(D+1))`, а не «до 23:59:59».
+   */
+  const HOUR_MS = 3_600_000;
+
+  it.each([
+    [YEKATERINBURG, 0, day(2026, 9, 2), '2026-09-01T19:00:00.000Z', '2026-09-02T19:00:00.000Z', 24],
+    [YEKATERINBURG, 6, day(2026, 9, 2), '2026-09-02T01:00:00.000Z', '2026-09-03T01:00:00.000Z', 24],
+    // Весной сутки короче на час, осенью длиннее — и то и другое считается само.
+    [BERLIN, 0, day(2026, 3, 29), '2026-03-28T23:00:00.000Z', '2026-03-29T22:00:00.000Z', 23],
+    [BERLIN, 0, day(2026, 10, 25), '2026-10-24T22:00:00.000Z', '2026-10-25T23:00:00.000Z', 25],
+  ])(
+    '%s, граница %i: день начинается %s и длится %i ч',
+    (zone, boundary, date, startsAt, endsAt, hours) => {
+      const starts = tradingDayStart(date, zone, boundary);
+      const ends = tradingDayStart(addDays(date, 1), zone, boundary);
+
+      expect(starts.toISOString()).toBe(startsAt);
+      expect(ends.toISOString()).toBe(endsAt);
+      expect((ends.getTime() - starts.getTime()) / HOUR_MS).toBe(hours);
+    },
+  );
 });
