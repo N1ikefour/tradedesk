@@ -30,7 +30,7 @@ Updated: 2026-09-06
 |---|---|---|---|---|
 | S1-01 | JSON Schema ингеста | backend | **Done** | [PR #13](https://github.com/N1ikefour/tradedesk/pull/13) |
 | S1-02 | Нормализатор deals | backend | **Done** | [PR #15](https://github.com/N1ikefour/tradedesk/pull/15) |
-| S1-03 | Сборщик позиций | backend | Backlog | ждёт выгрузку MT5 |
+| S1-03 | Сборщик позиций (+ `X-44`) | backend | In Progress | `feat/S1-03-position-builder` |
 | S1-04 | `POST /ingest/deals` | backend | Backlog | ждёт S1-03 |
 | S1-05 | `POST /ingest/heartbeat` + assignments | backend | **Done** | [PR #16](https://github.com/N1ikefour/tradedesk/pull/16) |
 | S1-06 | Accounts API | backend | **Done** | [PR #14](https://github.com/N1ikefour/tradedesk/pull/14) |
@@ -114,7 +114,7 @@ Updated: 2026-09-06
 | X-16 | Уход на страницу писем сбрасывает форму входа | frontend | Todo | — |
 | X-17 | На Windows нет `init.bat` | infra | Todo | — |
 | X-18 | Имя джоба в CI скрывает тесты web | infra | Todo | — |
-| X-19 | Релизный zip-артефакт | infra | Todo | — |
+| X-19 | Релизный zip-артефакт | infra | In Progress | `feat/X-19-release-zip` |
 | X-20 | Кэш `get_settings` отравляет соседние модули тестов | backend | Todo | — |
 | X-21 | Свободный текст коллектора может вынести пароль наружу | backend + collector | Todo | — |
 | X-22 | Комиссии с тремя знаками ломают сверку | backend | Todo | — |
@@ -139,5 +139,5 @@ Updated: 2026-09-06
 | X-41 | Схема разрешает закрытую позицию без времени закрытия | backend | Todo | — |
 | X-42 | Экран без сети показывает вечную «Загрузка…» | frontend | Todo | — |
 | X-43 | Кириллица в имени пользователя Windows | collector + infra | Todo | — |
-| X-44 | Депозит не проходит контракт ингеста: пустой `symbol` | backend | Todo | — |
+| X-44 | Депозит не проходит контракт ингеста: пустой `symbol` | backend | In Progress | входит в `S1-03` |
 | X-45 | Индексы приходят с префиксом `$$` | backend | Todo | — |
