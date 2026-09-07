@@ -30,7 +30,7 @@ Updated: 2026-09-06
 |---|---|---|---|---|
 | S1-01 | JSON Schema ингеста | backend | **Done** | [PR #13](https://github.com/N1ikefour/tradedesk/pull/13) |
 | S1-02 | Нормализатор deals | backend | **Done** | [PR #15](https://github.com/N1ikefour/tradedesk/pull/15) |
-| S1-03 | Сборщик позиций (+ `X-44`) | backend | Review | [PR #26](https://github.com/N1ikefour/tradedesk/pull/26) |
+| S1-03 | Сборщик позиций (+ `X-44`) | backend | **Done** | [PR #26](https://github.com/N1ikefour/tradedesk/pull/26) |
 | S1-04 | `POST /ingest/deals` | backend | Backlog | ждёт S1-03 |
 | S1-05 | `POST /ingest/heartbeat` + assignments | backend | **Done** | [PR #16](https://github.com/N1ikefour/tradedesk/pull/16) |
 | S1-06 | Accounts API | backend | **Done** | [PR #14](https://github.com/N1ikefour/tradedesk/pull/14) |
@@ -54,7 +54,7 @@ Updated: 2026-09-06
 | S2-07 | UI Position card | frontend | **Done** | [PR #24](https://github.com/N1ikefour/tradedesk/pull/24) |
 | S2-08 | UI Скриншоты | frontend | Backlog | — |
 | S2-09 | UI Calendar | frontend | Backlog | — |
-| S2-10 | UI Dashboard v1 | frontend | Backlog | — |
+| S2-10 | UI Dashboard v1 | frontend | In Progress | `feat/S2-10-dashboard` |
 | S2-11 | Переключатель счетов: создание и полировка | frontend | Backlog | перенесён из S1-11 |
 
 ## Веха «Первый тест»
@@ -78,9 +78,9 @@ Updated: 2026-09-06
 
 | | Что | Состояние |
 |---|---|---|
-| Ингест | `S1-03`, `S1-04` | **выгрузка получена 7 сентября** (504 сделки), путь открыт; сначала `X-44` — иначе синк не пройдёт ни у кого, кто пополнял счёт |
+| Ингест | ~~`S1-03`~~, `S1-04` | сборщик позиций готов на настоящих данных; остался эндпоинт приёма |
 | Коллектор | `S1-08`, `S1-09`, `S1-10` | писать можно хоть сейчас; проверить — только на Windows с терминалом |
-| Доставка | `X-19` → `T-02` → `T-01` | ничем не заблокировано |
+| Доставка | ~~`X-19`~~ → `T-02` → `T-01` | зип с релиза **готов и проверен живым прогоном**; дальше скрипты обновления и инструкция |
 | Установка | `X-17` | на Windows нет `init.bat`: первый же шаг требует Git Bash |
 | Windows-пути | `X-43` | у друга имя пользователя кириллицей — все пути по умолчанию не-ASCII |
 | Первый вход | `X-16` | уход за кодом на страницу писем сбрасывает форму входа |
@@ -114,7 +114,7 @@ Updated: 2026-09-06
 | X-16 | Уход на страницу писем сбрасывает форму входа | frontend | Todo | — |
 | X-17 | На Windows нет `init.bat` | infra | Todo | — |
 | X-18 | Имя джоба в CI скрывает тесты web | infra | Todo | — |
-| X-19 | Релизный zip-артефакт | infra | Review | [PR #25](https://github.com/N1ikefour/tradedesk/pull/25) |
+| X-19 | Релизный zip-артефакт | infra | **Done** | [PR #25](https://github.com/N1ikefour/tradedesk/pull/25) |
 | X-20 | Кэш `get_settings` отравляет соседние модули тестов | backend | Todo | — |
 | X-21 | Свободный текст коллектора может вынести пароль наружу | backend + collector | Todo | — |
 | X-22 | Комиссии с тремя знаками ломают сверку | backend | Todo | — |
@@ -139,7 +139,7 @@ Updated: 2026-09-06
 | X-41 | Схема разрешает закрытую позицию без времени закрытия | backend | Todo | — |
 | X-42 | Экран без сети показывает вечную «Загрузка…» | frontend | Todo | — |
 | X-43 | Кириллица в имени пользователя Windows | collector + infra | Todo | — |
-| X-44 | Депозит не проходит контракт ингеста: пустой `symbol` | backend | Review | [PR #26](https://github.com/N1ikefour/tradedesk/pull/26) |
+| X-44 | Депозит не проходит контракт ингеста: пустой `symbol` | backend | **Done** | [PR #26](https://github.com/N1ikefour/tradedesk/pull/26) |
 | X-45 | Индексы приходят с префиксом `$$` | backend | Todo | — |
 | X-46 | Открытая позиция показывает причину своего закрытия | frontend | Todo | — |
 | X-47 | Опубликованная схема и модель расходятся на переводе строки | backend | Todo | — |
