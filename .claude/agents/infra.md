@@ -35,7 +35,7 @@ description: Инфраструктура TradeDesk — docker-compose, Makefile
 7. **Тестовая БД защищена guard'ом:** имя обязано содержать `_test`; guard кидает исключение до первого запроса. Тесты запускаются только через скрипты проекта, не сырым раннером из корня.
 8. **Миграции применяет контейнер `api` при старте** (`alembic upgrade head`) — отдельного шага в скриптах нет (`SPEC.md` §11.1, §11.3).
 9. **Идемпотентность скриптов.** Повторный запуск `start`/`update` не ломает состояние. Скрипты есть в двух вариантах: `.bat` для Windows-тестировщика и `.sh` — оба реально нужны.
-10. **CI гоняет то же, что и человек:** два джоба зовут `make ci-api` (`lint-api + lint-collector + lint-hooks + test-api`) и `make ci-web` (`lint-web + test-web + build-web`), а `make ci` = оба. Никаких «CI-only» шагов мимо `Makefile`: расхождение локальных команд и CI — баг инфраструктуры.
+10. **CI гоняет то же, что и человек:** два джоба зовут `make ci-api` (`lint-api + lint-collector + lint-hooks + test-api + test-release`) и `make ci-web` (`lint-web + test-web + build-web`), а `make ci` = оба. Никаких «CI-only» шагов мимо `Makefile`: расхождение локальных команд и CI — баг инфраструктуры.
 
 ## Workflow
 

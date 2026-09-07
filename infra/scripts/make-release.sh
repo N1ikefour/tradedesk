@@ -47,7 +47,11 @@ esac
 
 # Форма тега проверяется здесь, а не в CI: иначе релиз с опечаткой в имени доедет
 # до страницы релизов и станет версией приложения.
-if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$'; then
+# Ведущие нули запрещены отдельно: 'v01.2.3' — валидный semver-на-глаз, но PEP 440
+# нормализует его в '1.2.3', и importlib.metadata вернёт не то, что написано на релизе.
+# Ловить это сборкой образа в CI поздно и по сообщению непонятно.
+if ! printf '%s' "$TAG" |
+  grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc(0|[1-9][0-9]*))?$'; then
   echo "make release: тег '$TAG' не той формы." >&2
   usage
   exit 2
@@ -82,46 +86,92 @@ mkdir -p "$DEST"
 ## Состав
 ## ----------------------------------------------------------------------------
 
+# Что не уезжает пользователю. Всё остальное из git едет: правило «репозиторий минус
+# перечисленное» короче списка включений и не забывает новый каталог при следующей задаче.
+#   .github    — конфиг CI, у пользователя не работает;
+#   .claude    — файлы ассистентов;
+#   docs/tickets — внутренняя кухня: порты, worktree, черновики решений.
+# Отсев идёт ПЕРЕД проверками имён и симлинков, а не после: тикеты у нас пишутся
+# по-русски, и черновик `docs/tickets/решение.md` блокировал бы релиз, хотя в архив
+# не попадает.
+keep_only() {
+  while IFS= read -r path; do
+    case "$path" in
+      .github/* | .claude/* | .claude | docs/tickets/*) continue ;;
+    esac
+    printf '%s\n' "$path"
+  done
+}
+
 # -c: файлы под контролем версий, -o --exclude-standard: неотслеживаемые, но и не
 # игнорируемые. Второе — ради честности локального прогона: в CI дерево чистое, а на
 # машине разработчика архив должен собираться из того, что он видит перед собой.
 # core.quotePath=false: иначе git отдаёт не-ASCII имена в escape-виде ("\320\267…"),
 # и проверка ниже видит вместо кириллицы обычный ASCII — то есть пропускает ровно то,
 # ради чего написана. Найдено прогоном с кириллическим именем файла, а не рассуждением.
-git -C "$ROOT" -c core.quotePath=false ls-files -co --exclude-standard >"$WORK/all.txt"
+git -C "$ROOT" -c core.quotePath=false ls-files -co --exclude-standard |
+  keep_only >"$WORK/keep.txt"
+git -C "$ROOT" -c core.quotePath=false ls-files -o --exclude-standard |
+  keep_only >"$WORK/untracked.txt"
 
-UNTRACKED="$(git -C "$ROOT" -c core.quotePath=false ls-files -o --exclude-standard)"
-if [ -n "$UNTRACKED" ]; then
-  echo "⚠️  В архив попадут файлы вне git (не игнорируются, но и не закоммичены):" >&2
-  printf '%s\n' "$UNTRACKED" | sed 's/^/      /' >&2
+# Изменённый отслеживаемый файл уезжает в архив в том виде, в каком лежит на диске,
+# а не в том, что в коммите. Молчать об этом нельзя: собрал релиз с недоделанной правкой
+# в SETUP.md — и узнал об этом от пользователя.
+DIRTY="$(git -C "$ROOT" -c core.quotePath=false status --porcelain --untracked-files=no |
+  sed 's/^...//' | keep_only)"
+if [ -n "$DIRTY" ]; then
+  echo "⚠️  Дерево грязное — в архив уедет рабочая копия этих файлов, не коммит:" >&2
+  printf '%s\n' "$DIRTY" | sed 's/^/      /' >&2
   echo "" >&2
+fi
+
+# Неотслеживаемые файлы — это стоп, а не предупреждение. Предупреждение в потоке вывода
+# не читают, а цена ошибки здесь — чужой файл на странице релизов.
+if [ -s "$WORK/untracked.txt" ]; then
+  echo "make release: в архив попали бы файлы вне git (не игнорируются, не закоммичены):" >&2
+  sed 's/^/      /' "$WORK/untracked.txt" >&2
+  echo "" >&2
+  if [ "${RELEASE_ALLOW_UNTRACKED:-}" != "1" ]; then
+    echo "Закоммитьте их или уберите из дерева." >&2
+    echo "Если они нужны в архиве осознанно:" >&2
+    echo "    RELEASE_ALLOW_UNTRACKED=1 make release VERSION=$TAG" >&2
+    exit 1
+  fi
+  echo "RELEASE_ALLOW_UNTRACKED=1 — файлы выше уедут в архив." >&2
+  echo "" >&2
+fi
+
+# Симлинк — отказ, а не копирование. `cp -p` без -P разыменовывает его, и файл откуда
+# угодно с машины сборщика оказывается внутри архива под безобидным именем: проверка на
+# `.env`-подобные имена такое не ловит. Копировать симлинком (`cp -Pp`) тоже нельзя —
+# в zip он либо укажет наружу, либо превратится на Windows в мусор. В проекте симлинков
+# нет, и появиться они должны через обсуждение, а не через релизный архив.
+: >"$WORK/symlinks.txt"
+while IFS= read -r path; do
+  if [ -L "$ROOT/$path" ]; then
+    printf '%s\n' "$path" >>"$WORK/symlinks.txt"
+  fi
+done <"$WORK/keep.txt"
+if [ -s "$WORK/symlinks.txt" ]; then
+  echo "make release: в составе архива есть символические ссылки:" >&2
+  while IFS= read -r path; do
+    printf '      %s -> %s\n' "$path" "$(readlink "$ROOT/$path")" >&2
+  done <"$WORK/symlinks.txt"
+  exit 1
 fi
 
 # Имена только ASCII. Windows-распаковщик Explorer читает имена без флага UTF-8 в кодовой
 # странице системы и корёжит кириллицу; путь установки у первого пользователя и так
 # кириллический (X-43), добавлять к этому кириллицу внутри архива незачем.
-if LC_ALL=C grep -q '[^ -~]' "$WORK/all.txt"; then
+if LC_ALL=C grep -q '[^ -~]' "$WORK/keep.txt"; then
   echo "make release: в именах файлов есть не-ASCII символы:" >&2
-  LC_ALL=C grep '[^ -~]' "$WORK/all.txt" | sed 's/^/      /' >&2
+  LC_ALL=C grep '[^ -~]' "$WORK/keep.txt" | sed 's/^/      /' >&2
   exit 1
 fi
-# Пробелы в путях сломали бы построчный разбор ниже. Их в проекте нет — фиксируем это.
-if grep -q '[[:blank:]]' "$WORK/all.txt"; then
+# Пробелы в путях сломали бы разбор списков ниже. Их в проекте нет — фиксируем это.
+if grep -q '[[:blank:]]' "$WORK/keep.txt"; then
   die "в путях есть пробелы, разбор списка на это не рассчитан."
 fi
-
-# Что не уезжает пользователю. Всё остальное из git едет: правило «репозиторий минус
-# перечисленное» короче списка включений и не забывает новый каталог при следующей задаче.
-#   .github    — конфиг CI, у пользователя не работает;
-#   .claude    — файлы ассистентов;
-#   docs/tickets — внутренняя кухня: порты, worktree, черновики решений.
-: >"$WORK/keep.txt"
-while IFS= read -r path; do
-  case "$path" in
-    .github/* | .claude/* | .claude | docs/tickets/*) continue ;;
-  esac
-  printf '%s\n' "$path" >>"$WORK/keep.txt"
-done <"$WORK/all.txt"
 
 while IFS= read -r path; do
   dir="$(dirname "$path")"

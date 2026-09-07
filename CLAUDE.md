@@ -64,7 +64,7 @@ Skills: `.claude/skills/ingest-mt5/` — домен нормализации dea
 
 ```
 make ci        # ВЕСЬ гейт: ci-api + ci-web. Ровно тот же состав гоняет GitHub Actions
-make ci-api    # lint-api + lint-collector + lint-hooks + test-api
+make ci-api    # lint-api + lint-collector + lint-hooks + test-api + test-release
 make ci-web    # lint-web + test-web + build-web
 make ci-target # ruff + mypy + unit-тесты на ЦЕЛЕВОМ Python 3.12 в контейнере
 ```
