@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -29,12 +30,21 @@ from app.domains.ingest.schema_export import (
 )
 from app.domains.ingest.schemas import (
     MAX_BIGINT,
+    IngestDeal,
     ServerTime,
     ServerUtcOffsetMinutes,
     batch_json_schema,
 )
 
 REGENERATE = "cd apps/api && python -m app.domains.ingest.schema_export"
+
+# Сделка примера SPEC.md 5.3 как есть — та же, что в `test_ingest_schemas.py`. Нужна там,
+# где сравниваются два читателя одного документа: модель и опубликованный файл.
+_DEAL_EXAMPLE: dict[str, Any] = json.loads(
+    (Path(__file__).resolve().parents[1] / "fixtures/ingest/spec-5.3-example.json").read_text(
+        encoding="utf-8"
+    )
+)["deals"][0]
 
 server_time = TypeAdapter(ServerTime)
 offset_minutes = TypeAdapter(ServerUtcOffsetMinutes)
@@ -338,6 +348,47 @@ def test_published_offset_rejects_a_value_off_the_quarter_hour(document: dict[st
 
     assert published.is_valid(180)
     assert not published.is_valid(7)
+
+
+@pytest.mark.parametrize(
+    ("deal_type", "symbol"),
+    [
+        (0, ""),
+        (1, ""),
+        (2, ""),
+        (3, ""),
+        (99, ""),
+        (0, "EURUSD"),
+        (2, "EURUSD"),
+    ],
+)
+def test_published_symbol_rule_agrees_with_the_model(
+    document: dict[str, Any], deal_type: int, symbol: str
+) -> None:
+    """Послабление X-44 условное, и условие draft-07 выразить умеет — значит обязан нести.
+
+    Второе место после кратности смещения, где правило записано дважды: `if/then` в
+    `json_schema_extra` и валидатор `_trading_deal_carries_a_symbol`. Разойдись они — и
+    автор советника MQL5 получил бы 400 за тело, которое файл контракта разрешает.
+    """
+    published = Draft7Validator(document["definitions"]["IngestDeal"])
+    body = dict(_DEAL_EXAMPLE, type=deal_type, symbol=symbol)
+
+    try:
+        IngestDeal.model_validate(body)
+        accepted_by_model = True
+    except ValidationError:
+        accepted_by_model = False
+
+    assert published.is_valid(body) == accepted_by_model
+
+
+def test_published_symbol_rule_is_not_vacuous(document: dict[str, Any]) -> None:
+    """Якорь для теста согласия: без него обе стороны могли бы разрешить всё разом."""
+    published = Draft7Validator(document["definitions"]["IngestDeal"])
+
+    assert published.is_valid(dict(_DEAL_EXAMPLE, type=2, symbol=""))
+    assert not published.is_valid(dict(_DEAL_EXAMPLE, type=0, symbol=""))
 
 
 @pytest.mark.parametrize(

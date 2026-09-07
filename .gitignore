@@ -33,6 +33,10 @@ apps/web/.vite/
 .claude/worktrees/
 .claude/settings.local.json
 
+# Выгрузки с настоящих счетов: в репозиторий не кладутся ни при каких обстоятельствах.
+# Обезличенные срезы для тестов живут в apps/api/tests/fixtures/ (docs/fixtures.md).
+tmp/
+
 # --- ОС и редакторы ---
 .DS_Store
 .idea/

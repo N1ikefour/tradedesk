@@ -1,0 +1,82 @@
+{
+  "title": "Простая long-сделка: вход и полный выход",
+  "origin": "real",
+  "source": "Боевой счёт E-Global (Forex4you), выгрузка 7 сентября 2026, позиция 120337915",
+  "notes": "Самый частый случай в выгрузке: 216 позиций из 239 собраны ровно из двух сделок. Комиссия берётся с входа, результат приходит с выхода.",
+  "batches": [
+    {
+      "account_id": "0199a5c1-7d7a-7c3e-8f2a-1b2c3d4e5f60",
+      "source": "collector",
+      "server_utc_offset_minutes": 120,
+      "account_info": {
+        "currency": "USD",
+        "margin_mode": "hedging",
+        "balance": 343.1,
+        "equity": 343.1
+      },
+      "deals": [
+        {
+          "ticket": 106053061,
+          "order": 120337915,
+          "position_id": 120337915,
+          "type": 0,
+          "symbol": "USDJPY",
+          "entry": 0,
+          "reason": 3,
+          "volume": 0.99,
+          "price": 156.269,
+          "profit": 0.0,
+          "commission": -6.93,
+          "swap": 0.0,
+          "fee": 0.0,
+          "time_server": "2025-11-27T14:55:05",
+          "time_msc": 1764255305704,
+          "comment": "LimitBuy",
+          "magic": 0
+        },
+        {
+          "ticket": 106059460,
+          "order": 120347388,
+          "position_id": 120337915,
+          "type": 1,
+          "symbol": "USDJPY",
+          "entry": 1,
+          "reason": 0,
+          "volume": 0.99,
+          "price": 156.244,
+          "profit": -15.84,
+          "commission": 0.0,
+          "swap": 0.0,
+          "fee": 0.0,
+          "time_server": "2025-11-27T15:02:20",
+          "time_msc": 1764255740218,
+          "comment": "",
+          "magic": 0
+        }
+      ],
+      "open_positions": []
+    }
+  ],
+  "expected": [
+    {
+      "position_id": 120337915,
+      "symbol_raw": "USDJPY",
+      "direction": "long",
+      "status": "closed",
+      "open_time": "2025-11-27T12:55:05Z",
+      "close_time": "2025-11-27T13:02:20Z",
+      "volume_opened": "0.99000000",
+      "volume_closed": "0.99000000",
+      "avg_entry_price": "156.26900000",
+      "avg_exit_price": "156.24400000",
+      "gross_pnl": "-15.84",
+      "commission": "-6.93",
+      "swap": "0.00",
+      "fee": "0.00",
+      "net_pnl": "-22.77",
+      "deals_count": 2,
+      "duration_seconds": 435,
+      "close_reason": "client"
+    }
+  ]
+}

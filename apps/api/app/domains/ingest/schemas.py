@@ -61,8 +61,43 @@ _SERVER_TIME_RE = re.compile(SERVER_TIME_PATTERN)
 
 # Символ брокера: без пробелов, непустой. Нормализация суффиксов — S1-07.
 SYMBOL_PATTERN = r"^\S+$"
+# У сделки символа может не быть вовсе: неторговым операциям терминал кладёт в это поле
+# пустую строку (X-44, выгрузка 7 сентября 2026). Пустоту разрешает шаблон, а не
+# `min_length`, потому что запрет остаётся — он просто перестал быть безусловным, см.
+# `TRADING_DEAL_TYPE_CODES`. У открытой позиции символ есть всегда, там SYMBOL_PATTERN.
+DEAL_SYMBOL_PATTERN = r"^\S*$"
 # Комментарий брокера уходит в логи и в UI; управляющие символы там не нужны.
 COMMENT_PATTERN = r"^[^\x00-\x1f\x7f]*$"
+
+# Коды `DEAL_TYPE_*`, у которых инструмент обязан быть: BUY и SELL. Всё остальное —
+# пополнение, кредит, начисление, — операции над счётом, а не над инструментом.
+#
+# Набор продублирован из SPEC.md 6.2 (маппинг живёт в `normalizer.py`) не по недосмотру:
+# граница не вправе импортировать нормализатор — он импортирует её. Чтобы копия не
+# разошлась с оригиналом, обе стороны сверяет `tests/unit/test_normalizer.py`.
+TRADING_DEAL_TYPE_CODES = frozenset({0, 1})
+
+TRADING_SYMBOL_ERROR = (
+    "Торговая сделка обязана нести инструмент; пустой symbol допустим "
+    "только у неторговых операций (SPEC.md 6.2)"
+)
+
+# То же правило для опубликованного файла контракта. Условие draft-07 выражает, значит
+# файл обязан его нести: советник MQL5 (этап 4) сверяется с файлом, и правило, которого
+# в нём нет, приходит к автору необъяснимым 400. Здесь и `_trading_deal_carries_a_symbol`
+# — одно правило, записанное дважды; их согласие проверяет
+# `tests/unit/test_ingest_schema_contract.py`, а не постулируется.
+TRADING_SYMBOL_JSON_SCHEMA_RULE: dict[str, Any] = {
+    "allOf": [
+        {
+            "if": {
+                "properties": {"type": {"enum": sorted(TRADING_DEAL_TYPE_CODES)}},
+                "required": ["type"],
+            },
+            "then": {"properties": {"symbol": {"minLength": 1}}},
+        }
+    ]
+}
 
 # Реальный диапазон смещений IANA: от UTC-12:00 до UTC+14:00.
 MIN_SERVER_UTC_OFFSET_MINUTES = -720
@@ -155,17 +190,22 @@ class IngestAccountInfo(IngestBase):
 class IngestDeal(IngestBase):
     """Одна сделка из `mt5.history_deals_get()` как есть, без нормализации (SPEC.md 6.1)."""
 
+    model_config = ConfigDict(json_schema_extra=TRADING_SYMBOL_JSON_SCHEMA_RULE)
+
     ticket: Bigint = Field(description="Тикет сделки, уникален в пределах счёта")
     order: Bigint = Field(description="Тикет ордера; 0, если ордера нет")
     position_id: Bigint = Field(description="Идентификатор позиции MT5; 0 у balance/credit")
-    symbol: str = Field(
-        min_length=1,
-        max_length=64,
-        pattern=SYMBOL_PATTERN,
-        description="Символ как у брокера, с суффиксом: 'EURUSD.m'",
-    )
+    # Объявлен раньше `symbol`: правило ниже читает уже проверенный код типа.
     type: int = Field(
         ge=0, description="MT5 `DEAL_TYPE_*`. Неизвестный код нормализуется в 'other' (SPEC.md 6.2)"
+    )
+    symbol: str = Field(
+        max_length=64,
+        pattern=DEAL_SYMBOL_PATTERN,
+        description=(
+            "Символ как у брокера, с суффиксом: 'EURUSD.m'. Пустой — только у неторговой "
+            "операции (пополнение, кредит, начисление): инструмента у неё нет"
+        ),
     )
     # 0..3 — весь ENUM_DEAL_ENTRY. Запаса «прочее» у entry нет: SPEC.md 6.2 не даёт для него
     # значения по умолчанию, а `deals.entry` — NOT NULL. Код вне диапазона означает, что
@@ -197,6 +237,25 @@ class IngestDeal(IngestBase):
         description="Комментарий брокера, может быть пустым",
     )
     magic: Bigint = Field(description="Magic number советника; 0 у ручной торговли")
+
+    @field_validator("symbol")
+    @classmethod
+    def _trading_deal_carries_a_symbol(cls, value: str, info: ValidationInfo) -> str:
+        """Пустой символ разрешён неторговой операции и только ей (X-44).
+
+        Депозит приходит с `symbol = ''`, и безусловный `min_length=1` отвергал им весь
+        батч: у любого, кто хоть раз пополнял счёт, синхронизация не проходила никогда и
+        ретраем не чинилась — депозит из истории никуда не девается.
+
+        Послабление сделано зависимым от типа, а не общим. Общее увело бы проверку с
+        границы в нормализатор (CLAUDE.md §5), а торговая сделка без инструмента — это
+        уже потеря данных: позиция собралась бы без символа, и в журнале появилась бы
+        строка, про которую неизвестно, чем торговали.
+        """
+        deal_type = info.data.get("type")
+        if value == "" and isinstance(deal_type, int) and deal_type in TRADING_DEAL_TYPE_CODES:
+            raise PydanticCustomError("trading_symbol", TRADING_SYMBOL_ERROR)
+        return value
 
     @field_validator("time_msc")
     @classmethod

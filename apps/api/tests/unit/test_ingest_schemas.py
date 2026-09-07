@@ -22,10 +22,12 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
 from app.core.errors import register_error_handlers
+from app.domains.ingest import schemas
 from app.domains.ingest.schema_export import REPO_ROOT
 from app.domains.ingest.schemas import (
     MAX_BIGINT,
     MAX_DEALS_PER_BATCH,
+    TRADING_DEAL_TYPE_CODES,
     IngestDeal,
     IngestDealsBatch,
     IngestOpenPosition,
@@ -364,8 +366,82 @@ def test_open_position_type_is_limited_to_buy_and_sell() -> None:
 
 @pytest.mark.parametrize("symbol", ["", " ", "EUR USD", "x" * 65])
 def test_symbol_must_be_a_single_word(symbol: str) -> None:
+    """Сделка примера — торговая (`type = 0`), поэтому пустой символ ей по-прежнему нельзя."""
     with pytest.raises(ValidationError) as error:
         IngestDeal.model_validate(deal(symbol=symbol))
+    assert "symbol" in locations(error.value)
+
+
+# --- X-44: пустой символ у неторговой операции ------------------------------------
+
+# Депозит из настоящей выгрузки (7 сентября 2026), обезличенный: в исходном комментарии
+# стоял внутренний номер платежа, здесь от него остался только тип операции.
+DEPOSIT: dict[str, Any] = {
+    "ticket": 104238311,
+    "order": 0,
+    "position_id": 0,
+    "type": 2,
+    "symbol": "",
+    "entry": 0,
+    "reason": 0,
+    "volume": "0",
+    "price": "0",
+    "profit": "615.46",
+    "commission": "0",
+    "swap": "0",
+    "fee": "0",
+    "time_server": "2025-11-26T05:33:09",
+    "time_msc": 1764135189234,
+    "comment": "Deposit",
+    "magic": 0,
+}
+
+
+def test_deposit_without_a_symbol_is_accepted() -> None:
+    """Ровно та сделка, что отвергала весь батч у каждого, кто пополнял счёт (X-44)."""
+    parsed = IngestDeal.model_validate(DEPOSIT)
+
+    assert parsed.symbol == ""
+    assert parsed.type == 2
+
+
+@pytest.mark.parametrize("deal_type", [2, 3, 6, 12, 99])
+def test_non_trading_deal_may_come_without_a_symbol(deal_type: int) -> None:
+    """Инструмента нет ни у пополнения, ни у кредита, ни у любого начисления."""
+    parsed = IngestDeal.model_validate(deal(type=deal_type, symbol=""))
+
+    assert parsed.symbol == ""
+
+
+@pytest.mark.parametrize("deal_type", sorted(TRADING_DEAL_TYPE_CODES))
+def test_trading_deal_without_a_symbol_is_still_rejected(deal_type: int) -> None:
+    """Послабление не должно пропустить сделку, про которую неизвестно, чем торговали."""
+    with pytest.raises(ValidationError) as error:
+        IngestDeal.model_validate(deal(type=deal_type, symbol=""))
+
+    assert "symbol" in locations(error.value)
+
+
+def test_the_trading_rule_is_what_rejects_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Мутация: снять правило — и сделка выше начинает проходить.
+
+    Без этого «торговая без инструмента отвергается» доказывало бы только то, что её
+    отвергает *что-то* — например, уцелевший `min_length`, который X-44 как раз снял.
+    """
+    monkeypatch.setattr(schemas, "TRADING_DEAL_TYPE_CODES", frozenset())
+
+    parsed = IngestDeal.model_validate(deal(type=0, symbol=""))
+
+    assert parsed.symbol == ""
+
+
+def test_open_position_still_requires_a_symbol() -> None:
+    """У открытой позиции инструмент есть всегда: послабление её не касается."""
+    body = filled_spec_example()["open_positions"][0]
+    body["symbol"] = ""
+
+    with pytest.raises(ValidationError) as error:
+        IngestOpenPosition.model_validate(body)
     assert "symbol" in locations(error.value)
 
 
@@ -460,6 +536,28 @@ async def test_invalid_deal_points_at_its_index(client: AsyncClient) -> None:
 
     assert response.status_code == 400
     assert "body.deals.1.entry" in response.json()["error"]["details"]["fields"]
+
+
+async def test_batch_with_a_deposit_passes_the_boundary(client: AsyncClient) -> None:
+    """Смысл X-44 целиком: одна неторговая сделка больше не отвергает весь батч."""
+    body = filled_spec_example()
+    body["deals"].append(DEPOSIT)
+
+    response = await client.post("/probe", json=body)
+
+    assert response.status_code == 200
+    assert response.json() == {"received": 2}
+
+
+async def test_batch_with_a_symbolless_trade_is_400_naming_the_symbol(client: AsyncClient) -> None:
+    """А торговая сделка без инструмента — по-прежнему 400, и видно, где именно."""
+    body = filled_spec_example()
+    body["deals"].append(dict(DEPOSIT, ticket=DEPOSIT["ticket"] + 1, type=0))
+
+    response = await client.post("/probe", json=body)
+
+    assert response.status_code == 400
+    assert "body.deals.1.symbol" in response.json()["error"]["details"]["fields"]
 
 
 async def test_validation_error_does_not_echo_the_batch(client: AsyncClient) -> None:
