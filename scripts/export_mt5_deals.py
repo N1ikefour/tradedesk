@@ -62,15 +62,12 @@ def main() -> None:
         if not KEEP_COMMENTS:
             r["comment"] = ""
 
-    # смещение сервера брокера относительно UTC — нужно нам для времени сделок
-    offset_minutes = None
+    # Смещение сервера брокера относительно UTC — нужно нам для времени сделок.
+    # Сначала пробуем символы из истории; если их нет или тик по ним недоступен —
+    # берём любой видимый в «Обзоре рынка». Символы в него НЕ добавляем: скрипт
+    # только читает и не должен менять то, что человек видит в терминале.
     symbols = sorted({r["symbol"] for r in rows if r["symbol"]})
-    for name in symbols:
-        tick = mt5.symbol_info_tick(name)
-        if tick and tick.time:
-            delta = (tick.time - now.timestamp()) / 60
-            offset_minutes = round(delta / 15) * 15
-            break
+    offset_minutes = server_offset(symbols, now)
 
     terminal = mt5.terminal_info()
     payload = {
@@ -98,6 +95,29 @@ def main() -> None:
     report(rows, info, offset_minutes, symbols)
 
 
+def server_offset(symbols: list[str], now: datetime) -> int | None:
+    """Смещение часов сервера брокера от UTC, кратное 15 минутам."""
+
+    def from_tick(name: str) -> int | None:
+        tick = mt5.symbol_info_tick(name)
+        if tick is None or not tick.time:
+            return None
+        return round((tick.time - now.timestamp()) / 60 / 15) * 15
+
+    for name in symbols:
+        found = from_tick(name)
+        if found is not None:
+            return found
+
+    visible = mt5.symbols_get() or ()
+    for item in visible:
+        if getattr(item, "visible", False):
+            found = from_tick(item.name)
+            if found is not None:
+                return found
+    return None
+
+
 def report(rows: list[dict], info, offset_minutes, symbols: list[str]) -> None:
     def places(value) -> int:
         d = Decimal(str(value)).normalize()
@@ -111,7 +131,13 @@ def report(rows: list[dict], info, offset_minutes, symbols: list[str]) -> None:
     print(
         f"Режим позиций (margin_mode): {int(info.margin_mode)}  [0=netting, 1=exchange, 2=hedging]"
     )
-    print(f"Смещение сервера от UTC: {offset_minutes} мин")
+    if offset_minutes is None:
+        print(
+            "Смещение сервера от UTC: определить не удалось — "
+            "нет ни одного символа с доступным тиком"
+        )
+    else:
+        print(f"Смещение сервера от UTC: {offset_minutes} мин")
 
     types: dict[int, int] = {}
     for r in rows:
