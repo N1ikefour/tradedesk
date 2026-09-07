@@ -32,7 +32,7 @@ SCRIPTS := $(ROOT)/infra/scripts
 
 .PHONY: help install hooks ci ci-api ci-web ci-target lint lint-api lint-collector lint-web \
         lint-hooks test test-api test-web build-web smoke format guard-python guard-precommit \
-        guard-web init up down migrate downgrade revision types
+        guard-web init up down migrate downgrade revision types release
 
 ## ----------------------------------------------------------------------------
 ## Справка
@@ -71,6 +71,10 @@ help:
 	@echo "    make types           openapi запущенного api → apps/web/src/api/schema.d.ts."
 	@echo "                         Требует make up (профиль local)"
 	@echo "    make format          ruff format + prettier --write"
+	@echo "    make release VERSION=vX.Y.Z"
+	@echo "                         релизный zip в dist/ (ADR-0005). Тег проставляется"
+	@echo "                         в версию пакета: /api/v1/version отдаст ровно его."
+	@echo "                         Ту же цель по тегу вызывает .github/workflows/release.yml"
 	@echo "    make migrate         alembic upgrade head (в .venv; в контейнере это делает старт api)"
 	@echo "    make revision m=\"…\"  новая alembic-миграция (autogenerate)"
 	@echo "    make downgrade       откат на шаг назад, make downgrade to=base"
@@ -204,3 +208,13 @@ revision: guard-python
 # с API молча. Профиль обязан быть local — только там объявлен /api/v1/dev/outbox.
 types: guard-web
 	cd $(WEB_DIR) && $(NPM) run gen:types
+
+## ----------------------------------------------------------------------------
+## Релиз (ADR-0005). Пользователь получает zip со страницы релизов, не клон репозитория.
+## CI зовёт эту же цель по тегу — расхождение сборки «у человека» и «в CI» здесь стоило бы
+## дороже обычного: артефакт и есть продукт, другого способа его получить у человека нет.
+## ----------------------------------------------------------------------------
+
+release:
+	@test -n "$(VERSION)" || { echo 'Нужна версия: make release VERSION=v0.1.0'; exit 1; }
+	@$(SCRIPTS)/make-release.sh "$(VERSION)" "$(or $(OUT),$(ROOT)/dist)"

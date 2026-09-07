@@ -97,6 +97,12 @@ make smoke     # playwright-смоук входа против поднятог�
 make format    # автоформат
 ```
 
+**Релиз (`docs/RELEASE.md`):**
+
+```
+make release VERSION=vX.Y.Z   # zip в dist/ + sha256. Ту же цель по тегу зовёт CI
+```
+
 **Схема и типы:**
 
 ```

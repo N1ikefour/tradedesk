@@ -1,0 +1,104 @@
+# Релиз по тегу (ADR-0005, X-19): пользователь получает zip со страницы релизов,
+# а не клонирует репозиторий.
+#
+# Сборка не описана здесь шагами — она вся в `make release`, той же цели, что зовёт человек
+# у себя. Артефакт и есть продукт: расхождение «собрано в CI» и «собрано руками» означало бы,
+# что проверить релиз до публикации нечем.
+#
+# Гейт на исходники здесь не повторяется: тег ставится на коммит main, а его уже прогнала
+# ci.yml. Проверка ниже — про то, чего ci.yml не видит: собирается ли из АРХИВА образ
+# и та ли в нём версия.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Запись нужна ровно одному шагу — созданию релиза. Остальному хватает чтения.
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: zip → страница релизов
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Версию берёт .python-version — как в ci.yml и в apps/api/Dockerfile.
+      # Скрипту сборки python нужен, чтобы разобрать проставленный pyproject.toml
+      # разбором toml, а не грепом.
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      # Тег приходит через окружение, а не подстановкой ${{ }} в тело скрипта:
+      # подстановка выполняется шеллом как код.
+      - name: собрать архив
+        env:
+          TAG: ${{ github.ref_name }}
+        run: make release VERSION="$TAG"
+
+      # Гейт на сам артефакт. Всё остальное в проекте проверяет исходники в репозитории;
+      # то, что из архива собирается работающий образ и что версия в нём равна тегу,
+      # не проверяет больше никто — а именно это и уезжает человеку.
+      - name: из архива собирается образ, версия в нём равна тегу
+        run: |
+          set -eu
+          ZIP="$(ls dist/tradedesk-*.zip)"
+          PKG="$(basename "$ZIP" .zip)"
+          VERSION="${PKG#tradedesk-}"
+          # mkdir отдельно: unzip -d создаёт только последний каталог, но не цепочку
+          # родителей, и на пустом RUNNER_TEMP шаг падал бы «No such file or directory».
+          mkdir -p "$RUNNER_TEMP/release"
+          unzip -q "$ZIP" -d "$RUNNER_TEMP/release"
+          cd "$RUNNER_TEMP/release/$PKG"
+          test "$(cat VERSION)" = "$VERSION"
+          docker build -f apps/api/Dockerfile -t tradedesk-release-check .
+          IN_IMAGE="$(docker run --rm --entrypoint python tradedesk-release-check \
+            -c 'from importlib.metadata import version; print(version("tradedesk-api"))')"
+          echo "версия в образе: $IN_IMAGE, ожидалась: $VERSION"
+          test "$IN_IMAGE" = "$VERSION"
+
+      - name: опубликовать релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          ZIP="$(ls dist/tradedesk-*.zip)"
+          PKG="$(basename "$ZIP" .zip)"
+          VERSION="${PKG#tradedesk-}"
+          SHA="$(cut -d' ' -f1 <"$ZIP.sha256")"
+
+          cat >"$RUNNER_TEMP/notes.md" <<NOTES
+          Установка TradeDesk $VERSION.
+
+          Скачайте \`$PKG.zip\`, распакуйте в отдельную папку и дальше — по \`SETUP.md\`
+          из архива. Клонировать репозиторий не нужно.
+
+          Приложение печатает свою версию на \`/api/v1/version\`; здесь это \`$VERSION\`.
+
+          **Контрольная сумма** (\`$PKG.zip.sha256\` рядом):
+
+          \`\`\`
+          $SHA
+          \`\`\`
+
+          Проверить — Windows: \`certutil -hashfile $PKG.zip SHA256\`,
+          macOS и Linux: \`shasum -a 256 -c $PKG.zip.sha256\`.
+
+          Обновление поверх существующей установки скриптом пока не поддержано — это \`T-02\`.
+          NOTES
+
+          PRERELEASE=""
+          case "$TAG" in *-rc*) PRERELEASE="--prerelease" ;; esac
+
+          # shellcheck disable=SC2086
+          gh release create "$TAG" \
+            "$ZIP" "$ZIP.sha256" \
+            --title "$TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            $PRERELEASE
