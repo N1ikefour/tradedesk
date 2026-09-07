@@ -31,6 +31,10 @@ export const DEFAULT_PRICE_DIGITS = 5;
 
 const MONEY_DIGITS = 2;
 const RATIO_DIGITS = 2;
+/** Один знак после запятой: у доли их четыре, то есть у процента — два, и второй лишний. */
+const PERCENT_DIGITS = 1;
+/** Долю в проценты переводит перенос запятой на два разряда. */
+const PERCENT_SHIFT = 2;
 const VOLUME_MIN_DIGITS = 2;
 const VOLUME_MAX_DIGITS = 8;
 
@@ -163,6 +167,24 @@ export function formatVolume(raw: string): string | null {
 /** Отношение (R) — число без валюты, два знака. */
 export function formatRatio(raw: string): string | null {
   return formatFixed(raw, RATIO_DIGITS, RATIO_DIGITS);
+}
+
+/**
+ * Доля 0…1 в проценты — `winrate` сводки (`docs/metrics.md` §3.2 отдаёт её долей с
+ * четырьмя знаками, перевод в проценты и знак «%» это работа фронта).
+ *
+ * Умножения на 100 здесь нет: запятая переносится по цифрам, потому что `number` в этом
+ * модуле не появляется нигде, а `0.5000 * 100` в double даёт не то, что напечатано.
+ */
+export function formatPercent(raw: string): string | null {
+  const parsed = parseDecimal(raw);
+  if (parsed === null) {
+    return null;
+  }
+  const fraction = parsed.fraction.padEnd(PERCENT_SHIFT, '0');
+  const shifted = `${parsed.negative ? '-' : ''}${parsed.whole}${fraction.slice(0, PERCENT_SHIFT)}.${fraction.slice(PERCENT_SHIFT)}`;
+  const value = formatFixed(shifted, PERCENT_DIGITS, PERCENT_DIGITS);
+  return value === null ? null : `${value}${GROUP_SEPARATOR}%`;
 }
 
 /**

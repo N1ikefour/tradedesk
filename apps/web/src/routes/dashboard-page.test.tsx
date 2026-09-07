@@ -1,0 +1,397 @@
+import { screen, waitFor, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it } from 'vitest';
+
+import type { Account } from '@/accounts/api';
+import { useAccountSelectionStore } from '@/accounts/selection';
+import type { CalendarDay, CalendarMonth, Summary } from '@/dashboard/api';
+import { UNREFLECTED_PROBE_LIMIT } from '@/dashboard/api';
+import { t } from '@/i18n';
+import type { PositionListItem } from '@/journal/api';
+import { installFetchMock, jsonResponse, type RouteTable } from '@/test/fetch-mock';
+import { renderApp, TEST_USER } from '@/test/render';
+
+const SESSION = 'GET /api/v1/auth/me';
+const ACCOUNTS = 'GET /api/v1/accounts';
+const POSITIONS = 'GET /api/v1/journal/positions';
+const SUMMARY = 'GET /api/v1/analytics/summary';
+const CALENDAR = 'GET /api/v1/journal/calendar';
+
+const FIRST_ACCOUNT = '0199a2b0-0000-7000-8000-0000000000a1';
+const SECOND_ACCOUNT = '0199a2b0-0000-7000-8000-0000000000a2';
+
+function account(overrides: Partial<Account> = {}): Account {
+  return {
+    id: FIRST_ACCOUNT,
+    label: 'Демо A',
+    is_demo: true,
+    color: '#2563eb',
+    platform: 'mt5',
+    broker: null,
+    server: 'Broker-Demo',
+    login: 5_001_234,
+    currency: 'USD',
+    account_type: null,
+    server_utc_offset_minutes: null,
+    status: 'connected',
+    status_message: null,
+    last_sync_at: '2026-09-07T09:00:00Z',
+    last_heartbeat_at: '2026-09-07T09:01:00Z',
+    collector_id: 'nb-01',
+    sort_order: 0,
+    created_at: '2026-09-01T10:00:00Z',
+    positions_count: 400,
+    ...overrides,
+  };
+}
+
+/** Сводка примера `docs/metrics.md` §4 — восемь закрытых позиций и две открытые. */
+function summary(overrides: Partial<Summary> = {}): Summary {
+  return {
+    trades: 8,
+    wins: 4,
+    losses: 3,
+    breakeven: 1,
+    open_positions: 2,
+    winrate: '0.5000',
+    net_pnl: '117.00',
+    gross_pnl: '144.50',
+    commission: '-22.00',
+    swap: '-4.50',
+    fee: '-1.00',
+    profit_factor: '2.17',
+    avg_win: '54.25',
+    avg_loss: '-33.33',
+    expectancy: '14.63',
+    best_trade: '116.00',
+    worst_trade: '-52.00',
+    ...overrides,
+  };
+}
+
+function calendarDay(overrides: Partial<CalendarDay> = {}): CalendarDay {
+  return {
+    day: '2026-09-07',
+    // Границы дня считает сервер: зона пользователя UTC+5, начало дня — 0 часов.
+    starts_at: '2026-09-06T19:00:00Z',
+    ends_at: '2026-09-07T19:00:00Z',
+    trades: 3,
+    wins: 2,
+    losses: 1,
+    breakeven: 0,
+    net_pnl: '42.00',
+    by_account: [],
+    ...overrides,
+  };
+}
+
+function calendar(days: CalendarDay[]): CalendarMonth {
+  return {
+    month: '2026-09',
+    timezone: TEST_USER.timezone,
+    day_boundary_hour: TEST_USER.day_boundary_hour,
+    days,
+  };
+}
+
+function position(index: number, overrides: Partial<PositionListItem> = {}): PositionListItem {
+  return {
+    id: `0199a2b0-0000-7000-8000-${String(index).padStart(12, '0')}`,
+    position_id: 100_000 + index,
+    symbol_raw: 'EURUSD.m',
+    symbol_norm: 'EURUSD',
+    direction: 'long',
+    status: 'open',
+    result: null,
+    open_time: '2026-09-07T08:00:00Z',
+    close_time: null,
+    volume_opened: '0.50000000',
+    volume_closed: '0.00000000',
+    avg_entry_price: '1.08540000',
+    avg_exit_price: null,
+    gross_pnl: '0.00',
+    commission: '-0.70',
+    swap: '0.10',
+    fee: '0.00',
+    // У открытой позиции здесь накопленные издержки, а не плавающий результат.
+    net_pnl: '-0.60',
+    deals_count: 1,
+    duration_seconds: null,
+    close_reason: null,
+    is_manual: false,
+    rebuilt_at: '2026-09-07T08:01:00Z',
+    account: { id: FIRST_ACCOUNT, label: 'Демо A', color: '#2563eb', is_demo: true },
+    journal_entry: null,
+    reflection: null,
+    attachments_count: 0,
+    ...overrides,
+  };
+}
+
+type Options = {
+  accounts?: Account[];
+  summary?: Summary;
+  days?: CalendarDay[];
+  open?: PositionListItem[];
+  openCursor?: string | null;
+  unreflected?: number;
+  unreflectedCursor?: string | null;
+  hasReflection?: boolean;
+};
+
+type Query = URLSearchParams;
+
+function withDashboard(options: Options = {}): { routes: RouteTable; queries: Query[] } {
+  const queries: Query[] = [];
+  const accounts = options.accounts ?? [account()];
+  const unreflectedItems = Array.from({ length: options.unreflected ?? 0 }, (_, index) =>
+    position(500 + index, { status: 'closed', close_time: '2026-09-06T10:00:00Z' }),
+  );
+  return {
+    queries,
+    routes: {
+      [SESSION]: () => jsonResponse(200, TEST_USER),
+      [ACCOUNTS]: () => jsonResponse(200, { items: accounts }),
+      [SUMMARY]: ({ url }) => {
+        queries.push(url.searchParams);
+        return jsonResponse(200, options.summary ?? summary());
+      },
+      [CALENDAR]: ({ url }) => {
+        queries.push(url.searchParams);
+        return jsonResponse(200, calendar(options.days ?? [calendarDay()]));
+      },
+      [POSITIONS]: ({ url }) => {
+        const query = url.searchParams;
+        queries.push(query);
+        if (query.get('has_reflection') === 'true') {
+          return jsonResponse(200, {
+            items: options.hasReflection === true ? [position(900)] : [],
+            next_cursor: null,
+          });
+        }
+        if (query.get('has_reflection') === 'false') {
+          return jsonResponse(200, {
+            items: unreflectedItems,
+            next_cursor: options.unreflectedCursor ?? null,
+          });
+        }
+        return jsonResponse(200, {
+          items: options.open ?? [],
+          next_cursor: options.openCursor ?? null,
+        });
+      },
+    },
+  };
+}
+
+async function openDashboard() {
+  const rendered = renderApp(['/']);
+  await screen.findByRole('heading', { name: t.pages.dashboard, level: 1 });
+  return rendered;
+}
+
+function queryFor(queries: Query[], predicate: (query: Query) => boolean): Query {
+  const found = queries.find(predicate);
+  if (found === undefined) {
+    throw new Error('такого запроса не было');
+  }
+  return found;
+}
+
+beforeEach(() => {
+  window.localStorage.clear();
+  useAccountSelectionStore.setState({ mode: 'all', ids: [] });
+});
+
+describe('дашборд: сводка', () => {
+  it('показывает числа сервера и не считает своих', async () => {
+    installFetchMock(withDashboard().routes);
+    await openDashboard();
+
+    expect(await screen.findByText('117,00 $')).toBeInTheDocument();
+    expect(screen.getByText('50,0 %')).toBeInTheDocument();
+    expect(screen.getByText('2,17')).toBeInTheDocument();
+    expect(screen.getByText('14,63 $')).toBeInTheDocument();
+  });
+
+  it('при открытых позициях называет их число и объясняет расхождение с журналом', async () => {
+    installFetchMock(withDashboard().routes);
+    await openDashboard();
+
+    expect(await screen.findByText(t.dashboard.openInPeriod(2))).toBeInTheDocument();
+    expect(screen.getByText(t.dashboard.openInPeriodHint)).toBeInTheDocument();
+    // Точное совпадение с журналом даёт фильтр «Закрытые» — ссылка ведёт именно туда.
+    const link = screen.getByRole('link', { name: t.dashboard.openInPeriodLink });
+    expect(link).toHaveAttribute('href', '/journal?period=month&status=closed');
+  });
+
+  it('при нуле открытых обещает совпадение до копейки', async () => {
+    installFetchMock(withDashboard({ summary: summary({ open_positions: 0 }) }).routes);
+    await openDashboard();
+
+    expect(await screen.findByText(t.dashboard.noOpenInPeriod)).toBeInTheDocument();
+    expect(screen.queryByText(t.dashboard.openInPeriodHint)).not.toBeInTheDocument();
+  });
+
+  it('период сводки и период ссылки в журнал — один и тот же', async () => {
+    const { routes, queries } = withDashboard();
+    installFetchMock(routes);
+    await openDashboard();
+
+    await screen.findByText('117,00 $');
+    const asked = queryFor(queries, (query) => query.has('from') && !query.has('status'));
+    // Тридцать дней в зоне пользователя: 30 дней по 24 часа от начала торгового дня.
+    const from = new Date(asked.get('from') ?? '');
+    expect(Number.isNaN(from.getTime())).toBe(false);
+  });
+});
+
+describe('дашборд: календарь-мини', () => {
+  it('день открывает журнал границами сервера и только закрытыми', async () => {
+    installFetchMock(withDashboard().routes);
+    await openDashboard();
+
+    const link = await screen.findByRole('link', { name: /7 число/ });
+    expect(link).toHaveAttribute(
+      'href',
+      '/journal?from=2026-09-06T19%3A00%3A00Z&to=2026-09-07T19%3A00%3A00Z&status=closed',
+    );
+  });
+
+  it('день без сделок ссылкой не становится: границ у него нет', async () => {
+    installFetchMock(withDashboard().routes);
+    await openDashboard();
+
+    await screen.findByRole('link', { name: /7 число/ });
+    expect(screen.queryByRole('link', { name: /8 число/ })).not.toBeInTheDocument();
+  });
+
+  it('месяц без сделок объяснён словами, а не пустой сеткой', async () => {
+    installFetchMock(withDashboard({ days: [] }).routes);
+    await openDashboard();
+
+    expect(await screen.findByText(t.dashboard.calendarEmpty)).toBeInTheDocument();
+  });
+});
+
+describe('дашборд: открытые позиции', () => {
+  it('показывает факты открытия и не выдумывает текущий результат', async () => {
+    installFetchMock(withDashboard({ open: [position(1)] }).routes);
+    await openDashboard();
+
+    const block = (await screen.findByText(t.dashboard.openNoProfit)).closest('div');
+    expect(block).not.toBeNull();
+    expect(screen.getByText('EURUSD')).toBeInTheDocument();
+    // `net_pnl` открытой позиции — накопленные издержки; на экране его нет.
+    expect(screen.queryByText('-0,60 $')).not.toBeInTheDocument();
+  });
+
+  it('пустой список говорит об этом словами', async () => {
+    installFetchMock(withDashboard({ open: [] }).routes);
+    await openDashboard();
+
+    expect(await screen.findByText(t.dashboard.openEmpty)).toBeInTheDocument();
+  });
+});
+
+describe('дашборд: требует внимания', () => {
+  it('точное число сделок без рефлексии называется, только когда страница уместилась', async () => {
+    installFetchMock(withDashboard({ unreflected: 3 }).routes);
+    await openDashboard();
+
+    expect(await screen.findByText(t.dashboard.attentionUnreflected(3))).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: t.dashboard.attentionUnreflectedLink });
+    expect(link).toHaveAttribute('href', '/journal?period=month&status=closed&reflection=none');
+  });
+
+  it('когда строк больше страницы, показано «больше N», а не длина страницы', async () => {
+    installFetchMock(
+      withDashboard({ unreflected: UNREFLECTED_PROBE_LIMIT, unreflectedCursor: 'next' }).routes,
+    );
+    await openDashboard();
+
+    expect(
+      await screen.findByText(t.dashboard.attentionUnreflectedMany(UNREFLECTED_PROBE_LIMIT)),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(t.dashboard.attentionUnreflected(UNREFLECTED_PROBE_LIMIT)),
+    ).not.toBeInTheDocument();
+  });
+
+  it('счёт в needs_attention показан с причиной сервера, а не с собственным вердиктом', async () => {
+    installFetchMock(
+      withDashboard({
+        accounts: [
+          account({ status: 'needs_attention', status_message: 'Неверный пароль инвестора' }),
+        ],
+      }).routes,
+    );
+    await openDashboard();
+
+    expect(await screen.findByText('Неверный пароль инвестора')).toBeInTheDocument();
+  });
+
+  it('счёт без единого heartbeat помечен фактом, который не требует порога', async () => {
+    installFetchMock(
+      withDashboard({ accounts: [account({ status: 'pending', last_heartbeat_at: null })] }).routes,
+    );
+    await openDashboard();
+
+    expect(await screen.findByText(t.accounts.heartbeatNever)).toBeInTheDocument();
+  });
+});
+
+describe('дашборд: пустое состояние', () => {
+  it('новый пользователь видит шаги и не видит метрик', async () => {
+    installFetchMock(withDashboard({ accounts: [] }).routes);
+    await openDashboard();
+
+    expect(await screen.findByText(t.dashboard.stepAccountTitle)).toBeInTheDocument();
+    expect(screen.getByText(t.dashboard.stepCollectorTitle)).toBeInTheDocument();
+    expect(screen.getByText(t.dashboard.stepPositionsTitle)).toBeInTheDocument();
+    expect(screen.getByText(t.dashboard.stepReflectionTitle)).toBeInTheDocument();
+    // Пустых рамок с прочерками нет: их читают как поломку.
+    expect(screen.queryByText(t.dashboard.summaryTitle)).not.toBeInTheDocument();
+    expect(screen.queryByText(t.dashboard.openTitle)).not.toBeInTheDocument();
+    // Ни один шаг не отмечен.
+    expect(screen.queryAllByText(t.dashboard.onboardingDone)).toHaveLength(0);
+  });
+
+  it('счёт есть, позиций нет: первые галочки стоят, метрик по-прежнему нет', async () => {
+    installFetchMock(
+      withDashboard({ accounts: [account({ positions_count: 0 })], summary: summary() }).routes,
+    );
+    await openDashboard();
+
+    const steps = await screen.findByRole('list');
+    // Счёт добавлен и коллектор выходил на связь — два факта из четырёх.
+    expect(within(steps).getAllByText(t.dashboard.onboardingDone)).toHaveLength(2);
+    expect(within(steps).getAllByText(t.dashboard.onboardingPending)).toHaveLength(2);
+    expect(screen.queryByText(t.dashboard.summaryTitle)).not.toBeInTheDocument();
+  });
+
+  it('после первой рефлексии шагов на экране нет вовсе', async () => {
+    installFetchMock(withDashboard({ hasReflection: true }).routes);
+    await openDashboard();
+
+    await screen.findByText('117,00 $');
+    expect(screen.queryByText(t.dashboard.onboardingTitle)).not.toBeInTheDocument();
+  });
+});
+
+describe('дашборд: переключатель счетов', () => {
+  it('выбранные счета уходят во все запросы экрана', async () => {
+    useAccountSelectionStore.setState({ mode: 'single', ids: [SECOND_ACCOUNT] });
+    const { routes, queries } = withDashboard({
+      accounts: [account(), account({ id: SECOND_ACCOUNT, label: 'Демо B' })],
+    });
+    installFetchMock(routes);
+    await openDashboard();
+
+    await screen.findByText('117,00 $');
+    await waitFor(() => {
+      expect(
+        queries.filter((query) => query.get('account_ids') === SECOND_ACCOUNT).length,
+      ).toBeGreaterThanOrEqual(3);
+    });
+  });
+});

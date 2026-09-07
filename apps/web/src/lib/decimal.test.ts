@@ -6,6 +6,7 @@ import {
   divideDecimal,
   formatMoney,
   formatPrice,
+  formatPercent,
   formatRatio,
   formatVolume,
 } from '@/lib/decimal';
@@ -134,5 +135,25 @@ describe('canonicalDecimal', () => {
     expect(canonicalDecimal('около 1.1')).toBeNull();
     expect(canonicalDecimal('')).toBeNull();
     expect(canonicalDecimal('-')).toBeNull();
+  });
+});
+
+describe('formatPercent', () => {
+  it('переводит долю сводки в проценты (docs/metrics.md §3.2)', () => {
+    expect(formatPercent('0.5000')).toBe(`50,0${NB}%`);
+    expect(formatPercent('0.6667')).toBe(`66,7${NB}%`);
+    expect(formatPercent('0.0000')).toBe(`0,0${NB}%`);
+    expect(formatPercent('1')).toBe(`100,0${NB}%`);
+  });
+
+  it('округляет половину вверх — как калькулятор, а не как double', () => {
+    expect(formatPercent('0.3335')).toBe(`33,4${NB}%`);
+    // Тот же перевод через число даёт 33.339999999999996 и потерянный разряд.
+    expect(formatPercent('0.6665')).toBe(`66,7${NB}%`);
+  });
+
+  it('не число — не проценты', () => {
+    expect(formatPercent('')).toBeNull();
+    expect(formatPercent('половина')).toBeNull();
   });
 });
