@@ -58,4 +58,16 @@ describe('текст ошибки', () => {
   it('несостоявшийся запрос отличается от ответа с ошибкой', () => {
     expect(messageForError(new NetworkError(new Error('offline')))).toBe(t.errors.network);
   });
+
+  it('обрыв по своему таймауту — не «проверьте соединение»', () => {
+    // Сеть при этом может быть цела, а запрос сервер уже применить: два разных положения
+    // дел, и общий текст на них зовёт чинить то, что не сломано.
+    for (const name of ['TimeoutError', 'AbortError']) {
+      const aborted = new NetworkError(new DOMException('прервано', name));
+
+      expect(aborted.timedOut).toBe(true);
+      expect(messageForError(aborted)).toBe(t.errors.timeout);
+    }
+    expect(new NetworkError(new TypeError('Failed to fetch')).timedOut).toBe(false);
+  });
 });

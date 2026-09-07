@@ -16,6 +16,7 @@ export const ERROR_CODE = {
   unauthorized: 'unauthorized',
   forbiddenOrigin: 'forbidden_origin',
   notFound: 'not_found',
+  positionNotFound: 'position_not_found',
   invalidCode: 'invalid_code',
   tooManyAttempts: 'too_many_attempts',
   rateLimited: 'rate_limited',
@@ -93,6 +94,19 @@ export class NetworkError extends Error {
   constructor(cause: unknown) {
     super('network request failed', { cause });
     this.name = 'NetworkError';
+  }
+
+  /**
+   * Запрос оборвали мы сами — по своему пределу ожидания, а не сетью. Разница видна
+   * человеку: соединение при этом может быть цело, а сервер запрос уже применить, и
+   * «проверьте соединение» отправляло бы чинить то, что не сломано.
+   */
+  get timedOut(): boolean {
+    const reason = this.cause;
+    if (!(reason instanceof DOMException)) {
+      return false;
+    }
+    return reason.name === 'TimeoutError' || reason.name === 'AbortError';
   }
 }
 
