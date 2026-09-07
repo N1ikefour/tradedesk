@@ -30,7 +30,7 @@ Updated: 2026-09-06
 |---|---|---|---|---|
 | S1-01 | JSON Schema ингеста | backend | **Done** | [PR #13](https://github.com/N1ikefour/tradedesk/pull/13) |
 | S1-02 | Нормализатор deals | backend | **Done** | [PR #15](https://github.com/N1ikefour/tradedesk/pull/15) |
-| S1-03 | Сборщик позиций (+ `X-44`) | backend | In Progress | `feat/S1-03-position-builder` |
+| S1-03 | Сборщик позиций (+ `X-44`) | backend | Review | [PR #26](https://github.com/N1ikefour/tradedesk/pull/26) |
 | S1-04 | `POST /ingest/deals` | backend | Backlog | ждёт S1-03 |
 | S1-05 | `POST /ingest/heartbeat` + assignments | backend | **Done** | [PR #16](https://github.com/N1ikefour/tradedesk/pull/16) |
 | S1-06 | Accounts API | backend | **Done** | [PR #14](https://github.com/N1ikefour/tradedesk/pull/14) |
@@ -139,5 +139,5 @@ Updated: 2026-09-06
 | X-41 | Схема разрешает закрытую позицию без времени закрытия | backend | Todo | — |
 | X-42 | Экран без сети показывает вечную «Загрузка…» | frontend | Todo | — |
 | X-43 | Кириллица в имени пользователя Windows | collector + infra | Todo | — |
-| X-44 | Депозит не проходит контракт ингеста: пустой `symbol` | backend | In Progress | входит в `S1-03` |
+| X-44 | Депозит не проходит контракт ингеста: пустой `symbol` | backend | Review | [PR #26](https://github.com/N1ikefour/tradedesk/pull/26) |
 | X-45 | Индексы приходят с префиксом `$$` | backend | Todo | — |
