@@ -53,7 +53,7 @@ async def close_queue() -> None:
     _pool = None
 
 
-async def enqueue(function: str, *args: Any) -> str | None:
+async def enqueue(function: str, *args: Any, **kwargs: Any) -> str | None:
     """Ставит задачу; возвращает `job_id` или `None`, если поставить не удалось.
 
     Имя задачи приходит константой от вызывающего (`app.worker.REFRESH_DAILY_STATS_NAME`),
@@ -61,7 +61,7 @@ async def enqueue(function: str, *args: Any) -> str | None:
     «нет такой функции» уже после ответа клиенту.
     """
     try:
-        job = await (await get_queue()).enqueue_job(function, *args)
+        job = await (await get_queue()).enqueue_job(function, *args, **kwargs)
     except Exception as error:
         # Текст исключения redis-py может нести URL с паролем — берём только тип.
         log.error("queue.enqueue_failed", function=function, error_type=type(error).__name__)

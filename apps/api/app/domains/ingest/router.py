@@ -84,12 +84,22 @@ async def ingest_deals(payload: IngestDealsBatch, session: Session) -> IngestDea
 
     # После коммита: пересчитывать кэш по сделкам, которых может не оказаться в базе,
     # незачем. Неудача постановки задачи ответ не роняет — см. `core/queue.py`.
-    if result.inserted or result.positions_rebuilt:
-        # `days=None` — «пересчитать все дни счёта». День режется по зоне и границе дня
-        # **пользователя** (`docs/metrics.md` §6), а ингест их не знает: он видит счёт, а
-        # не владельца. Список, посчитанный здесь, был бы вторым прочтением правила
-        # торгового дня и молча терял бы день на смене зоны; `refresh` берёт правило сам.
-        await enqueue(REFRESH_DAILY_STATS_NAME, str(account.id), None)
+    #
+    # Нет новых сделок — нечему было измениться: `positions` производны от `deals`, а
+    # снимок открытой позиции влияет только на `status` (`S1-03`). Иначе задача уезжала бы
+    # в очередь на каждом тике синка: коллектор перезапрашивает сутки каждые 60 секунд.
+    #
+    # Уходит **отрезок времени** тронутых сделок, а не список дней: день режется по зоне и
+    # границе дня владельца счёта (`docs/metrics.md` §6), а ингест владельца не знает — он
+    # видит счёт. Дни внутри отрезка считает сама `refresh_daily_stats`, и правило
+    # торгового дня остаётся в одном месте.
+    if result.inserted and result.touched is not None:
+        first, last = result.touched
+        await enqueue(
+            REFRESH_DAILY_STATS_NAME,
+            str(account.id),
+            within=[first.isoformat(), last.isoformat()],
+        )
 
     return IngestDealsResponse(
         received=result.received,

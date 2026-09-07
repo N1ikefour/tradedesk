@@ -741,9 +741,14 @@ async def read_daily_stats(account_id: str) -> list[dict[str, Any]]:
     return [dict(row._mapping) for row in rows]
 
 
-async def refresh(account_id: str, days: list[date] | None = None) -> int:
+async def refresh(
+    account_id: str,
+    days: list[date] | None = None,
+    *,
+    within: tuple[datetime, datetime] | None = None,
+) -> int:
     async with get_session_factory()() as session:
-        return await daily_stats.refresh(session, UUID(account_id), days)
+        return await daily_stats.refresh(session, UUID(account_id), days, within=within)
 
 
 # Денежные колонки `daily_stats`, которых нет в ответе календаря. Все — `numeric(18,2)`,
@@ -841,6 +846,59 @@ async def test_refresh_touches_only_the_requested_days(client: AsyncClient, acco
 
     rows = {str(row["day"]): row["trades"] for row in await read_daily_stats(account)}
     assert rows == {"2026-09-02": 1, "2026-09-03": 99}
+
+
+async def test_refresh_within_a_span_leaves_distant_days_alone(
+    client: AsyncClient, account: str
+) -> None:
+    """Отрезок времени — та же оптимизация, что список дней, но без правила дня у звонящего.
+
+    Так зовёт `POST /ingest/deals` (`S1-04`): он видит счёт, а не владельца, и зону с
+    границей дня прочитать не может. Не сузь пересчёт — коллектор перезапрашивает сутки
+    каждые 60 секунд, и вся история счёта пересчитывалась бы на каждом тике синка.
+    """
+    await seed_position(account, close_time=datetime(2026, 9, 2, 10, 0, tzinfo=UTC))
+    await seed_position(account, close_time=datetime(2026, 9, 20, 10, 0, tzinfo=UTC))
+
+    await refresh(account)
+    await execute(
+        "update daily_stats set trades = 99 where account_id = :account_id and day = :day",
+        account_id=UUID(account),
+        day=date(2026, 9, 20),
+    )
+    moment = datetime(2026, 9, 2, 10, 0, tzinfo=UTC)
+    await refresh(account, within=(moment, moment))
+
+    rows = {str(row["day"]): row["trades"] for row in await read_daily_stats(account)}
+    assert rows == {"2026-09-02": 1, "2026-09-20": 99}
+
+
+async def test_refresh_within_a_span_applies_the_users_day_rule(
+    client: AsyncClient, account: str
+) -> None:
+    """Звонящий отдаёт момент UTC, день считает домен — и это разные даты.
+
+    03:00 UTC 3 сентября — 05:00 в Берлине, то есть ещё торговый день 2-го при границе в
+    6 утра. Посчитай ингест день сам — в кэше появилось бы 3 сентября, и календарь с
+    журналом разошлись бы на сутки. Заодно проверяется запас в двое суток: без него
+    сгенерированный ряд дней начинался бы с 3-го и день не породил бы строки вовсе.
+    """
+    await set_day_rule(client, "Europe/Berlin", 6)
+    moment = datetime(2026, 9, 3, 3, 0, tzinfo=UTC)
+    await seed_position(account, close_time=moment)
+
+    written = await refresh(account, within=(moment, moment))
+
+    assert written == 1
+    assert [str(row["day"]) for row in await read_daily_stats(account)] == ["2026-09-02"]
+
+
+async def test_refresh_refuses_both_ways_of_narrowing_at_once(account: str) -> None:
+    """Список дней и отрезок вместе — ошибка звонящего, а не молча выбранный один из двух."""
+    moment = datetime(2026, 9, 2, 10, 0, tzinfo=UTC)
+
+    with pytest.raises(ValueError):
+        await refresh(account, [date(2026, 9, 2)], within=(moment, moment))
 
 
 async def test_refresh_forgets_days_that_lost_their_positions(

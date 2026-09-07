@@ -5,30 +5,35 @@
 (`symbol_registry.py`) и сборщик (`position_builder.py`). Здесь появляется всё, чего у них
 нет: транзакция, повторы и чужие строки.
 
-Пять решений этого модуля видны снаружи.
+Шесть решений этого модуля видны снаружи.
 
 1. **Батч — одна транзакция, и при отказе она откатывается целиком.** Так требует §5.3
    пункт 4 («пересборка в той же транзакции»), и полный откат безопасен ровно потому, что
    вставка идемпотентна: коллектор перезапрашивает окно `last_sync_at − 24h` (§8.2), и
    откаченный батч приедет снова. Частичный успех был бы хуже отказа: часть сделок в базе,
    позиции по ним не пересобраны, и никакого признака этого в данных нет.
-2. **Позиция собирается по всем сделкам счёта, а не по пришедшим в батче.** Комиссия по
+2. **Пересобираются позиции, затронутые именно новыми сделками**, плюс все из
+   `open_positions` — буква §5.3 пункта 4. Взять сюда все сделки батча было бы дороже, и
+   не на бумаге: коллектор перезапрашивает сутки каждые 60 секунд (§8.2), и у счёта,
+   торговавшего за сутки, каждый тик синка гнал бы полную пересборку и ставил бы задачу
+   пересчёта кэша. Повтор батча теперь честно отвечает `positions_rebuilt = 0`.
+3. **Позиция собирается по всем сделкам счёта, а не по пришедшим в батче.** Комиссия по
    позиции (`other` с ненулевым `position_id`) приезжает следующим окном синка, когда
    торговые сделки уже лежат в базе; собери мы по батчу — группа из одних корректировок
    отвергается сборщиком, и позиция теряет деньги молча. Поэтому после вставки сделки
    **перечитываются из базы** по затронутым `position_id`.
-3. **Группа, которая не складывается в позицию, не роняет батч.** Сборщик отказывается
+4. **Группа, которая не складывается в позицию, не роняет батч.** Сборщик отказывается
    (`PositionBuildError`), когда у группы нет ни одного входа: окно синка перезапрашивает
    сутки, и группа из одних выходов или одних корректировок теоретически возможна раньше,
    чем приедет вход. Сделки при этом уже сохранены (они факты брокера), поэтому отказ по
    такой группе — событие лога `ingest.position_unbuildable`, а не 500 на весь счёт: вход
    приедет следующим батчем, и позиция соберётся сама.
-4. **`ensure_symbols` зовётся по символам собранных позиций, а не по сделкам батча.**
+5. **`ensure_symbols` зовётся по символам собранных позиций, а не по сделкам батча.**
    У неторговой операции символ пуст (`X-44`), и наивный вызов по всем сделкам завёл бы в
    `symbols` строку с пустым `raw` — инструмент-призрак, ровно то, ради чего в `X-44`
    отвергли заполнитель. Символ собранной позиции взят сборщиком у сделки входа, а вход —
    всегда `buy`/`sell`, которым граница (`S1-01`) пустой символ запрещает.
-5. **`reason` пишется всегда, включая неторговые сделки.** Разбор — в `docs/mt5-assumptions.md`,
+6. **`reason` пишется всегда, включая неторговые сделки.** Разбор — в `docs/mt5-assumptions.md`,
    допущение 10.
 
 Чего здесь намеренно нет: чтения `open_positions.profit` — плавающий результат в `net_pnl`
@@ -38,7 +43,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -155,13 +160,33 @@ class StoredDeal:
 
 
 @dataclass(frozen=True, slots=True)
+class _Rebuilt:
+    """Итог пересборки: сколько строк записано и какой отрезок времени они закрывают.
+
+    `touched` — крайние `time_utc` сделок, участвовавших в пересборке позиций, которые
+    тронуты **новыми** сделками. Это и есть та рамка, за которую `daily_stats` меняться
+    не может: день строки кэша задан `positions.close_time`, а `close_time` позиции —
+    всегда время одной из её сделок. Отрезок покрывает и старое значение, и новое, потому
+    что `deals` append-only: прежний набор сделок позиции — подмножество нынешнего.
+    """
+
+    rows: int
+    touched: tuple[datetime, datetime] | None
+
+
+@dataclass(frozen=True, slots=True)
 class IngestResult:
-    """Ответ SPEC.md 5.3, пункт 7, в терминах домена."""
+    """Ответ SPEC.md 5.3, пункт 7, в терминах домена.
+
+    `touched` в ответ не уезжает: это адрес пересчёта кэша для маршрута, а не поле
+    контракта.
+    """
 
     received: int
     inserted: int
     positions_rebuilt: int
     sync_run_id: int
+    touched: tuple[datetime, datetime] | None
 
     @property
     def duplicates(self) -> int:
@@ -231,9 +256,12 @@ async def ingest_batch(
             ],
         )
 
-    inserted = await _insert_deals(session, account.id, batch.source, normalized.deals)
-    affected = _affected_positions(normalized.deals, batch.open_positions)
-    rebuilt = await _rebuild_positions(session, account.id, batch, affected)
+    stored_tickets = await _insert_deals(session, account.id, batch.source, normalized.deals)
+    from_new_deals = _positions_of(
+        deal for deal in normalized.deals if deal.deal_ticket in stored_tickets
+    )
+    affected = from_new_deals | {record.position_id for record in batch.open_positions}
+    rebuilt = await _rebuild_positions(session, account.id, batch, affected, from_new_deals)
 
     accounts.apply_sync_result(
         account,
@@ -248,17 +276,18 @@ async def ingest_batch(
         batch.source,
         started_at=started_at,
         received=len(batch.deals),
-        inserted=inserted,
-        rebuilt=rebuilt,
+        inserted=len(stored_tickets),
+        rebuilt=rebuilt.rows,
         offset_minutes=batch.server_utc_offset_minutes,
         error=None,
     )
     await session.commit()
     return IngestResult(
         received=len(batch.deals),
-        inserted=inserted,
-        positions_rebuilt=rebuilt,
+        inserted=len(stored_tickets),
+        positions_rebuilt=rebuilt.rows,
         sync_run_id=sync_run_id,
+        touched=rebuilt.touched,
     )
 
 
@@ -326,33 +355,31 @@ async def _record_run(
     return (await session.execute(statement)).scalar_one()
 
 
-def _affected_positions(
-    deals: Sequence[NormalizedDeal], open_positions: Sequence[IngestOpenPosition]
-) -> set[int]:
-    """`position_id`, которые батч трогает (SPEC.md 5.3, пункт 4).
+def _positions_of(deals: Iterable[NormalizedDeal]) -> set[int]:
+    """`position_id`, которые трогают эти сделки (SPEC.md 5.3, пункт 4).
 
     Правило ролей берётся у нормализатора: пополнение счёта позицию не трогает, даже если
     брокер проставил ему номер (§6.2).
     """
-    affected = {
+    return {
         deal.position_id
         for deal in deals
         if deal_role(deal.deal_type, deal.position_id) != "excluded"
     }
-    affected |= {record.position_id for record in open_positions}
-    return affected
 
 
 async def _insert_deals(
     session: AsyncSession, account_id: UUID, source: str, deals: Sequence[NormalizedDeal]
-) -> int:
-    """`INSERT … ON CONFLICT DO NOTHING` (SPEC.md 5.3, пункт 2). Возвращает число новых.
+) -> set[int]:
+    """`INSERT … ON CONFLICT DO NOTHING` (SPEC.md 5.3, пункт 2). Возвращает тикеты новых.
 
-    `RETURNING` при `DO NOTHING` отдаёт только реально вставленные строки, поэтому число
-    здесь измеренное, а не разница множеств, посчитанная до вставки.
+    `RETURNING` при `DO NOTHING` отдаёт только реально вставленные строки, поэтому и
+    счётчик, и множество «что нового» здесь измеренные, а не посчитанные до вставки
+    разницей множеств. Тикеты нужны пересборке: затронуты позиции **новых** сделок, а не
+    всех приехавших.
     """
     rows = _deal_rows(account_id, source, deals)
-    inserted = 0
+    inserted: set[int] = set()
     for chunk in _chunks(rows, DEAL_INSERT_CHUNK):
         result = await session.execute(
             pg_insert(models.Deal)
@@ -362,7 +389,7 @@ async def _insert_deals(
             )
             .returning(models.Deal.deal_ticket)
         )
-        inserted += len(result.scalars().all())
+        inserted.update(result.scalars().all())
     return inserted
 
 
@@ -463,13 +490,22 @@ async def _rebuild_positions(
     account_id: UUID,
     batch: IngestDealsBatch,
     affected: set[int],
-) -> int:
-    """Пересборка затронутых позиций. Возвращает число записанных строк `positions`."""
+    from_new_deals: set[int],
+) -> _Rebuilt:
+    """Пересборка затронутых позиций.
+
+    `from_new_deals` — подмножество `affected`, тронутое новыми сделками; по нему берётся
+    отрезок времени для пересчёта `daily_stats`. Позиции из `open_positions` в него не
+    входят намеренно: у открытой нет `close_time`, то есть в кэше суточной агрегации она
+    не появляется, а её история могла бы растянуть отрезок на месяцы удержания.
+    """
     if not affected:
-        return 0
+        return _Rebuilt(rows=0, touched=None)
 
     snapshots = {record.position_id: record for record in batch.open_positions}
-    grouped = group_position_deals(await _stored_deals(session, account_id, sorted(affected)))
+    stored = await _stored_deals(session, account_id, sorted(affected))
+    grouped = group_position_deals(stored)
+    touched = _touched_span(stored, from_new_deals)
 
     built: list[BuiltPosition] = []
     # Открытые позиции, у которых в базе нет ни одной сделки (SPEC.md 5.3, пункт 5):
@@ -523,8 +559,8 @@ async def _rebuild_positions(
         for record in without_deals
     )
     if not rows:
-        return 0
-    rows.sort(key=lambda row: cast(int, row["position_id"]))
+        return _Rebuilt(rows=0, touched=touched)
+    rows.sort(key=lambda row: row["position_id"])
 
     for chunk in _chunks(rows, POSITION_UPSERT_CHUNK):
         statement = pg_insert(models.Position).values(chunk)
@@ -534,7 +570,21 @@ async def _rebuild_positions(
                 set_={name: statement.excluded[name] for name in POSITION_UPDATE_COLUMNS},
             )
         )
-    return len(rows)
+    return _Rebuilt(rows=len(rows), touched=touched)
+
+
+def _touched_span(
+    stored: Sequence[StoredDeal], positions: set[int]
+) -> tuple[datetime, datetime] | None:
+    """Крайние `time_utc` сделок этих позиций — рамка пересчёта `daily_stats`.
+
+    Дни внутри рамки считает сама `refresh_daily_stats`: день режется по зоне и границе
+    дня **владельца** счёта (`docs/metrics.md` §6), а ингест владельца не видит — он
+    пришёл по сервисному токену установки. Посчитай список дней здесь — правило торгового
+    дня получило бы второе прочтение, и смена зоны в настройках разводила бы их молча.
+    """
+    moments = [deal.time_utc for deal in stored if deal.position_id in positions]
+    return None if not moments else (min(moments), max(moments))
 
 
 def _built_position_row(
@@ -610,6 +660,6 @@ def _open_position_row(
     }
 
 
-def _chunks(items: list[Any], size: int) -> Iterator[list[Any]]:
+def _chunks[Row](items: list[Row], size: int) -> Iterator[list[Row]]:
     for start in range(0, len(items), size):
         yield items[start : start + size]

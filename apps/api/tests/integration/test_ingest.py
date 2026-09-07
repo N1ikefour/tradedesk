@@ -554,21 +554,65 @@ async def test_a_successful_batch_records_its_sync_run(client: AsyncClient, acco
 async def test_a_successful_batch_queues_the_daily_stats_refresh(
     client: AsyncClient, account: UUID
 ) -> None:
-    """SPEC.md 5.3, пункт 6. Читается из очереди, а не из лога: заявление тут не считается."""
+    """SPEC.md 5.3, пункт 6. Читается из очереди, а не из лога: заявление тут не считается.
+
+    В задачу уезжает отрезок времени тронутых сделок, а не список дней: правило торгового
+    дня живёт в `domains/analytics`, и ингест не вправе прочитать его второй раз.
+    """
     await send(client, batches("real-simple-long.json", account)[0])
 
     jobs = await queued()
     assert [job.function for job in jobs] == [REFRESH_DAILY_STATS_NAME]
-    assert jobs[0].args == (str(account), None)
+    assert jobs[0].args == (str(account),)
+    # Крайние `time_utc` двух сделок фикстуры: 14:55:05 и 15:02:20 при смещении +120.
+    assert jobs[0].kwargs == {"within": ["2025-11-27T12:55:05+00:00", "2025-11-27T13:02:20+00:00"]}
 
 
-async def test_a_batch_that_changed_nothing_queues_nothing(
-    client: AsyncClient, account: UUID
-) -> None:
+async def test_an_empty_batch_queues_nothing(client: AsyncClient, account: UUID) -> None:
     """Пустой батч — штатный «нового нет». Гонять пересчёт по нему незачем."""
     await send(client, batch_of([], account))
 
     assert await queued() == []
+
+
+async def test_a_repeated_batch_rebuilds_nothing_and_queues_nothing(
+    client: AsyncClient, account: UUID
+) -> None:
+    """Батч перекрытия — «ничего не изменил» в том виде, в каком это бывает в жизни.
+
+    Коллектор перезапрашивает окно `last_sync_at − 24h` каждые 60 секунд (SPEC.md 8.2),
+    то есть повтор приходит постоянно. Считай пересборку по **всем** сделкам батча — и у
+    счёта, торговавшего за сутки, каждый тик синка гнал бы полную пересборку и ставил бы
+    задачу пересчёта. Затронуты только позиции **новых** сделок (SPEC.md 5.3, пункт 4).
+    """
+    batch = batches("real-simple-long.json", account)[0]
+    await send(client, batch)
+    await get_redis().flushdb()
+
+    repeated = await send(client, batch)
+
+    assert (repeated["inserted"], repeated["duplicates"]) == (0, 2)
+    assert repeated["positions_rebuilt"] == 0
+    assert await queued() == []
+
+
+async def test_a_paused_account_still_accepts_the_batch(client: AsyncClient, account: UUID) -> None:
+    """Пауза — просьба не ходить к брокеру, а не запрет хранить уже полученные факты.
+
+    Держится это на раннем `return` в `accounts.apply_sync_result`: снять его — и пауза
+    начнёт молча сниматься первым же синком, а данные при этом продолжат приходить.
+    """
+    async with get_engine().begin() as connection:
+        await connection.execute(
+            text("update trading_accounts set status = 'paused' where id = :a"), {"a": account}
+        )
+
+    body = await send(client, batches("real-simple-long.json", account)[0])
+
+    assert (body["inserted"], body["positions_rebuilt"]) == (2, 1)
+    card = (await rows("select status, last_sync_at from trading_accounts"))[0]
+    assert card["status"] == accounts.STATUS_PAUSED, "синк снял паузу"
+    assert card["last_sync_at"] is not None, "синк был, а в карточке счёта его нет"
 
 
 async def test_unavailable_queue_does_not_lose_the_batch(
