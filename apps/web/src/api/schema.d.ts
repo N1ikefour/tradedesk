@@ -581,6 +581,30 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/ingest/deals': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Ingest Deals
+     * @description Батч сделок счёта: вставка, пересборка позиций, отметка в карточке счёта.
+     *
+     *     Лимит в 5000 сделок проверяется здесь, а не схемой: pydantic отверг бы такой батч как
+     *     невалидный, то есть `400`, а спека требует `413` — «слишком большой» и «неправильной
+     *     формы» это разные утверждения (разобрано в `schemas.py`).
+     */
+    post: operations['ingest_deals_api_v1_ingest_deals_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/dev/outbox': {
     parameters: {
       query?: never;
@@ -1054,6 +1078,257 @@ export interface components {
       accepted: number;
       /** Ignored */
       ignored: number;
+    };
+    /**
+     * IngestAccountInfo
+     * @description `mt5.account_info()` в терминах API (SPEC.md 6.1).
+     */
+    IngestAccountInfo: {
+      /**
+       * Currency
+       * @description Валюта счёта, ISO 4217. Не-USD принимается и разбирается доменом (S1-06)
+       */
+      currency: string;
+      /**
+       * Margin Mode
+       * @description Режим счёта: MT5 `ACCOUNT_MARGIN_MODE` (0 netting, 1 exchange, 2 hedging)
+       * @enum {string}
+       */
+      margin_mode: 'netting' | 'exchange' | 'hedging';
+      /**
+       * Balance
+       * @description Баланс счёта в валюте счёта
+       */
+      balance: number | string;
+      /**
+       * Equity
+       * @description Средства счёта в валюте счёта
+       */
+      equity: number | string;
+    };
+    /**
+     * IngestDeal
+     * @description Одна сделка из `mt5.history_deals_get()` как есть, без нормализации (SPEC.md 6.1).
+     */
+    IngestDeal: {
+      /**
+       * Ticket
+       * @description Тикет сделки, уникален в пределах счёта
+       */
+      ticket: number;
+      /**
+       * Order
+       * @description Тикет ордера; 0, если ордера нет
+       */
+      order: number;
+      /**
+       * Position Id
+       * @description Идентификатор позиции MT5; 0 у balance/credit
+       */
+      position_id: number;
+      /**
+       * Type
+       * @description MT5 `DEAL_TYPE_*`. Неизвестный код нормализуется в 'other' (SPEC.md 6.2)
+       */
+      type: number;
+      /**
+       * Symbol
+       * @description Символ как у брокера, с суффиксом: 'EURUSD.m'. Пустой — только у неторговой операции (пополнение, кредит, начисление): инструмента у неё нет
+       */
+      symbol: string;
+      /**
+       * Entry
+       * @description MT5 `DEAL_ENTRY_*`: 0 in, 1 out, 2 inout, 3 out_by
+       */
+      entry: number;
+      /**
+       * Reason
+       * @description MT5 `DEAL_REASON_*`. Неизвестный код нормализуется в 'other'
+       */
+      reason: number;
+      /**
+       * Volume
+       * @description Объём сделки в лотах
+       */
+      volume: number | string;
+      /**
+       * Price
+       * @description Цена исполнения
+       */
+      price: number | string;
+      /**
+       * Profit
+       * @description Финансовый результат сделки, знак как у брокера
+       */
+      profit: number | string;
+      /**
+       * Commission
+       * @description Комиссия, знак как у брокера
+       */
+      commission: number | string;
+      /**
+       * Swap
+       * @description Своп, знак как у брокера
+       */
+      swap: number | string;
+      /**
+       * Fee
+       * @description Сбор, знак как у брокера
+       */
+      fee: number | string;
+      /**
+       * Time Server
+       * @description Время сервера брокера, без часового пояса (SPEC.md 6.3)
+       */
+      time_server: string;
+      /**
+       * Time Msc
+       * @description Тот же момент в миллисекундах эпохи по часам сервера брокера. Обязан совпадать с `time_server` с точностью до секунды
+       */
+      time_msc: number;
+      /**
+       * Comment
+       * @description Комментарий брокера, может быть пустым
+       */
+      comment: string;
+      /**
+       * Magic
+       * @description Magic number советника; 0 у ручной торговли
+       */
+      magic: number;
+    } & unknown;
+    /**
+     * IngestDealsBatch
+     * @description Батч ингеста: `POST /ingest/deals` (SPEC.md 5.3).
+     *
+     *     `deals` и `open_positions` обязательны и могут быть пустыми. Пустой список и
+     *     отсутствующее поле — разные утверждения: `"open_positions": []` означает «на счёте
+     *     открытых позиций нет», и сборщик по нему закрывает позиции (SPEC.md 7). Разреши мы
+     *     пропускать поле — «не прислал» стало бы неотличимо от «нет открытых», и позиции
+     *     закрывались бы на батче, который про них ничего не знал.
+     */
+    IngestDealsBatch: {
+      /**
+       * Account Id
+       * Format: uuid
+       * @description Счёт, которому принадлежит батч
+       */
+      account_id: string;
+      /**
+       * Source
+       * @description Кто прислал батч
+       * @enum {string}
+       */
+      source: 'collector' | 'ea' | 'csv';
+      /**
+       * Server Utc Offset Minutes
+       * @description Смещение часов сервера брокера от UTC в минутах, кратное 15 (SPEC.md 6.3): все реальные зоны кратны, и некратное значение означает, что в поле уехали не минуты. `time_utc = time_server − offset`
+       */
+      server_utc_offset_minutes: number;
+      /** @description Состояние счёта на момент батча */
+      account_info: components['schemas']['IngestAccountInfo'];
+      /**
+       * Deals
+       * @description Сделки окна синхронизации; перекрытие с прошлым батчем — норма. Не больше 5000 штук: батч большего размера сервер отвергает с HTTP 413
+       */
+      deals: components['schemas']['IngestDeal'][];
+      /**
+       * Open Positions
+       * @description Все открытые позиции счёта на момент батча; пустой список — открытых нет
+       */
+      open_positions: components['schemas']['IngestOpenPosition'][];
+    };
+    /**
+     * IngestDealsResponse
+     * @description Ответ `POST /ingest/deals` — ровно пять полей SPEC.md 5.3, пункт 7.
+     *
+     *     В опубликованный `ingest-deals.schema.json` эта модель не входит: файл описывает
+     *     **тело батча**, то есть то, что обязан уметь собрать отправитель вне Python
+     *     (советник MQL5, этап 4). Ответ он читает по OpenAPI, как и фронт.
+     *
+     *     Шестого поля здесь нет намеренно, хотя место для него есть: группы сделок, которые
+     *     сегодня не складываются в позицию (одни корректировки без входа, S1-04), в ответ не
+     *     попадают — перечень полей задан спекой, а расширять его молча значит расходиться с
+     *     ней. Такие группы уходят в лог событием `ingest.position_unbuildable`.
+     */
+    IngestDealsResponse: {
+      /**
+       * Received
+       * @description Сколько сделок пришло в батче
+       */
+      received: number;
+      /**
+       * Inserted
+       * @description Сколько сделок оказалось новыми
+       */
+      inserted: number;
+      /**
+       * Duplicates
+       * @description Сколько уже было в базе: `received − inserted`
+       */
+      duplicates: number;
+      /**
+       * Positions Rebuilt
+       * @description Сколько строк `positions` пересобрано
+       */
+      positions_rebuilt: number;
+      /**
+       * Sync Run Id
+       * @description Строка `sync_runs` этого батча
+       */
+      sync_run_id: number;
+    };
+    /**
+     * IngestOpenPosition
+     * @description Открытая позиция из `mt5.positions_get()` (SPEC.md 5.3, пункт 5).
+     */
+    IngestOpenPosition: {
+      /**
+       * Position Id
+       * @description Идентификатор позиции MT5
+       */
+      position_id: number;
+      /**
+       * Symbol
+       * @description Символ
+       */
+      symbol: string;
+      /**
+       * Type
+       * @description MT5 `POSITION_TYPE_*`: 0 buy, 1 sell
+       * @enum {integer}
+       */
+      type: 0 | 1;
+      /**
+       * Volume
+       * @description Текущий объём позиции в лотах
+       */
+      volume: number | string;
+      /**
+       * Price Open
+       * @description Средняя цена входа
+       */
+      price_open: number | string;
+      /**
+       * Time Server
+       * @description Время открытия по часам сервера брокера
+       */
+      time_server: string;
+      /**
+       * Sl
+       * @description Stop Loss; 0 — не выставлен
+       */
+      sl: number | string;
+      /**
+       * Tp
+       * @description Take Profit; 0 — не выставлен
+       */
+      tp: number | string;
+      /**
+       * Profit
+       * @description Текущий незафиксированный результат
+       */
+      profit: number | string;
     };
     /**
      * JournalEntryBrief
@@ -1866,6 +2141,7 @@ export interface components {
       | 'method_not_allowed'
       | 'not_found'
       | 'not_mt5_account'
+      | 'payload_too_large'
       | 'position_not_found'
       | 'rate_limited'
       | 'tag_not_found'
@@ -2016,6 +2292,24 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
               message: string;
               details: {
                 [key: string]: unknown;
@@ -2224,6 +2518,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -2420,6 +2732,24 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
               message: string;
               details: {
                 [key: string]: unknown;
@@ -2633,6 +2963,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -2823,6 +3171,24 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
               message: string;
               details: {
                 [key: string]: unknown;
@@ -3031,6 +3397,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -3223,6 +3607,24 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
               message: string;
               details: {
                 [key: string]: unknown;
@@ -3427,6 +3829,24 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
               message: string;
               details: {
                 [key: string]: unknown;
@@ -3642,6 +4062,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -3837,6 +4275,24 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
               message: string;
               details: {
                 [key: string]: unknown;
@@ -4049,6 +4505,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -4241,6 +4715,24 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
               message: string;
               details: {
                 [key: string]: unknown;
@@ -4455,6 +4947,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -4649,6 +5159,24 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
               message: string;
               details: {
                 [key: string]: unknown;
@@ -4859,6 +5387,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -5053,6 +5599,24 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
               message: string;
               details: {
                 [key: string]: unknown;
@@ -5263,6 +5827,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -5457,6 +6039,24 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
               message: string;
               details: {
                 [key: string]: unknown;
@@ -5689,6 +6289,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -5883,6 +6501,24 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
               message: string;
               details: {
                 [key: string]: unknown;
@@ -6097,6 +6733,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -6303,6 +6957,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -6495,6 +7167,24 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
               message: string;
               details: {
                 [key: string]: unknown;
@@ -6707,6 +7397,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -6909,6 +7617,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -7101,6 +7827,24 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
               message: string;
               details: {
                 [key: string]: unknown;
@@ -7316,6 +8060,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -7513,6 +8275,24 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
               message: string;
               details: {
                 [key: string]: unknown;
@@ -7725,6 +8505,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -7928,6 +8726,24 @@ export interface operations {
           };
         };
       };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
       /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
       415: {
         headers: {
@@ -7956,6 +8772,228 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'unprocessable_entity';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Слишком много запросов (rate_limited) */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'rate_limited';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Внутренняя ошибка сервера (internal_error) */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'internal_error';
+              message: string;
+              details: Record<string, never>;
+            };
+          };
+        };
+      };
+    };
+  };
+  ingest_deals_api_v1_ingest_deals_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['IngestDealsBatch'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['IngestDealsResponse'];
+        };
+      };
+      /** @description Ошибка валидации запроса (validation_error) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'validation_error';
+              message: string;
+              details: {
+                fields: {
+                  [key: string]: string;
+                };
+              };
+            };
+          };
+        };
+      };
+      /** @description Требуется аутентификация (unauthorized) */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unauthorized';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Доступ запрещён (forbidden, forbidden_origin) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'forbidden' | 'forbidden_origin';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Ресурс не найден (account_not_found, not_found) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'account_not_found' | 'not_found';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Метод не поддерживается (method_not_allowed) */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'method_not_allowed';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Конфликт состояния (conflict) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Неподдерживаемый тип содержимого (unsupported_media_type) */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'unsupported_media_type';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Запрос не может быть выполнен (account_archived, unprocessable_entity) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'account_archived' | 'unprocessable_entity';
               message: string;
               details: {
                 [key: string]: unknown;
@@ -8122,6 +9160,24 @@ export interface operations {
             error: {
               /** @enum {string} */
               code: 'conflict';
+              message: string;
+              details: {
+                [key: string]: unknown;
+              };
+            };
+          };
+        };
+      };
+      /** @description Тело запроса слишком большое (payload_too_large) */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            error: {
+              /** @enum {string} */
+              code: 'payload_too_large';
               message: string;
               details: {
                 [key: string]: unknown;

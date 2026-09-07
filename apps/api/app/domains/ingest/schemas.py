@@ -328,6 +328,26 @@ class IngestDealsBatch(IngestBase):
     )
 
 
+class IngestDealsResponse(IngestBase):
+    """Ответ `POST /ingest/deals` — ровно пять полей SPEC.md 5.3, пункт 7.
+
+    В опубликованный `ingest-deals.schema.json` эта модель не входит: файл описывает
+    **тело батча**, то есть то, что обязан уметь собрать отправитель вне Python
+    (советник MQL5, этап 4). Ответ он читает по OpenAPI, как и фронт.
+
+    Шестого поля здесь нет намеренно, хотя место для него есть: группы сделок, которые
+    сегодня не складываются в позицию (одни корректировки без входа, S1-04), в ответ не
+    попадают — перечень полей задан спекой, а расширять его молча значит расходиться с
+    ней. Такие группы уходят в лог событием `ingest.position_unbuildable`.
+    """
+
+    received: int = Field(ge=0, description="Сколько сделок пришло в батче")
+    inserted: int = Field(ge=0, description="Сколько сделок оказалось новыми")
+    duplicates: int = Field(ge=0, description="Сколько уже было в базе: `received − inserted`")
+    positions_rebuilt: int = Field(ge=0, description="Сколько строк `positions` пересобрано")
+    sync_run_id: int = Field(description="Строка `sync_runs` этого батча")
+
+
 def batch_json_schema() -> dict[str, Any]:
     """JSON Schema батча в диалекте pydantic. Перевод в draft-07 — `schema_export.py`."""
     return IngestDealsBatch.model_json_schema(

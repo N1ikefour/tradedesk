@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app import __version__
+from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.client_ip import check_trusted_proxies, trusted_proxies
 from app.core.config import Settings, get_settings
 from app.core.db import dispose_engine
@@ -15,12 +16,14 @@ from app.core.errors import register_error_handlers
 from app.core.logging import configure_logging, get_logger
 from app.core.openapi import install_error_responses
 from app.core.origin import OriginCheckMiddleware
+from app.core.queue import close_queue
 from app.core.redis import close_redis
 from app.core.security import check_master_key, master_key_scrub_values
 from app.domains.accounts.router import router as accounts_router
 from app.domains.analytics.router import router as analytics_router
 from app.domains.auth.router import router as auth_router
 from app.domains.collector.router import router as collector_router
+from app.domains.ingest.router import router as ingest_router
 from app.domains.journal.router import router as journal_router
 from app.domains.mail.provider import check_email_provider
 from app.domains.mail.router import router as dev_router
@@ -28,6 +31,12 @@ from app.domains.system.router import router as system_router
 from app.domains.users.router import router as users_router
 
 API_PREFIX = "/api/v1"
+
+# Потолок на тело батча ингеста — до разбора JSON (`core/body_limit.py`). 5000 сделок
+# по контракту S1-01 весят около 3,5 МБ в худшем случае; запас четырёхкратный и
+# закрывает заодно `open_positions`, длину которого спека не ограничивает вовсе.
+INGEST_MAX_BODY_BYTES = 8 * 1024 * 1024
+INGEST_DEALS_PATH = f"{API_PREFIX}/ingest/deals"
 
 log = get_logger(__name__)
 
@@ -73,6 +82,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     finally:
         await dispose_engine()
         await close_redis()
+        await close_queue()
         log.info("app.stopped")
 
 
@@ -110,6 +120,13 @@ def create_app() -> FastAPI:
     install_error_responses(app)
     # CSRF из SPEC.md 4: проверка Origin распространяется на все мутирующие запросы.
     app.add_middleware(OriginCheckMiddleware, app_url=settings.app_url)
+    # Добавлена последней, поэтому стоит первой в цепочке: тело обязано быть отсечено
+    # раньше, чем его кто-нибудь прочитает (S1-01 оставил этот долг S1-04).
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        max_bytes=INGEST_MAX_BODY_BYTES,
+        paths=(INGEST_DEALS_PATH,),
+    )
     app.include_router(system_router, prefix=API_PREFIX)
     app.include_router(auth_router, prefix=API_PREFIX)
     app.include_router(users_router, prefix=API_PREFIX)
@@ -122,6 +139,9 @@ def create_app() -> FastAPI:
     # же префиксом, что и остальной API (CLAUDE.md §5), и в OpenAPI остаются намеренно —
     # это контракт для S1-08, а пароль в схеме присутствует как тип, а не как значение.
     app.include_router(collector_router, prefix=API_PREFIX)
+    # Данные синка. Замок тот же, что у коллектора, домен другой: здесь сделки счёта,
+    # а не разговор с процессом (SPEC.md 5.3).
+    app.include_router(ingest_router, prefix=API_PREFIX)
     if not settings.is_prod:
         # Письма с кодами наружу не выставляются: в проде маршрута просто нет,
         # он не появляется и в OpenAPI.
