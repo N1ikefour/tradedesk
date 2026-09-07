@@ -141,3 +141,5 @@ Updated: 2026-09-06
 | X-43 | Кириллица в имени пользователя Windows | collector + infra | Todo | — |
 | X-44 | Депозит не проходит контракт ингеста: пустой `symbol` | backend | Review | [PR #26](https://github.com/N1ikefour/tradedesk/pull/26) |
 | X-45 | Индексы приходят с префиксом `$$` | backend | Todo | — |
+| X-46 | Открытая позиция показывает причину своего закрытия | frontend | Todo | — |
+| X-47 | Опубликованная схема и модель расходятся на переводе строки | backend | Todo | — |
