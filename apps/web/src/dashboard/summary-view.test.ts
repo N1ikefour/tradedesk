@@ -70,7 +70,8 @@ describe('сводка на экране', () => {
     expect(view.netPnl.sign).toBe('positive');
     expect(metric(view, 'trades').value).toBe('8');
     // Доля 0…1 приходит с сервера, проценты — работа фронта (docs/metrics.md §3.2).
-    expect(metric(view, 'winrate').value).toBe(`50,0${NB}%`);
+    // Знаков два: доля посчитана с четырьмя, и один из них экран терять не должен.
+    expect(metric(view, 'winrate').value).toBe(`50,00${NB}%`);
     expect(metric(view, 'profit_factor').value).toBe('2,17');
     expect(metric(view, 'avg_win').value).toBe(`54,25${NB}$`);
     // Средний убыток отрицателен — это деньги, а не модуль.
@@ -114,6 +115,24 @@ describe('сводка на экране', () => {
     expect(metric(view, 'profit_factor').value).toBe(t.dashboard.unknownValue);
     expect(metric(view, 'profit_factor').note).toBe(t.dashboard.noteNoLosses);
     expect(metric(view, 'avg_loss').note).toBe(t.dashboard.noteNoLosses);
+  });
+
+  it('нулевой профит-фактор — посчитанный ноль, а не прочерк', () => {
+    // Третья строка таблицы docs/metrics.md §3.1: есть убытки и нет прибыли. Это
+    // единственный случай, когда «0.00» у профит-фактора — факт, а не отсутствие числа.
+    const view = describeSummary({
+      ...PAPER_EXAMPLE,
+      wins: 0,
+      losses: 7,
+      breakeven: 1,
+      winrate: '0.0000',
+      profit_factor: '0.00',
+      avg_win: null,
+    });
+
+    expect(metric(view, 'profit_factor').value).toBe('0,00');
+    expect(metric(view, 'profit_factor').note).toBeNull();
+    expect(metric(view, 'winrate').value).toBe(`0,00${NB}%`);
   });
 
   it('без выигрышных сказано именно это, а не «нет сделок»', () => {

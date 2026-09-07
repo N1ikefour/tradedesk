@@ -82,6 +82,18 @@ describe('шаги онбординга', () => {
     expect(currentStep(all)).toBeNull();
   });
 
+  it('архивный счёт коллектора не ждёт: шага про него нет', () => {
+    // Коллектор архивный счёт уже не видит (SPEC.md 5.6), и вечная пустая галочка на нём
+    // была бы выдуманной поломкой — ровно как у счёта «вручную».
+    const steps = buildOnboarding({
+      accounts: [account({ status: 'archived' })],
+      hasReflection: false,
+    });
+
+    expect(steps.map((step) => step.key)).toEqual(['account', 'positions', 'reflection']);
+    expect(done(steps)).toEqual(['account']);
+  });
+
   it('счёт «вручную» не ждёт коллектора: шага про него нет', () => {
     const steps = buildOnboarding({
       accounts: [account({ platform: 'manual', server: null, login: null })],

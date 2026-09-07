@@ -1,13 +1,13 @@
-import { screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { act, screen, waitFor, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Account } from '@/accounts/api';
 import { useAccountSelectionStore } from '@/accounts/selection';
 import type { CalendarDay, CalendarMonth, Summary } from '@/dashboard/api';
-import { UNREFLECTED_PROBE_LIMIT } from '@/dashboard/api';
+import { OPEN_POSITIONS_LIMIT, UNREFLECTED_PROBE_LIMIT } from '@/dashboard/api';
 import { t } from '@/i18n';
 import type { PositionListItem } from '@/journal/api';
-import { installFetchMock, jsonResponse, type RouteTable } from '@/test/fetch-mock';
+import { errorResponse, installFetchMock, jsonResponse, type RouteTable } from '@/test/fetch-mock';
 import { renderApp, TEST_USER } from '@/test/render';
 
 const SESSION = 'GET /api/v1/auth/me';
@@ -150,7 +150,10 @@ function withDashboard(options: Options = {}): { routes: RouteTable; queries: Qu
     queries,
     routes: {
       [SESSION]: () => jsonResponse(200, TEST_USER),
-      [ACCOUNTS]: () => jsonResponse(200, { items: accounts }),
+      [ACCOUNTS]: ({ url }) => {
+        queries.push(url.searchParams);
+        return jsonResponse(200, { items: accounts });
+      },
       [SUMMARY]: ({ url }) => {
         queries.push(url.searchParams);
         return jsonResponse(200, options.summary ?? summary());
@@ -208,7 +211,9 @@ describe('дашборд: сводка', () => {
     await openDashboard();
 
     expect(await screen.findByText('117,00 $')).toBeInTheDocument();
-    expect(screen.getByText('50,0 %')).toBeInTheDocument();
+    // Два знака процента: доля приходит с четырьмя знаками, и разряд, на который сервер
+    // отвечает данными, экран терять не должен (docs/metrics.md §3.2).
+    expect(screen.getByText('50,00 %')).toBeInTheDocument();
     expect(screen.getByText('2,17')).toBeInTheDocument();
     expect(screen.getByText('14,63 $')).toBeInTheDocument();
   });
@@ -265,11 +270,37 @@ describe('дашборд: календарь-мини', () => {
     expect(screen.queryByRole('link', { name: /8 число/ })).not.toBeInTheDocument();
   });
 
-  it('месяц без сделок объяснён словами, а не пустой сеткой', async () => {
+  it('месяц без сделок объяснён словами, и сетка остаётся на месте', async () => {
     installFetchMock(withDashboard({ days: [] }).routes);
     await openDashboard();
 
+    // Сетка без единой суммы читается как «не загрузилось», поэтому рядом стоит фраза.
+    // Убирать сам месяц незачем: он показывает, за какой период сказано «сделок нет».
     expect(await screen.findByText(t.dashboard.calendarEmpty)).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: /сентябрь 2026/i })).toBeInTheDocument();
+  });
+
+  it('на узком экране месяц показан списком: сумма дня видна целиком', async () => {
+    // `matchMedia` в jsdom нет вовсе, поэтому раскладка подменяется явно — иначе
+    // проверялась бы настольная сетка под видом телефона.
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    installFetchMock(withDashboard({ days: [calendarDay({ net_pnl: '-1779.72' })] }).routes);
+    await openDashboard();
+
+    // В ячейке сетки шириной с палец эта сумма обрезалась бы до «-1 779,…», а обрезанные
+    // деньги читаются как другое число. В строке списка её обрезать нечему.
+    expect(await screen.findByText('-1 779,72 $')).toBeInTheDocument();
+    expect(screen.queryByRole('table', { name: /сентябрь 2026/i })).not.toBeInTheDocument();
+    // День остаётся ссылкой с теми же границами, что прислал сервер.
+    expect(screen.getByRole('link', { name: /7 число/ })).toHaveAttribute(
+      'href',
+      '/journal?from=2026-09-06T19%3A00%3A00Z&to=2026-09-07T19%3A00%3A00Z&status=closed',
+    );
   });
 });
 
@@ -283,6 +314,20 @@ describe('дашборд: открытые позиции', () => {
     expect(screen.getByText('EURUSD')).toBeInTheDocument();
     // `net_pnl` открытой позиции — накопленные издержки; на экране его нет.
     expect(screen.queryByText('-0,60 $')).not.toBeInTheDocument();
+  });
+
+  it('два числа открытых на экране названы разными словами', async () => {
+    // В сводке «плюс 2 открытых за тот же период», в блоке — все открытые сейчас, и их
+    // больше. Оба числа верны, поэтому множество названо в заголовке: без этого экран,
+    // который делается ради «не приходить с багом, которого нет», сам даёт такой повод.
+    installFetchMock(
+      withDashboard({ open: [position(1), position(2)], openCursor: 'next' }).routes,
+    );
+    await openDashboard();
+
+    expect(await screen.findByText(t.dashboard.openInPeriod(2))).toBeInTheDocument();
+    expect(screen.getByText(t.dashboard.openTitle)).toBeInTheDocument();
+    expect(screen.getByText(t.dashboard.openMore(OPEN_POSITIONS_LIMIT))).toBeInTheDocument();
   });
 
   it('пустой список говорит об этом словами', async () => {
@@ -376,6 +421,40 @@ describe('дашборд: пустое состояние', () => {
     await screen.findByText('117,00 $');
     expect(screen.queryByText(t.dashboard.onboardingTitle)).not.toBeInTheDocument();
   });
+
+  it('снятая рефлексия возвращает шаг: зонд перечитывает ответ, а не помнит первый', async () => {
+    const options: Options = { hasReflection: true };
+    installFetchMock(withDashboard(options).routes);
+    const { client } = await openDashboard();
+
+    await screen.findByText('117,00 $');
+    expect(screen.queryByText(t.dashboard.onboardingTitle)).not.toBeInTheDocument();
+
+    // `filled_at` снимается, если рефлексию очистили целиком (`S2-02`). После
+    // инвалидации экран обязан увидеть это, а не остаться с первым ответом.
+    options.hasReflection = false;
+    await act(async () => {
+      await client.invalidateQueries();
+    });
+
+    expect(await screen.findByText(t.dashboard.onboardingTitle)).toBeInTheDocument();
+    expect(screen.getByText(t.dashboard.stepReflectionTitle)).toBeInTheDocument();
+  });
+
+  it('счетов в работе не осталось: архивный и удалённый в список не приходят', async () => {
+    // Архивный счёт сервер не отдаёт без `include_archived`, удалённого нет вовсе, —
+    // и человек с одним таким счётом снова видит первый шаг. Это верно: архивный счёт
+    // сделок не приносит, коллектор его уже не видит (SPEC.md 5.6).
+    const { routes, queries } = withDashboard({ accounts: [] });
+    installFetchMock(routes);
+    await openDashboard();
+
+    expect(await screen.findByText(t.dashboard.stepAccountTitle)).toBeInTheDocument();
+    expect(screen.queryAllByText(t.dashboard.onboardingDone)).toHaveLength(0);
+    expect(screen.queryByText(t.dashboard.summaryTitle)).not.toBeInTheDocument();
+    // Архивные не запрашиваются намеренно: галочка от них не встанет и встать не должна.
+    expect(queries.some((query) => query.has('include_archived'))).toBe(false);
+  });
 });
 
 describe('дашборд: переключатель счетов', () => {
@@ -393,5 +472,46 @@ describe('дашборд: переключатель счетов', () => {
         queries.filter((query) => query.get('account_ids') === SECOND_ACCOUNT).length,
       ).toBeGreaterThanOrEqual(3);
     });
+  });
+
+  it('выбор счёта не двигает галочки: онбординг описывает человека, а не выбор', async () => {
+    // Выбран пустой счёт, а сделки и связь есть у соседнего. Шаг, снимаемый
+    // переключателем, означал бы, что пройденное «отменилось».
+    useAccountSelectionStore.setState({ mode: 'single', ids: [SECOND_ACCOUNT] });
+    installFetchMock(
+      withDashboard({
+        accounts: [
+          account(),
+          account({
+            id: SECOND_ACCOUNT,
+            label: 'Демо B',
+            positions_count: 0,
+            last_heartbeat_at: '2026-09-07T09:01:00Z',
+          }),
+        ],
+      }).routes,
+    );
+    await openDashboard();
+
+    const steps = await screen.findByRole('list');
+    expect(within(steps).getAllByText(t.dashboard.onboardingDone)).toHaveLength(3);
+    expect(within(steps).getByText(t.dashboard.stepReflectionTitle)).toBeInTheDocument();
+  });
+
+  it('список счетов не приехал: метрики показаны по всем счетам, и об этом сказано', async () => {
+    const { routes, queries } = withDashboard();
+    installFetchMock({
+      ...routes,
+      [ACCOUNTS]: () => errorResponse(500, 'internal_error', 'сервер не смог'),
+    });
+    await openDashboard();
+
+    expect(await screen.findByText('117,00 $')).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(t.dashboard.loadFailed))).toBeInTheDocument();
+    // Запасной вариант — «все счета»: это ровно то, что видно без переключателя, и
+    // ничего не прячет. Шагов онбординга при этом нет: на неприехавшем списке все
+    // галочки были бы сняты, и человек с двумя счетами прочитал бы «начните со счёта».
+    expect(queries.every((query) => !query.has('account_ids'))).toBe(true);
+    expect(screen.queryByText(t.dashboard.onboardingTitle)).not.toBeInTheDocument();
   });
 });

@@ -23,7 +23,10 @@ export function DashboardBlock({
   children: ReactNode;
 }) {
   return (
-    <Card>
+    // `min-w-0`: у элемента сетки минимальная ширина по умолчанию равна содержимому,
+    // поэтому широкая таблица внутри (открытые позиции) растягивала бы карточку, и
+    // горизонтально ехала бы вся страница вместо самой таблицы в своей рамке.
+    <Card className="min-w-0">
       <CardContent className="flex flex-col gap-3 p-5">
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
           <h2 className="text-sm font-medium">{title}</h2>
