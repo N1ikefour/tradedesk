@@ -45,6 +45,19 @@ MAX_RETRY_DELAY_SECONDS: Final = 900.0
 
 WindowReason = Literal["first", "catch_up", "incremental"]
 SendReason = Literal["first", "new_deals", "open_positions_changed", "keepalive"]
+# Чем кончилась попытка определить смещение часов брокера на этом тике. Перечень
+# закрытый, потому что от него зависит и то, что уйдёт в лог, и то, что человек прочтёт
+# на карточке счёта: молчаливой ветки среди них нет.
+OffsetStatus = Literal[
+    "known",  # котировка подтвердила то, с чем и так работаем
+    "confirmed",  # второе наблюдение по новой котировке — значение принято и записано
+    "waiting",  # первое наблюдение; ждём второго, отправлять пока нечем
+    "disagreed",  # два наблюдения разошлись — начинаем сверку заново
+    "stale_quote",  # котировка не обновилась: рынок закрыт или инструмент не торгуется
+    "no_quote",  # тика нет вовсе
+    "out_of_range",  # расхождение больше любой реальной зоны — похоже на часы машины
+    "jump_refused",  # скачок больше перевода часов: остаёмся на известном значении
+]
 
 
 class Chronological(Protocol):
@@ -61,6 +74,10 @@ class Window:
     start: datetime
     end: datetime
     reason: WindowReason
+    # `last_sync_at` с сервера оказался в будущем относительно часов этой машины. Окно
+    # починено, но причина — расхождение часов, и знать о ней должен человек, а не только
+    # арифметика.
+    clock_skew: bool = False
 
 
 @dataclass(frozen=True)
@@ -88,9 +105,15 @@ def plan_window(
     end = now + LOOKAHEAD
     if last_sync_at is None:
         return Window(start=now - timedelta(days=first_sync_days), end=end, reason="first")
-    if _catch_up_requested(sync_requested_at, last_sync_at=last_sync_at, done_at=last_finished_at):
-        return Window(start=now - CATCH_UP, end=end, reason="catch_up")
-    return Window(start=last_sync_at - OVERLAP, end=end, reason="incremental")
+    # `last_sync_at` ставит сервер по своим часам, а окно считается по часам этой машины.
+    # Отставшие на день часы пользователя иначе дают `start > end`: история не вернёт
+    # ничего и не может, батч уедет пустым, сервер запишет ещё более свежий `last_sync_at`
+    # — и счёт не синхронизируется никогда, показывая при этом «синхронизация идёт».
+    skewed = last_sync_at > now
+    started_at = now if skewed else last_sync_at
+    if _catch_up_requested(sync_requested_at, last_sync_at=started_at, done_at=last_finished_at):
+        return Window(start=now - CATCH_UP, end=end, reason="catch_up", clock_skew=skewed)
+    return Window(start=started_at - OVERLAP, end=end, reason="incremental", clock_skew=skewed)
 
 
 def _catch_up_requested(
@@ -132,41 +155,101 @@ def _naive(moment: datetime) -> datetime:
     return moment.astimezone(UTC).replace(tzinfo=None)
 
 
-def offset_from_tick(tick_server_time: int, now_utc: datetime) -> int | None:
-    """Смещение часов брокера по свежей котировке (SPEC.md 6.3). `None` — котировка стара.
+def rounded_offset_minutes(tick_server_time: int, now_utc: datetime) -> int:
+    """Сырое смещение из котировки, округлённое до четверти часа. Диапазон не проверяется.
 
     `offset = round((server_now − utc_now) / 15 мин) * 15 мин`. Округление до четверти
-    часа заодно съедает возраст котировки в несколько минут — но только его. Котировка
-    выходного дня отстаёт на десятки часов, и результат вылетает за диапазон реальных
-    зон: такое значение отбрасывается, вместо того чтобы уехать в батч смещением.
-
-    ⚠️ Дыра названа честно: тонкий рынок с котировкой пятичасовой давности даёт смещение,
-    которое в диапазон укладывается и потому будет принято. От этого страхует
-    `reconcile_offset`, а не эта функция.
+    часа заодно съедает возраст котировки в несколько минут — но только его.
     """
     server_now = datetime.fromtimestamp(tick_server_time, tz=UTC)
     minutes = (server_now - now_utc).total_seconds() / 60
-    rounded = round(minutes / OFFSET_STEP_MINUTES) * OFFSET_STEP_MINUTES
+    return int(round(minutes / OFFSET_STEP_MINUTES) * OFFSET_STEP_MINUTES)
+
+
+def offset_from_tick(tick_server_time: int, now_utc: datetime) -> int | None:
+    """То же, но с проверкой диапазона реальных зон. `None` — значение вне его.
+
+    Котировка выходного дня отстаёт на десятки часов, и результат вылетает за диапазон:
+    такое значение отбрасывается, вместо того чтобы уехать в батч смещением.
+
+    ⚠️ Дыра названа честно: тонкий рынок с котировкой пятичасовой давности даёт смещение,
+    которое в диапазон укладывается и потому этой функцией будет принято. От него
+    страхует `resolve_offset` — она требует, чтобы котировка **обновилась**.
+    """
+    rounded = rounded_offset_minutes(tick_server_time, now_utc)
     if not MIN_OFFSET_MINUTES <= rounded <= MAX_OFFSET_MINUTES:
         return None
-    return int(rounded)
+    return rounded
 
 
-def reconcile_offset(candidate: int | None, last_known: int | None) -> int | None:
-    """Свежее значение против запомненного: скачок больше часа — это не перевод часов.
+@dataclass(frozen=True)
+class OffsetProbe:
+    """Одно наблюдение: по какой котировке считали и что вышло."""
 
-    Брокер двигает часы на 60 минут при переходе на летнее время и никогда больше. Всё,
-    что прыгнуло сильнее, — протухшая котировка, и лучше остаться на прежнем смещении,
-    чем записать сделкам чужое время: `time_utc` уводит позицию в другой торговый день,
-    а прошлые сделки не пересчитываются (`SPEC.md` §6.3).
+    tick_time: int
+    offset: int
+
+
+@dataclass(frozen=True)
+class OffsetDecision:
+    """Чем работать на этом тике, что запомнить до следующего и что сказать вслух."""
+
+    offset: int | None
+    pending: OffsetProbe | None
+    status: OffsetStatus
+
+    @property
+    def confirmed(self) -> bool:
+        """Смещение подтверждено вторым наблюдением — только такое пишется на диск."""
+        return self.status == "confirmed"
+
+
+def resolve_offset(
+    tick_server_time: int | None,
+    now_utc: datetime,
+    *,
+    known: int | None,
+    pending: OffsetProbe | None,
+) -> OffsetDecision:
+    """Смещение брокера из котировки, с двумя страховками вместо одной.
+
+    Первое значение **не принимается на веру**, и это главное отличие от прежней логики.
+    Котировка пятичасовой давности на тонком рынке даёт смещение, которое проходит и по
+    диапазону зон, и по шагу в 15 минут; принятое первым, оно записывалось бы в
+    `collector-state.json` и дальше отвергало бы правильное как «скачок больше DST» —
+    навсегда, до ручного удаления файла. Ценой были бы все сделки счёта, уехавшие в чужой
+    торговый день: прошлое `SPEC.md` §6.3 не пересчитывает.
+
+    Подтверждение — не «два одинаковых подряд». Повтор ничего не доказывает: у застывшей
+    котировки время тика не меняется, а посчитанное из неё смещение между двумя опросами
+    с минутным шагом остаётся тем же после округления до четверти часа. Доказательство —
+    что **котировка обновилась**: у живого рынка `tick.time` идёт вперёд, у застывшей
+    стоит. Поэтому принимается смещение, дважды посчитанное по двум **разным** тикам.
+
+    Цена — один цикл опроса на самом первом запуске счёта; дальше значение живёт в файле
+    состояния и переживает перезапуск.
     """
+    if tick_server_time is None:
+        return OffsetDecision(offset=known, pending=pending, status="no_quote")
+    candidate = offset_from_tick(tick_server_time, now_utc)
     if candidate is None:
-        return last_known
-    if last_known is None:
-        return candidate
-    if abs(candidate - last_known) > MAX_OFFSET_JUMP_MINUTES:
-        return last_known
-    return candidate
+        # Вне диапазона реальных зон. Два повода, и различить их нечем: котировка
+        # выходного дня отстаёт на десятки часов ровно так же, как сбитые часы машины.
+        return OffsetDecision(offset=known, pending=pending, status="out_of_range")
+    if candidate == known:
+        return OffsetDecision(offset=known, pending=None, status="known")
+    if known is not None and abs(candidate - known) > MAX_OFFSET_JUMP_MINUTES:
+        return OffsetDecision(offset=known, pending=None, status="jump_refused")
+    probe = OffsetProbe(tick_time=tick_server_time, offset=candidate)
+    if pending is None:
+        return OffsetDecision(offset=known, pending=probe, status="waiting")
+    if pending.offset != candidate:
+        return OffsetDecision(offset=known, pending=probe, status="disagreed")
+    if tick_server_time <= pending.tick_time:
+        # Тот же тик — то же самое наблюдение, а не второе. Рынок закрыт или инструмент
+        # не торгуется: ждём обновления котировки, а не повторяем счёт по застывшей.
+        return OffsetDecision(offset=known, pending=pending, status="stale_quote")
+    return OffsetDecision(offset=candidate, pending=None, status="confirmed")
 
 
 def sort_deals[C: Chronological](deals: Sequence[C]) -> list[C]:

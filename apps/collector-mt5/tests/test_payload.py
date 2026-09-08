@@ -194,6 +194,17 @@ def test_control_characters_in_a_comment_are_repaired_not_rejected() -> None:
     assert payload.clean_comment("Limit\x00Sell[sl]") == "LimitSell[sl]"
 
 
+def test_a_comment_is_cut_exactly_by_the_border_and_not_a_character_more() -> None:
+    """`COMMENT_PATTERN` запрещает C0 и DEL — и ничего больше.
+
+    Прежняя проверка через `isprintable()` резала шире границы: неразрывный пробел,
+    zero-width и типографику брокера. Это данные брокера, а не наш мусор, и правка их
+    молча означала бы, что комментарий в журнале не совпадает с комментарием в терминале.
+    """
+    assert payload.clean_comment("EUR\xa0USD ​x") == "EUR\xa0USD ​x"
+    assert payload.clean_comment("a\x7fb\x1fc") == "abc"
+
+
 def test_long_comment_is_trimmed_to_the_contract() -> None:
     assert len(payload.clean_comment("x" * 400)) == payload.MAX_COMMENT_LENGTH
 
@@ -236,8 +247,67 @@ def test_margin_mode_maps_by_the_spec(code: int, name: str) -> None:
 
 
 def test_unknown_margin_mode_is_refused_not_guessed() -> None:
-    with pytest.raises(ValueError, match="неизвестный режим"):
+    with pytest.raises(payload.UnsendableError, match="неизвестный режим"):
         payload.margin_mode_name(9)
+
+
+# --------------------------------------------------------------------------------------
+# Отбраковка открытых позиций
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("position", "expected"),
+    [
+        (FakePosition(type=7), "тип позиции"),
+        (FakePosition(symbol=""), "без символа"),
+        (FakePosition(symbol="   "), "без символа"),
+        (FakePosition(symbol="XAU USD"), "пробелы"),
+        (FakePosition(symbol="X" * 65), "длиннее"),
+        (FakePosition(volume=-1.0), "volume отрицательный"),
+        (FakePosition(price_open=-2410.1), "price_open отрицательный"),
+        (FakePosition(sl=-1.0), "sl отрицательный"),
+        (FakePosition(tp=-1.0), "tp отрицательный"),
+        (FakePosition(profit=float("nan")), "profit"),
+        (FakePosition(identifier=-5), "идентификатор"),
+        (FakePosition(time=0), "время"),
+    ],
+)
+def test_a_position_the_border_would_refuse_is_not_sent(
+    position: FakePosition, expected: str
+) -> None:
+    """Граница к открытым позициям строже, чем к сделкам: `type` там перечисление 0|1.
+
+    Цена ошибки здесь выше, чем у сделки: открытые позиции едут в **каждом** чанке окна,
+    поэтому одна негодная означала бы 400 на все батчи подряд и остановку счёта навсегда.
+    """
+    reason = payload.unsendable_position_reason(position)
+    assert reason is not None
+    assert expected in reason
+
+
+def test_a_normal_open_position_is_not_touched() -> None:
+    sendable, rejected = payload.split_sendable_positions([FakePosition(), FakePosition(sl=0.0)])
+    assert len(sendable) == 2
+    assert rejected == []
+
+
+def test_one_bad_position_does_not_take_the_others_with_it() -> None:
+    good, bad = FakePosition(identifier=1), FakePosition(identifier=2, type=7)
+    sendable, rejected = payload.split_sendable_positions([good, bad])
+    assert [item.identifier for item in sendable] == [1]
+    assert [item.ticket for item in rejected] == [2]
+    assert rejected[0].reason
+
+
+def test_a_refused_position_would_have_failed_the_published_schema() -> None:
+    """Проверка того, что отбраковка не выдумана: схема на таком батче действительно краснеет."""
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(_batch(open_positions=[FakePosition(type=7)]), schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(_batch(open_positions=[FakePosition(symbol="")]), schema)
 
 
 def test_open_position_takes_its_id_from_identifier() -> None:

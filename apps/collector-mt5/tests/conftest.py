@@ -7,13 +7,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
+from collector import logging_setup
 from collector.api_client import Assignment, HeartbeatAccount, IngestResult
 from collector.config import CollectorSettings
 from collector.mt5_client import TerminalError
@@ -77,10 +78,15 @@ class FakeTerminal:
     positions: list[FakePosition] = field(default_factory=list)
     info: FakeAccountInfo = field(default_factory=FakeAccountInfo)
     tick_time: int | None = None
+    # Живой рынок обновляет котировку между опросами, и на этом стоит подтверждение
+    # смещения (`sync.resolve_offset`). `tick_step=0` — застывшая котировка: рынок
+    # закрыт, инструмент не торгуется, терминал отдаёт один и тот же тик.
+    tick_step: int = 60
     connect_errors: list[TerminalError] = field(default_factory=list)
     connected: int = 0
     closed: int = 0
     history_calls: list[tuple[datetime, datetime]] = field(default_factory=list)
+    ticks_asked: int = 0
 
     def connect(self) -> None:
         self.connected += 1
@@ -101,7 +107,11 @@ class FakeTerminal:
         return list(self.positions)
 
     def server_time(self) -> int | None:
-        return self.tick_time
+        if self.tick_time is None:
+            return None
+        moment = self.tick_time + self.tick_step * self.ticks_asked
+        self.ticks_asked += 1
+        return moment
 
     def close(self) -> None:
         self.closed += 1
@@ -134,6 +144,18 @@ class FakeApi:
 
     def heartbeat(self, collector_id: str, accounts: Iterable[HeartbeatAccount]) -> None:
         self.heartbeats.extend(accounts)
+
+
+@pytest.fixture(autouse=True)
+def _no_secrets_between_tests() -> Iterator[None]:
+    """Реестр секретов скраба — состояние процесса, а тесты его наполняют.
+
+    Конструктор `Assignment` вносит пароль в скраб (это и есть механизм из `CLAUDE.md` §5),
+    поэтому без уборки один тест влиял бы на вывод другого.
+    """
+    logging_setup.forget_secrets()
+    yield
+    logging_setup.forget_secrets()
 
 
 @pytest.fixture

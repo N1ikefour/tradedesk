@@ -14,7 +14,8 @@ from typing import Any
 
 import pytest
 
-from collector import messages, state
+from collector import logging_setup, messages, state
+from collector import worker as worker_module
 from collector.api_client import ApiError, Assignment
 from collector.config import CollectorSettings
 from collector.mt5_client import TerminalError
@@ -34,16 +35,40 @@ NOW = moment()
 BROKER_TICK = int((NOW + timedelta(minutes=120)).timestamp())
 
 
+class _Recorder:
+    """Подставной логгер: проверяется не формат строки, а сам факт, что она есть."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    def _record(self, event: str, **fields: Any) -> None:
+        self.events.append((event, fields))
+
+    debug = info = warning = error = exception = _record
+
+    def find(self, event: str) -> dict[str, Any]:
+        return next(fields for name, fields in self.events if name == event)
+
+
 def _worker(
     settings: CollectorSettings,
     api: FakeApi,
     terminal: FakeTerminal,
     *,
     state_file: Path | None = None,
+    known_offset: int | None = 120,
     now: Any = None,
     between_ticks: Any = None,
 ) -> AccountWorker:
-    """Цикл с подделками. `between_ticks` — что произошло в мире, пока коллектор спал."""
+    """Цикл с подделками. `between_ticks` — что произошло в мире, пока коллектор спал.
+
+    По умолчанию смещение уже подтверждено прошлым запуском — так выглядит счёт, который
+    хоть раз синхронизировался. `known_offset=None` — счёт, поднятый впервые: первый тик
+    у него уходит на сверку часов брокера, и батч уезжает только со второго.
+    """
+    if state_file is None and known_offset is not None:
+        state_file = settings.mt5_portable_root / "known-offset.json"
+        state.write_state(state_file, state.WorkerState(server_utc_offset_minutes=known_offset))
     slept: list[float] = []
 
     def sleep(seconds: float) -> None:
@@ -305,6 +330,92 @@ def test_a_deal_the_server_would_refuse_does_not_stop_the_account(
     assert "пробелы" in running.message
 
 
+def test_an_open_position_the_server_would_refuse_does_not_stop_the_account(
+    settings: CollectorSettings, assignment: Assignment
+) -> None:
+    """Отбраковка симметрична сделкам, и здесь она важнее.
+
+    Открытые позиции едут в каждом чанке окна: негодная позиция отвергала бы не один
+    батч, а все подряд, и счёт вставал бы навсегда — ретрай такое не чинит.
+    """
+    api, terminal = _ready(
+        assignment,
+        deals=[deal()],
+        positions=[FakePosition(identifier=1), FakePosition(identifier=2, type=7)],
+    )
+    _worker(settings, api, terminal).run(max_ticks=1)
+
+    assert [item["position_id"] for item in api.batches[0]["open_positions"]] == [1]
+    running = next(beat for beat in api.heartbeats if beat.state == "running")
+    assert running.message is not None
+    assert "позиция 2" in running.message
+    assert "тип позиции" in running.message
+
+
+def test_a_refused_position_leaves_the_position_open_on_the_server(
+    settings: CollectorSettings, assignment: Assignment
+) -> None:
+    """Цена отбраковки названа числом: из записи `open_positions` сервер читает один id.
+
+    `position_builder` ставит `status='closed'` только когда объёмы сошлись в ноль **и**
+    записи нет; у настоящей открытой позиции объёмы не сходятся, поэтому потеря записи
+    её не закрывает. Здесь фиксируется то, что от неё зависит: набор id для `decide_send`.
+    """
+    api, terminal = _ready(
+        assignment, deals=[deal()], positions=[FakePosition(identifier=2, symbol="")]
+    )
+    worker = _worker(settings, api, terminal)
+    worker.run(max_ticks=1)
+    assert api.batches[0]["open_positions"] == []
+
+
+def test_an_untranslatable_account_info_stops_with_words_instead_of_a_traceback(
+    settings: CollectorSettings, assignment: Assignment
+) -> None:
+    """Неизвестный режим счёта — не повод умереть молча.
+
+    Трейсбек ушёл бы в `sys.excepthook`, то есть в консоль, которой под Task Scheduler
+    нет: в `account-<id>.log` не попало бы ничего, а `S1-09` крутил бы краш-петлю.
+    """
+    api, terminal = _ready(assignment, deals=[deal()], info=FakeAccountInfo(margin_mode=9))
+    assert _worker(settings, api, terminal).run(max_ticks=2) == EXIT_OK
+
+    assert api.batches == []
+    error = next(beat for beat in api.heartbeats if beat.state == "error")
+    assert error.message is not None
+    assert "неизвестный режим счёта 9" in error.message
+    assert terminal.closed == 1
+
+
+def test_a_clock_behind_the_server_does_not_turn_the_window_inside_out(
+    settings: CollectorSettings, assignment: Assignment, monkeypatch: Any
+) -> None:
+    """`last_sync_at` из будущего давал `start > end`: история не вернёт ничего и не может.
+
+    Триггер бытовой — часы машины пользователя отстают от серверных. Симптом злой: батчи
+    уходят пустыми, сервер пишет ещё более свежий `last_sync_at`, а на экране «синхронизация
+    идёт». Окно чинится, причина попадает в лог.
+    """
+    events = _Recorder()
+    monkeypatch.setattr(worker_module, "log", events)
+    from_the_future = Assignment(
+        account_id=assignment.account_id,
+        server=assignment.server,
+        login=assignment.login,
+        password=assignment.password,
+        sync_requested_at=None,
+        last_sync_at=NOW + timedelta(days=3),
+        status="connected",
+    )
+    api, terminal = _ready(from_the_future, deals=[deal()])
+    _worker(settings, api, terminal).run(max_ticks=1)
+
+    start, end = terminal.history_calls[0]
+    assert start < end
+    assert start == (NOW - timedelta(hours=24) + timedelta(minutes=120)).replace(tzinfo=None)
+    assert events.find("collector.clock_behind_server")
+
+
 def test_a_failed_heartbeat_does_not_stop_the_sync(
     settings: CollectorSettings, assignment: Assignment
 ) -> None:
@@ -330,10 +441,70 @@ def test_no_quote_means_no_batch_and_a_readable_reason(
 ) -> None:
     """Смещение обязательно в каждом батче: без него отправлять нечего, и это говорится."""
     api, terminal = _ready(assignment, deals=[deal()], tick_time=None)
-    assert _worker(settings, api, terminal).run(max_ticks=1) == EXIT_OK
+    assert _worker(settings, api, terminal, known_offset=None).run(max_ticks=1) == EXIT_OK
     assert api.batches == []
     error = next(beat for beat in api.heartbeats if beat.state == "error")
     assert error.message == messages.OFFSET_UNKNOWN
+
+
+def test_the_first_offset_waits_for_a_second_quote(
+    settings: CollectorSettings, assignment: Assignment, tmp_path: Path
+) -> None:
+    """Первое значение не принимается на веру — на одном тике отправлять нечем.
+
+    Цена решения названа прямо: первый в жизни счёта батч уезжает не сразу, а через один
+    цикл опроса. Дальше смещение живёт в файле состояния и перезапуск его не теряет.
+    """
+    state_file = tmp_path / "collector-state.json"
+    api, terminal = _ready(assignment, deals=[deal()])
+    worker = _worker(settings, api, terminal, state_file=state_file)
+
+    assert worker.run(max_ticks=1) == EXIT_OK
+    assert api.batches == []
+    assert state.read_state(state_file).server_utc_offset_minutes is None
+    waiting = next(beat for beat in api.heartbeats if beat.message == messages.OFFSET_PENDING)
+    assert waiting.state == "running"
+
+
+def test_a_stale_first_quote_does_not_poison_the_state_forever(
+    settings: CollectorSettings, assignment: Assignment, tmp_path: Path
+) -> None:
+    """Разбор боевого сценария: тонкий рынок, котировка пятичасовой давности, первый запуск.
+
+    Прежде такое значение (−180 вместо +120) уезжало в батч и записывалось в
+    `collector-state.json`, после чего правильное смещение отвергалось как «скачок больше
+    DST» — навсегда, до ручного удаления файла. Проверяется именно это: в батч и в файл
+    попадает +120, то есть отравления не случилось.
+    """
+    state_file = tmp_path / "collector-state.json"
+    stale = int((NOW - timedelta(minutes=180)).timestamp())
+    api, terminal = _ready(assignment, deals=[deal()], tick_time=stale, tick_step=0)
+
+    def market_opens() -> None:
+        terminal.tick_time = BROKER_TICK
+        terminal.tick_step = 60
+
+    worker = _worker(settings, api, terminal, state_file=state_file, between_ticks=market_opens)
+    assert worker.run(max_ticks=3) == EXIT_OK
+
+    assert state.read_state(state_file).server_utc_offset_minutes == 120
+    assert [batch["server_utc_offset_minutes"] for batch in api.batches] == [120]
+
+
+def test_a_frozen_quote_is_not_a_second_opinion(
+    settings: CollectorSettings, assignment: Assignment, tmp_path: Path
+) -> None:
+    """Повтор по той же котировке ничего не доказывает — и не должен считаться за второй.
+
+    У застывшего тика смещение между опросами не меняется: минута разницы съедается
+    округлением до четверти часа. Подтверждает только **обновившаяся** котировка.
+    """
+    state_file = tmp_path / "collector-state.json"
+    stale = int((NOW - timedelta(minutes=180)).timestamp())
+    api, terminal = _ready(assignment, deals=[deal()], tick_time=stale, tick_step=0)
+    assert _worker(settings, api, terminal, state_file=state_file).run(max_ticks=5) == EXIT_OK
+    assert api.batches == []
+    assert state.read_state(state_file).server_utc_offset_minutes is None
 
 
 def test_remembered_offset_carries_a_closed_market(
@@ -347,13 +518,15 @@ def test_remembered_offset_carries_a_closed_market(
     assert api.batches[0]["server_utc_offset_minutes"] == 120
 
 
-def test_a_fresh_offset_is_written_down(
+def test_a_confirmed_offset_is_written_down(
     settings: CollectorSettings, assignment: Assignment, tmp_path: Path
 ) -> None:
+    """На диск попадает только то, что подтверждено второй котировкой."""
     state_file = tmp_path / "collector-state.json"
     api, terminal = _ready(assignment, deals=[deal()])
-    _worker(settings, api, terminal, state_file=state_file).run(max_ticks=1)
+    _worker(settings, api, terminal, state_file=state_file).run(max_ticks=2)
     assert state.read_state(state_file).server_utc_offset_minutes == 120
+    assert api.batches[0]["server_utc_offset_minutes"] == 120
 
 
 def test_a_stale_quote_does_not_overwrite_a_known_offset(
@@ -366,6 +539,90 @@ def test_a_stale_quote_does_not_overwrite_a_known_offset(
     api, terminal = _ready(assignment, deals=[deal()], tick_time=stale)
     _worker(settings, api, terminal, state_file=state_file).run(max_ticks=1)
     assert api.batches[0]["server_utc_offset_minutes"] == 120
+
+
+def test_a_refused_candidate_leaves_a_line_in_the_log(
+    settings: CollectorSettings, assignment: Assignment, tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Отказ обязан быть виден: молча отвергнутое смещение — тишина вместо диагноза.
+
+    Симптом отравленного состояния именно такой: коллектор каждую минуту получает
+    правильные +120, каждую минуту их выбрасывает, и в логе нет ни строки.
+    """
+    events = _Recorder()
+    monkeypatch.setattr(worker_module, "log", events)
+    state_file = tmp_path / "collector-state.json"
+    state.write_state(state_file, state.WorkerState(server_utc_offset_minutes=120))
+    stale = int((NOW + timedelta(hours=10)).timestamp())
+    api, terminal = _ready(assignment, deals=[deal()], tick_time=stale)
+    _worker(settings, api, terminal, state_file=state_file).run(max_ticks=1)
+
+    rejected = events.find("collector.offset_rejected")
+    assert rejected["status"] == "jump_refused"
+    assert rejected["candidate"] == 600
+    assert rejected["known"] == 120
+
+
+def test_a_clock_that_is_hours_off_says_so_instead_of_blaming_the_market(
+    settings: CollectorSettings, assignment: Assignment
+) -> None:
+    """Второй по вероятности повод «смещения нет» — сбитые часы машины, а не выходной."""
+    broken = int((NOW + timedelta(hours=20)).timestamp())
+    api, terminal = _ready(assignment, deals=[deal()], tick_time=broken)
+    assert _worker(settings, api, terminal, known_offset=None).run(max_ticks=1) == EXIT_OK
+    assert api.batches == []
+    error = next(beat for beat in api.heartbeats if beat.state == "error")
+    assert error.message is not None
+    assert "часовой пояс Windows" in error.message
+    assert "+20 ч" in error.message
+
+
+# --------------------------------------------------------------------------------------
+# Пароль счёта
+# --------------------------------------------------------------------------------------
+
+
+def test_the_account_password_never_reaches_the_log_file(
+    settings: CollectorSettings, assignment: Assignment, tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Инвариант `CLAUDE.md` §5 — механизмом, а не дисциплиной автора.
+
+    Прогон настоящий: логи поднимаются так же, как в `main()`, и знают при старте только
+    токен из `collector.env` — пароля счёта тогда ещё не существует. Утечка изображается
+    тем единственным способом, каким она и случается: пароль внутри текста ошибки от
+    чужой библиотеки, который коллектор честно кладёт в лог как причину отказа.
+
+    Логгер модуля пересоздаётся из-за `cache_logger_on_first_use`: proxy, once bound,
+    держит конфигурацию, которая была активна в момент первой записи, а её в тестах
+    задаёт порядок файлов. Проверяется от этого не меньше — цепочка процессоров, хендлер
+    и файл настоящие.
+    """
+    log_file = tmp_path / "logs" / "account-test.log"
+    logging_setup.setup_logging(log_file=log_file, level="INFO", secrets=settings.secrets)
+    monkeypatch.setattr(worker_module, "log", logging_setup.get_logger("collector.worker"))
+
+    leak = TerminalError(f"IPC initialize failed (login=1234567 password={assignment.password})")
+    api, terminal = _ready(assignment, connect_errors=[leak])
+    assert _worker(settings, api, terminal).run(max_connect_attempts=1) == EXIT_ACCOUNT
+
+    written = log_file.read_text(encoding="utf-8")
+    assert "collector.connect_failed" in written
+    assert assignment.password not in written
+    assert logging_setup.SECRET_PLACEHOLDER in written
+
+
+def test_the_account_password_never_reaches_the_account_card(
+    settings: CollectorSettings, assignment: Assignment
+) -> None:
+    """Второй канал, которым текст ошибки уходит из процесса, — `status_message` на экране."""
+    leak = TerminalError(f"IPC initialize failed password={assignment.password}")
+    api, terminal = _ready(assignment, connect_errors=[leak])
+    _worker(settings, api, terminal).run(max_connect_attempts=1)
+
+    beat = next(item for item in api.heartbeats if item.state == "error")
+    body = beat.payload()
+    assert assignment.password not in body["message"]
+    assert logging_setup.SECRET_PLACEHOLDER in body["message"]
 
 
 # --------------------------------------------------------------------------------------
@@ -431,3 +688,41 @@ def test_a_deal_out_of_ticket_order_still_counts_as_new(
     )
     worker.run(max_ticks=2)
     assert len(api.batches) == 2
+
+
+def test_an_unexpected_crash_lands_in_the_log_instead_of_a_missing_console(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Под Task Scheduler (`S1-10`) консоли нет, и `sys.excepthook` пишет в никуда.
+
+    Без этого рубежа краш-петля из-под `S1-09` не оставляла бы ни строки: последний
+    heartbeat — «Коллектор остановлен», в файле лога пусто, и разбираться не с чем.
+    """
+    env_file = tmp_path / "collector.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "API_URL=http://localhost:8000",
+                "COLLECTOR_TOKEN=collector-token-0123456789",
+                "COLLECTOR_ID=test-machine",
+                f"MT5_TERMINAL_EXE={tmp_path / 'terminal64.exe'}",
+                f"MT5_PORTABLE_ROOT={tmp_path / 'td-terminals'}",
+                f"LOG_DIR={tmp_path / 'logs'}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(worker_module, "platform_refusal", lambda: None)
+    monkeypatch.setattr(
+        worker_module.AccountWorker,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("библиотека сломалась")),
+    )
+    monkeypatch.setattr(worker_module, "log", logging_setup.get_logger("collector.worker"))
+
+    code = worker_module.main(["--account-id", ACCOUNT_ID, "--env-file", str(env_file), "--once"])
+
+    assert code == EXIT_ACCOUNT
+    written = (tmp_path / "logs" / f"account-{ACCOUNT_ID}.log").read_text(encoding="utf-8")
+    assert "collector.crashed" in written
+    assert "RuntimeError" in written

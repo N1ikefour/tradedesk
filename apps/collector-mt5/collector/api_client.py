@@ -5,8 +5,10 @@
 остаётся тонкой.
 
 **Пароль счёта приходит именно сюда** — `GET /internal/collector/assignments` единственный
-ответ API, который его содержит (`CLAUDE.md` §5). Поэтому `Assignment.password` объявлен
-с `repr=False`: объект попадает в кадры стека, а кадры печатаются при любом падении.
+ответ API, который его содержит (`CLAUDE.md` §5). Отсюда два следствия. `Assignment.password`
+объявлен с `repr=False`: объект попадает в кадры стека, а кадры печатаются при любом
+падении. И конструктор `Assignment` вносит пароль в скраб логов — это единственная точка,
+где значение появляется в процессе, поэтому здесь защита включается на все пути сразу.
 
 Ретраи — `tenacity` с потолком. Потолок обязателен: недоступность API не имеет права
 превратиться ни в бесконечный цикл, ни в потерю данных. Потери и не будет — следующая
@@ -30,7 +32,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from collector import messages
+from collector import logging_setup, messages
 from collector.config import CollectorSettings
 
 REQUEST_TIMEOUT_SECONDS: Final = 60.0
@@ -70,6 +72,16 @@ class Assignment:
     sync_requested_at: datetime | None
     last_sync_at: datetime | None
     status: str
+
+    def __post_init__(self) -> None:
+        """Появился объект с паролем — значит, скраб обязан знать это значение.
+
+        Регистрация стоит в конструкторе, а не у вызывающего, потому что это **точка
+        входа пароля в процесс**: другого способа получить его нет. Любой будущий
+        потребитель assignments (менеджер процессов `S1-09`) получает защиту, не зная о
+        ней, а «забыли зарегистрировать» перестаёт быть возможным диффом.
+        """
+        logging_setup.register_secret(self.password)
 
 
 @dataclass(frozen=True)
@@ -140,16 +152,28 @@ def _assignment(item: object) -> Assignment:
     except (KeyError, TypeError, ValueError) as error:
         # Текст исключения не подставляется: в `item` лежит пароль, и `KeyError` от
         # словаря печатает ключ, а `ValueError` от `int()` — значение.
-        raise ApiError("Задание коллектора пришло без обязательных полей") from error
+        raise ApiError(
+            "Задание коллектора пришло в неожиданном виде: нет обязательного поля "
+            "или время без часового пояса"
+        ) from error
 
 
 def _moment(value: object) -> datetime | None:
-    """ISO 8601 с `Z` (`SPEC.md` §5.1) → `datetime` с зоной."""
+    """ISO 8601 с `Z` (`SPEC.md` §5.1) → `datetime` с зоной.
+
+    Зона обязательна, и проверка на неё не формальность: наивное время из этого ответа
+    уезжает в `sync.terminal_bounds`, а там `_naive` трактует его через `astimezone`,
+    то есть как локальное время машины пользователя. Сегодня такого не бывает — контракт
+    api отдаёт `Z`, — но в самом коллекторе это не заперто ничем.
+    """
     if value is None:
         return None
     if not isinstance(value, str):
         raise ValueError("время не строкой")
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if moment.tzinfo is None:
+        raise ValueError("время без часового пояса")
+    return moment
 
 
 def parse_ingest_result(payload: object) -> IngestResult:
@@ -179,7 +203,12 @@ class HeartbeatAccount:
     def payload(self) -> dict[str, Any]:
         body: dict[str, Any] = {"account_id": self.account_id, "state": self.state}
         if self.message is not None:
-            body["message"] = messages.fit(self.message)
+            # Скраб на втором канале, которым текст уходит из процесса. Сообщение
+            # собирается из текста терминала, а он для нас чужой: `CLAUDE.md` §5 требует,
+            # чтобы пароля не было и в текстах ошибок, а `status_message` видно на экране.
+            body["message"] = messages.fit(
+                logging_setup.scrub_text(self.message, logging_setup.known_secrets())
+            )
         if self.terminal_login is not None:
             body["terminal_login"] = self.terminal_login
         return body

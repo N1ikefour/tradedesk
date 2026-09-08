@@ -8,7 +8,11 @@
 Отсюда два правила, которым модуль подчинён целиком.
 
 1. **Никаких решений.** Функции забирают данные и переводят коды ошибок в человеческий
-   текст через `messages`. Ни расчёта окон, ни отбора сделок, ни арифметики.
+   текст через `messages`. Ни расчёта окон, ни отбора сделок, ни арифметики. Три решения,
+   которые здесь всё-таки принимаются, вынесены в чистые функции модуля и проверены
+   тестами: какой тик считать свежайшим (`freshest_tick_time`), означает ли `None` от
+   `positions_get()` пустоту или отказ (`positions_mean_empty`), догрузилась ли история
+   (`history_step`). В методах `Mt5Terminal` остались вызовы библиотеки и ничего больше.
 2. **Импорт библиотеки — внутри функции, а не наверху файла.** Иначе `worker.py` нельзя
    было бы даже импортировать на машине разработки, и вместе с ним стали бы
    непроверяемыми его собственные решения.
@@ -21,15 +25,18 @@ from __future__ import annotations
 
 import shutil
 import time
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
-from typing import Final, Protocol
+from typing import Final, Literal, Protocol
 
 from collector import messages
+from collector.logging_setup import get_logger
 from collector.payload import RawAccountInfo, RawDeal, RawPosition
+
+log = get_logger(__name__)
 
 # Что не копируется в портабельный экземпляр. `config` — не оптимизация, а требование:
 # там лежат сохранённые терминалом учётные данные исходной установки, и тащить их в
@@ -63,7 +70,10 @@ class Credentials:
 
     login: int
     server: str
-    password: str
+    # `repr=False` по тому же доводу, что у `Assignment.password`: это последний объект на
+    # пути пароля, он лежит в кадре стека `Mt5Terminal.connect`, а кадры печатаются при
+    # любом падении. Автоматический `repr` датакласса вынес бы пароль в трейсбек.
+    password: str = field(repr=False)
 
 
 class Terminal(Protocol):
@@ -95,6 +105,47 @@ def import_mt5() -> ModuleType:
     except ImportError as error:
         raise TerminalError(messages.MT5_PACKAGE_MISSING) from error
     return MetaTrader5
+
+
+def freshest_tick_time(ticks: Iterable[object]) -> int | None:
+    """Самое свежее время тика из пробных символов; `None` — ни одного годного.
+
+    Решение, вынесенное из `Mt5Terminal.server_time`: чем ликвиднее инструмент, тем
+    моложе его котировка, а возраст котировки — это прямая ошибка в смещении часов
+    брокера. Отбраковка тика здесь же: `symbol_info_tick` по неизвестному брокеру символу
+    вернёт `None`, а `time` у него бывает нулём — ноль означает «тика нет», а не «1970».
+    """
+    freshest: int | None = None
+    for tick in ticks:
+        moment = getattr(tick, "time", None) if tick is not None else None
+        if not isinstance(moment, int) or isinstance(moment, bool) or moment <= 0:
+            continue
+        if freshest is None or moment > freshest:
+            freshest = moment
+    return freshest
+
+
+def positions_mean_empty(last_error_code: int) -> bool:
+    """`positions_get()` вернул `None` — это пустой список или отказ?
+
+    Цена ошибки несимметрична и потому решение вынесено сюда, под тест: принять отказ за
+    пустоту значит отправить батч без открытых позиций, то есть сказать серверу «открытых
+    нет». Признак ровно один — код успеха в `last_error()`.
+    """
+    return last_error_code == messages.RES_S_OK
+
+
+HistoryStep = Literal["settled", "growing", "unreadable"]
+
+
+def history_step(total: object, previous: int) -> HistoryStep:
+    """Догрузилась ли история между двумя опросами (`SPEC.md` §8.3).
+
+    `unreadable` — библиотека вернула не число: ждать больше нечего, ждать нечем.
+    """
+    if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+        return "unreadable"
+    return "settled" if total == previous else "growing"
 
 
 def portable_dir(root: Path, account_id: str) -> Path:
@@ -199,7 +250,7 @@ class Mt5Terminal:
             # Пустой список открытых позиций MT5 отдаёт как `None` при коде 1 (успех) —
             # это норма, а не отказ, и путать её с обрывом связи нельзя.
             code, _ = self._module().last_error()
-            if code == messages.RES_S_OK:
+            if positions_mean_empty(int(code)):
                 return []
             raise self._failure("positions")
         return list(positions)
@@ -211,13 +262,7 @@ class Mt5Terminal:
         приехать из данных, а не из настроек машины, на которой крутится терминал.
         """
         mt5 = self._module()
-        freshest: int | None = None
-        for symbol in TIME_PROBE_SYMBOLS:
-            tick = mt5.symbol_info_tick(symbol)
-            moment = getattr(tick, "time", None) if tick is not None else None
-            if isinstance(moment, int) and moment > 0 and (freshest is None or moment > freshest):
-                freshest = moment
-        return freshest
+        return freshest_tick_time(mt5.symbol_info_tick(symbol) for symbol in TIME_PROBE_SYMBOLS)
 
     def wait_for_history(self) -> None:
         """Дать терминалу догрузить историю с сервера брокера (SPEC.md 8.3).
@@ -233,13 +278,20 @@ class Mt5Terminal:
         waited = 0.0
         while waited < HISTORY_SETTLE_TIMEOUT_SECONDS:
             total = mt5.history_deals_total(start, end)
-            if not isinstance(total, int) or total < 0:
+            step = history_step(total, previous)
+            if step != "growing":
                 return
-            if total == previous:
-                return
-            previous = total
+            previous = int(total)
             self._sleep(HISTORY_SETTLE_POLL_SECONDS)
             waited += HISTORY_SETTLE_POLL_SECONDS
+        # Выход по таймауту при всё ещё растущей истории. Молчать здесь нельзя: первый
+        # батч уедет неполным, и единственный способ потом это понять — увидеть строку.
+        log.warning(
+            "collector.history_still_loading",
+            account_id=self._account_id,
+            deals_seen=previous,
+            waited_seconds=waited,
+        )
 
     # -- служебное -----------------------------------------------------------------
 

@@ -17,11 +17,17 @@
    терминала — «фальшивый UTC», равный часам сервера брокера. Сервер сверяет два поля
    между собой и отвергает батч при расхождении, поэтому расхождение ловится здесь и
    называется по тикету.
-3. **Сделку, которую сервер точно отвергнет, коллектор не отправляет.** `extra="forbid"`
+3. **Строку, которую сервер точно отвергнет, коллектор не отправляет.** `extra="forbid"`
    и валидаторы границы работают на весь батч разом: одна сделка с пробелом в символе
    означает `400` на все 5000 и остановку синхронизации счёта навсегда, без ретрая.
    Названная потеря одной сделки дешевле молчаливой остановки счёта — но она **обязана**
    быть названной, поэтому отбракованные попадают и в лог, и в heartbeat.
+
+   Отбраковка **симметрична**: то же самое делается с открытыми позициями, и это не
+   украшение. Открытые позиции едут в каждом чанке окна, поэтому негодная позиция
+   отвергала бы все батчи подряд, а не один. `account_info` выбросить нельзя — без него
+   батча нет вовсе, — и непереводимое значение там останавливает синк с названной причиной
+   (`UnsendableError` ловит `worker.py`).
 """
 
 from __future__ import annotations
@@ -40,6 +46,10 @@ MARGIN_MODES: Final[dict[int, str]] = {0: "netting", 1: "exchange", 2: "hedging"
 # MT5 `DEAL_TYPE_BUY` / `DEAL_TYPE_SELL`. У них символ обязан быть непустым — граница
 # отвергает торговую сделку без инструмента (`X-44`).
 TRADING_DEAL_TYPES: Final = frozenset({0, 1})
+
+# MT5 `POSITION_TYPE_BUY` / `POSITION_TYPE_SELL`. У открытой позиции граница объявляет
+# `type` перечислением, а не «неотрицательным числом», как у сделки.
+POSITION_TYPES: Final = frozenset({0, 1})
 
 MAX_SYMBOL_LENGTH: Final = 64
 MAX_COMMENT_LENGTH: Final = 255
@@ -96,13 +106,21 @@ class RawAccountInfo(Protocol):
     equity: float
 
 
-class UnsendableDealError(ValueError):
-    """Сделка, которую граница API отвергнет. Несёт причину человеческими словами."""
+class UnsendableError(ValueError):
+    """Данные, которые в контракт не переводятся. Несёт причину человеческими словами."""
+
+
+class UnsendableDealError(UnsendableError):
+    """Сделка, которую граница API отвергнет."""
 
 
 @dataclass(frozen=True)
 class Rejected:
-    """Отбракованная сделка: тикет для поиска в терминале и причина для человека."""
+    """Отбракованная строка терминала: чем её найти и почему она не уехала.
+
+    `ticket` — тикет сделки или `identifier` открытой позиции: и то и другое видно в
+    терминале глазами, а число без адреса не даёт человеку ничего.
+    """
 
     ticket: int
     reason: str
@@ -149,17 +167,23 @@ def margin_mode_name(code: int) -> str:
     try:
         return MARGIN_MODES[code]
     except KeyError as error:
-        raise ValueError(f"неизвестный режим счёта MT5: {code}") from error
+        raise UnsendableError(f"терминал сообщил неизвестный режим счёта {code}") from error
 
 
 def clean_comment(comment: str) -> str:
     """Комментарий брокера в том виде, в каком его примет схема.
 
-    Управляющие символы вырезаются, длина режется: это ремонт формы, а не смысла, и
-    альтернатива ему — `400` на весь батч из-за одного байта, который никто не читает.
+    Режется ровно то, что запрещает граница (`COMMENT_PATTERN` в `schemas.py`): управляющие
+    символы `\\x00–\\x1f` и `\\x7f`, плюс длина сверх 255. Ни знака больше: `\\xa0`,
+    zero-width и прочая типографика брокера — его данные, а не наш мусор, и вырезать их
+    значило бы молча править комментарий, который человек увидит в терминале целым.
     """
-    stripped = "".join(char for char in comment if char.isprintable() or char == " ")
+    stripped = "".join(char for char in comment if not _forbidden_in_comment(char))
     return stripped[:MAX_COMMENT_LENGTH]
+
+
+def _forbidden_in_comment(char: str) -> bool:
+    return char < " " or char == "\x7f"
 
 
 # --------------------------------------------------------------------------------------
@@ -244,6 +268,85 @@ def split_sendable(deals: Iterable[RawDeal]) -> tuple[list[RawDeal], list[Reject
             sendable.append(deal)
         else:
             rejected.append(Rejected(ticket=deal.ticket, reason=reason))
+    return sendable, rejected
+
+
+def unsendable_position_reason(position: RawPosition) -> str | None:
+    """`None` — открытую позицию можно отправлять. Строка — почему сервер её отвергнет.
+
+    Граница к открытым позициям **строже**, чем к сделкам: `type` там перечисление `0|1`,
+    а не любое неотрицательное число, и символ обязан быть непустым всегда. При этом
+    открытые позиции едут в каждом чанке окна, поэтому одна негодная позиция отвергала бы
+    не один батч, а все до единого — счёт встал бы навсегда и не чинился бы ретраем.
+    """
+    identifier = position.identifier
+    if not isinstance(identifier, int) or isinstance(identifier, bool):
+        return "идентификатор позиции не целое число"
+    if identifier < 0 or identifier > MAX_BIGINT:
+        return f"идентификатор позиции вне диапазона bigint: {identifier}"
+    if position.type not in POSITION_TYPES:
+        return f"тип позиции не buy и не sell: {position.type}"
+    symbol_problem = _position_symbol_problem(position.symbol)
+    if symbol_problem is not None:
+        return symbol_problem
+    try:
+        server_time_text(position.time)
+    except UnsendableDealError as error:
+        return str(error)
+    return _position_amounts_problem(position)
+
+
+def _position_symbol_problem(symbol: str) -> str | None:
+    if symbol == "" or symbol.strip() == "":
+        # `^\S+$` с `minLength: 1`: у открытой позиции инструмент есть всегда, поэтому
+        # послабления для неторговых операций, которое есть у сделок, здесь нет.
+        return "открытая позиция без символа"
+    if len(symbol) > MAX_SYMBOL_LENGTH:
+        return f"символ длиннее {MAX_SYMBOL_LENGTH} знаков: {symbol[:16]}…"
+    if any(char.isspace() for char in symbol):
+        return f"в символе пробелы: {symbol!r}"
+    return None
+
+
+def _position_amounts_problem(position: RawPosition) -> str | None:
+    for name, limit, allow_negative in (
+        ("volume", QUANTITY_LIMIT, False),
+        ("price_open", QUANTITY_LIMIT, False),
+        ("sl", QUANTITY_LIMIT, False),
+        ("tp", QUANTITY_LIMIT, False),
+        ("profit", MONEY_LIMIT, True),
+    ):
+        raw = getattr(position, name)
+        try:
+            text = decimal_text(raw)
+        except UnsendableDealError as error:
+            return f"{name}: {error}"
+        number = Decimal(text)
+        if not allow_negative and number < 0:
+            return f"{name} отрицательный: {text}"
+        if abs(number) >= limit:
+            return f"{name} не помещается в колонку: {text}"
+    return None
+
+
+def split_sendable_positions(
+    positions: Iterable[RawPosition],
+) -> tuple[list[RawPosition], list[Rejected]]:
+    """То же разделение для открытых позиций.
+
+    Цена отбраковки здесь мала и названа: сборщик читает из записи `open_positions` один
+    `position_id` и влияет ею только на `status`, а `status` считается ещё и по балансу
+    объёмов. Открытая позиция без своей записи остаётся открытой, потому что её сделки
+    не сходятся в ноль.
+    """
+    sendable: list[RawPosition] = []
+    rejected: list[Rejected] = []
+    for position in positions:
+        reason = unsendable_position_reason(position)
+        if reason is None:
+            sendable.append(position)
+        else:
+            rejected.append(Rejected(ticket=position.identifier, reason=reason))
     return sendable, rejected
 
 

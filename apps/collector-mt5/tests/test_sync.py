@@ -105,6 +105,36 @@ def test_a_stale_request_is_ignored() -> None:
     assert window.reason == "incremental"
 
 
+def test_a_last_sync_from_the_future_does_not_turn_the_window_inside_out() -> None:
+    """Часы машины отстают от серверных — окно получалось перевёрнутым.
+
+    `start > end` означает, что история не вернёт ничего и не может: терминал сравнивает
+    границы буквально. Батч при этом уходил пустым, сервер писал ещё более свежий
+    `last_sync_at`, и счёт не синхронизировался никогда — при живом «синхронизация идёт».
+    """
+    window = sync.plan_window(
+        NOW,
+        last_sync_at=NOW + timedelta(days=3),
+        sync_requested_at=None,
+        last_finished_at=None,
+        first_sync_days=3650,
+    )
+    assert window.start < window.end
+    assert window.start == NOW - sync.OVERLAP
+    assert window.clock_skew is True
+
+
+def test_a_normal_window_does_not_cry_about_the_clock() -> None:
+    window = sync.plan_window(
+        NOW,
+        last_sync_at=NOW - timedelta(minutes=1),
+        sync_requested_at=None,
+        last_finished_at=None,
+        first_sync_days=3650,
+    )
+    assert window.clock_skew is False
+
+
 # --------------------------------------------------------------------------------------
 # Границы в часах брокера
 # --------------------------------------------------------------------------------------
@@ -155,22 +185,105 @@ def test_offset_beyond_the_real_zones_is_refused() -> None:
     assert sync.offset_from_tick(tick, NOW) is None
 
 
-def test_daylight_saving_shift_is_accepted() -> None:
-    assert sync.reconcile_offset(180, 120) == 180
+# --------------------------------------------------------------------------------------
+# Подтверждение смещения
+# --------------------------------------------------------------------------------------
 
 
-def test_a_jump_bigger_than_daylight_saving_keeps_the_old_offset() -> None:
-    """Прошлые сделки не пересчитываются (SPEC.md 6.3): чужое смещение испортит их навсегда."""
-    assert sync.reconcile_offset(600, 120) == 120
+def _tick(shift_minutes: float, *, age_minutes: float = 0.0) -> int:
+    """Тик брокера со смещением `shift_minutes` и возрастом котировки `age_minutes`."""
+    return int((NOW + timedelta(minutes=shift_minutes - age_minutes)).timestamp())
 
 
-def test_missing_candidate_falls_back_to_what_we_knew() -> None:
+def test_the_first_value_is_not_trusted_on_its_own() -> None:
+    """Главное решение: одна котировка ничего не доказывает, даже правдоподобная."""
+    decision = sync.resolve_offset(_tick(120), NOW, known=None, pending=None)
+    assert decision.offset is None
+    assert decision.status == "waiting"
+    assert decision.pending is not None
+    assert decision.pending.offset == 120
+
+
+def test_a_second_quote_confirms_the_first() -> None:
+    first = sync.resolve_offset(_tick(120), NOW, known=None, pending=None)
+    second = sync.resolve_offset(_tick(120) + 60, NOW, known=None, pending=first.pending)
+    assert second.offset == 120
+    assert second.confirmed
+    assert second.pending is None
+
+
+def test_a_frozen_quote_is_not_a_second_opinion() -> None:
+    """Повтор по тому же тику — то же наблюдение.
+
+    Отличить застывшую котировку повтором нельзя: минута разницы съедается округлением
+    до четверти часа, и два опроса по замершему рынку дают одно и то же число. Признак
+    один — время тика не сдвинулось.
+    """
+    stale = _tick(120, age_minutes=300)
+    first = sync.resolve_offset(stale, NOW, known=None, pending=None)
+    second = sync.resolve_offset(stale, NOW, known=None, pending=first.pending)
+    assert second.offset is None
+    assert second.status == "stale_quote"
+
+
+def test_two_quotes_that_disagree_start_the_check_over() -> None:
+    first = sync.resolve_offset(_tick(-180), NOW, known=None, pending=None)
+    second = sync.resolve_offset(_tick(120), NOW, known=None, pending=first.pending)
+    assert second.offset is None
+    assert second.status == "disagreed"
+    assert second.pending is not None
+    assert second.pending.offset == 120
+
+
+def test_a_stale_first_quote_never_becomes_the_offset() -> None:
+    """Разбор боевого сценария из ревью: пять часов, тонкий рынок, первый запуск.
+
+    Прежде `−180` принималось первым же значением, уезжало в батч и записывалось в файл
+    состояния, после чего правильное `+120` отвергалось как «скачок больше DST» —
+    навсегда. Здесь оно не принимается вовсе, пока не подтвердится второй котировкой.
+    """
+    stale = _tick(120, age_minutes=300)
+    decision = sync.resolve_offset(stale, NOW, known=None, pending=None)
+    assert decision.offset is None
+    live = sync.resolve_offset(_tick(120), NOW, known=None, pending=decision.pending)
+    confirmed = sync.resolve_offset(_tick(120) + 60, NOW, known=None, pending=live.pending)
+    assert confirmed.offset == 120
+
+
+def test_a_known_offset_keeps_working_without_a_quote() -> None:
     """«Вне рабочего времени — последнее известное» — буква SPEC.md 6.3."""
-    assert sync.reconcile_offset(None, 120) == 120
+    decision = sync.resolve_offset(None, NOW, known=120, pending=None)
+    assert decision.offset == 120
+    assert decision.status == "no_quote"
 
 
-def test_nothing_known_at_all_stays_unknown() -> None:
-    assert sync.reconcile_offset(None, None) is None
+def test_a_quote_that_agrees_with_what_we_know_changes_nothing() -> None:
+    decision = sync.resolve_offset(_tick(120), NOW, known=120, pending=None)
+    assert decision.offset == 120
+    assert decision.status == "known"
+    assert not decision.confirmed
+
+
+def test_a_jump_bigger_than_daylight_saving_is_refused_with_a_reason() -> None:
+    decision = sync.resolve_offset(_tick(600), NOW, known=120, pending=None)
+    assert decision.offset == 120
+    assert decision.status == "jump_refused"
+
+
+def test_daylight_saving_is_adopted_after_a_second_quote() -> None:
+    """Перевод часов брокера — законная смена, но и она проходит ту же сверку."""
+    first = sync.resolve_offset(_tick(180), NOW, known=120, pending=None)
+    assert first.offset == 120
+    second = sync.resolve_offset(_tick(180) + 60, NOW, known=120, pending=first.pending)
+    assert second.offset == 180
+    assert second.confirmed
+
+
+def test_a_clock_off_by_twenty_hours_is_not_an_offset() -> None:
+    """Диапазон IANA — он же граница контракта: значение вне его отвергла бы схема."""
+    decision = sync.resolve_offset(_tick(20 * 60), NOW, known=None, pending=None)
+    assert decision.offset is None
+    assert decision.status == "out_of_range"
 
 
 # --------------------------------------------------------------------------------------

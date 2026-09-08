@@ -54,6 +54,7 @@ from collector.payload import (
     Rejected,
     build_batch,
     split_sendable,
+    split_sendable_positions,
 )
 
 log = get_logger(__name__)
@@ -76,6 +77,17 @@ class Api(Protocol):
 STATE_RUNNING: Final = "running"
 STATE_ERROR: Final = "error"
 STATE_STOPPED: Final = "stopped"
+
+# Что человек прочтёт на карточке счёта, когда смещения нет и батч уехать не может.
+# Сверка часов при первом запуске — не поломка, а нормальный шаг, и `error` в этом месте
+# каждый раз красил бы новый счёт в «требует внимания» на первую минуту жизни.
+OFFSET_REPORTS: Final[dict[str, tuple[str, str]]] = {
+    "waiting": (STATE_RUNNING, messages.OFFSET_PENDING),
+    "disagreed": (STATE_RUNNING, messages.OFFSET_PENDING),
+    "stale_quote": (STATE_ERROR, messages.OFFSET_UNKNOWN),
+    "no_quote": (STATE_ERROR, messages.OFFSET_UNKNOWN),
+    "out_of_range": (STATE_ERROR, messages.OFFSET_CLOCK_SKEW),
+}
 
 USD: Final = "USD"
 
@@ -102,6 +114,8 @@ class SyncState:
     last_sent_ticket: int | None = None
     last_open_position_ids: frozenset[int] | None = None
     server_utc_offset_minutes: int | None = None
+    # Кандидат в смещение, ждущий подтверждения второй котировкой (`sync.resolve_offset`).
+    pending_offset: sync.OffsetProbe | None = None
     catch_up_done_at: datetime | None = None
     reported_state: str | None = None
     reported_message: str | None = None
@@ -243,7 +257,6 @@ class AccountWorker:
 
         offset = self._offset(terminal)
         if offset is None:
-            self._report(STATE_ERROR, messages.OFFSET_UNKNOWN)
             return None
 
         now = self.clock()
@@ -254,10 +267,20 @@ class AccountWorker:
             last_finished_at=self._sync.catch_up_done_at,
             first_sync_days=self.settings.first_sync_days,
         )
+        if window.clock_skew:
+            # Часы этой машины отстают от часов сервера. Окно уже починено (`plan_window`
+            # берёт `min(last_sync_at, now)`), но без этой строки причина не видна нигде:
+            # синк идёт, батчи уходят, а окно каждый раз считалось бы наизнанку.
+            log.warning(
+                "collector.clock_behind_server",
+                account_id=self.account_id,
+                last_sync_at=str(self._sync.last_sync_at),
+                now=str(now),
+            )
         start, end = sync.terminal_bounds(window, offset)
         try:
             raw_deals = terminal.history_deals(start, end)
-            open_positions = terminal.open_positions()
+            raw_positions = terminal.open_positions()
         except TerminalError as error:
             return self._terminal_lost(error)
 
@@ -269,6 +292,17 @@ class AccountWorker:
                 count=len(rejected),
                 tickets=[item.ticket for item in rejected[:20]],
                 reasons=sorted({item.reason for item in rejected}),
+            )
+        open_positions, rejected_positions = split_sendable_positions(raw_positions)
+        if rejected_positions:
+            # Отдельной строкой, а не вместе со сделками: открытая позиция едет в каждом
+            # чанке окна, поэтому негодная останавливала бы не один батч, а все подряд.
+            log.error(
+                "collector.positions_rejected_locally",
+                account_id=self.account_id,
+                count=len(rejected_positions),
+                position_ids=[item.ticket for item in rejected_positions[:20]],
+                reasons=sorted({item.reason for item in rejected_positions}),
             )
 
         deals = sync.sort_deals(sendable)
@@ -307,7 +341,7 @@ class AccountWorker:
             self._sync.last_sent_ticket = newest
         if window.reason == "catch_up":
             self._sync.catch_up_done_at = now
-        self._report(STATE_RUNNING, _running_message(rejected))
+        self._report(STATE_RUNNING, _running_message(rejected, rejected_positions))
         return None
 
     def _send(
@@ -329,13 +363,28 @@ class AccountWorker:
         """
         chunks = sync.chunk(deals)
         for number, part in enumerate(chunks, start=1):
-            batch = build_batch(
-                account_id=self.account_id,
-                server_utc_offset_minutes=offset,
-                account_info=info,
-                deals=part,
-                open_positions=open_positions,
-            )
+            try:
+                batch = build_batch(
+                    account_id=self.account_id,
+                    server_utc_offset_minutes=offset,
+                    account_info=info,
+                    deals=part,
+                    open_positions=open_positions,
+                )
+            except ValueError as error:
+                # Сборка внутри `try` не из осторожности. Снаружи её исключение убивало бы
+                # процесс молча: трейсбек уходит в `sys.excepthook`, то есть в консоль,
+                # которой под Task Scheduler (`S1-10`) нет, — в файл лога не попадало бы
+                # ничего, а `S1-09` перезапускал бы процесс в краш-петлю без следа.
+                log.error(
+                    "collector.batch_unbuildable",
+                    account_id=self.account_id,
+                    chunk=number,
+                    of=len(chunks),
+                    reason=str(error),
+                )
+                self._report(STATE_ERROR, messages.BATCH_UNBUILDABLE.format(reason=error))
+                return False
             try:
                 result = self.api.send_deals(batch)
             except ApiError as error:
@@ -355,21 +404,69 @@ class AccountWorker:
     # -- смещение часов брокера ------------------------------------------------------
 
     def _offset(self, terminal: Terminal) -> int | None:
-        """Смещение сервера брокера, с памятью между запусками (`SPEC.md` §6.3)."""
+        """Смещение сервера брокера, с памятью между запусками (`SPEC.md` §6.3).
+
+        `None` — работать нечем; отчёт человеку уже отправлен. Смещение обязательно в
+        каждом батче, поэтому тик на этом и заканчивается.
+        """
         try:
             tick_time = terminal.server_time()
         except TerminalError as error:
             log.warning("collector.server_time_failed", reason=error.message)
             tick_time = None
-        candidate = (
-            sync.offset_from_tick(tick_time, self.clock()) if tick_time is not None else None
+        known = self._sync.server_utc_offset_minutes
+        decision = sync.resolve_offset(
+            tick_time, self.clock(), known=known, pending=self._sync.pending_offset
         )
-        resolved = sync.reconcile_offset(candidate, self._sync.server_utc_offset_minutes)
-        if resolved is not None and resolved != self._sync.server_utc_offset_minutes:
-            self._sync.server_utc_offset_minutes = resolved
-            self._remember_offset(resolved)
-            log.info("collector.offset_changed", account_id=self.account_id, offset=resolved)
-        return resolved
+        self._sync.pending_offset = decision.pending
+        self._log_offset(decision, tick_time=tick_time, known=known)
+        if decision.confirmed and decision.offset is not None:
+            self._sync.server_utc_offset_minutes = decision.offset
+            self._remember_offset(decision.offset)
+        if decision.offset is None:
+            account_state, message = OFFSET_REPORTS.get(
+                decision.status, (STATE_ERROR, messages.OFFSET_UNKNOWN)
+            )
+            self._report(account_state, message.format(hours=_hours(tick_time, self.clock())))
+        return decision.offset
+
+    def _log_offset(
+        self, decision: sync.OffsetDecision, *, tick_time: int | None, known: int | None
+    ) -> None:
+        """Отвергнутый кандидат обязан быть виден.
+
+        Иначе отравленное состояние выглядит как тишина: коллектор каждую минуту получает
+        правильное смещение, каждую минуту молча его выбрасывает, и в логе нет ни строки —
+        ровно тот случай, когда «у друга не заработало», а понять причину нечем.
+        """
+        if decision.status == "confirmed":
+            log.info(
+                "collector.offset_confirmed",
+                account_id=self.account_id,
+                offset=decision.offset,
+                previous=known,
+            )
+            return
+        if decision.status in ("jump_refused", "disagreed", "out_of_range"):
+            log.warning(
+                "collector.offset_rejected",
+                account_id=self.account_id,
+                status=decision.status,
+                candidate=(
+                    sync.rounded_offset_minutes(tick_time, self.clock())
+                    if tick_time is not None
+                    else None
+                ),
+                known=known,
+            )
+            return
+        if decision.status in ("waiting", "stale_quote", "no_quote"):
+            log.debug(
+                "collector.offset_unsettled",
+                account_id=self.account_id,
+                status=decision.status,
+                known=known,
+            )
 
     def _remembered_offset(self) -> int | None:
         if self.state_file is None:
@@ -438,22 +535,41 @@ class AccountWorker:
             self._sync.reported_message = None
 
 
-def _running_message(rejected: Sequence[Rejected]) -> str:
+def _running_message(
+    rejected: Sequence[Rejected], rejected_positions: Sequence[Rejected] = ()
+) -> str:
     """Состояние счёта одной строкой. Отбракованные названы тикетом, а не числом.
 
     Число сказало бы «что-то потерялось», и дальше человеку некуда идти. Тикет и причина
     дают точку входа: сделку видно в терминале, причину — в этом коде.
     """
-    if not rejected:
+    parts = [
+        _dropped(template, items)
+        for template, items in (
+            (messages.DEALS_DROPPED, rejected),
+            (messages.POSITIONS_DROPPED, rejected_positions),
+        )
+        if items
+    ]
+    if not parts:
         return messages.RUNNING
-    first = rejected[0]
-    return messages.fit(
-        messages.DEALS_DROPPED.format(count=len(rejected), ticket=first.ticket, reason=first.reason)
-    )
+    return messages.fit(" ".join(parts))
+
+
+def _dropped(template: str, items: Sequence[Rejected]) -> str:
+    first = items[0]
+    return template.format(count=len(items), ticket=first.ticket, reason=first.reason)
 
 
 def _later(left: datetime | None, right: datetime) -> datetime:
     return right if left is None or right > left else left
+
+
+def _hours(tick_time: int | None, now: datetime) -> str:
+    """Расхождение часов сервера и машины в часах — единственная подстановка в отчёты."""
+    if tick_time is None:
+        return "?"
+    return f"{round(sync.rounded_offset_minutes(tick_time, now) / 60):+d}"
 
 
 def _log_result(
@@ -539,7 +655,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             state_file=state.state_path(settings.mt5_portable_root / args.account_id),
         )
-        return worker.run(max_ticks=1 if args.once else 0)
+        try:
+            return worker.run(max_ticks=1 if args.once else 0)
+        except Exception as error:
+            # Последний рубеж, и он про диагностику, а не про устойчивость: без него
+            # неожиданное исключение уходит в `sys.excepthook`, то есть в консоль,
+            # которой под Task Scheduler (`S1-10`) нет. В `account-<id>.log` не попадало
+            # бы ничего, и краш-петля из-под `S1-09` не оставляла бы следа вовсе.
+            log.exception("collector.crashed", account_id=args.account_id)
+            print(messages.CRASHED.format(error=type(error).__name__))
+            return EXIT_ACCOUNT
 
 
 if __name__ == "__main__":  # pragma: no cover

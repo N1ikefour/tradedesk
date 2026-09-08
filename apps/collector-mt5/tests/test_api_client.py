@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import pytest
 
-from collector import api_client
+from collector import api_client, logging_setup
 from collector.api_client import ApiClient, ApiError
 from collector.config import CollectorSettings
 from tests.conftest import ACCOUNT_ID, COLLECTOR_ID, TOKEN
@@ -105,6 +105,34 @@ def test_broken_assignment_error_does_not_leak_the_payload(settings: CollectorSe
 def test_bare_array_instead_of_the_envelope_is_refused(settings: CollectorSettings) -> None:
     with _client(settings, lambda _r: httpx.Response(200, json=[])) as api, pytest.raises(ApiError):
         api.assignments(COLLECTOR_ID)
+
+
+def test_a_time_without_a_zone_is_refused_instead_of_being_guessed(
+    settings: CollectorSettings,
+) -> None:
+    """Наивное время отсюда уехало бы в `sync.terminal_bounds`, а там `_naive` считает его
+    локальным временем машины — то есть окно сместилось бы на часовой пояс пользователя.
+
+    Сегодня от этого спасает контракт api (`SPEC.md` §5.1 требует `Z`), но в самом
+    коллекторе это не заперто ничем, а цена — молча недобранные сделки у края окна.
+    """
+    body = json.loads(json.dumps(ASSIGNMENT_BODY))
+    body["items"][0]["last_sync_at"] = "2026-09-02T14:03:11"
+    with (
+        _client(settings, lambda _r: httpx.Response(200, json=body)) as api,
+        pytest.raises(ApiError),
+    ):
+        api.assignments(COLLECTOR_ID)
+
+
+def test_the_password_enters_the_log_scrub_the_moment_it_arrives(
+    settings: CollectorSettings,
+) -> None:
+    """Единственная точка входа пароля в процесс — она же точка включения защиты."""
+    assert "investor-secret" not in logging_setup.known_secrets()
+    with _client(settings, lambda _r: httpx.Response(200, json=ASSIGNMENT_BODY)) as api:
+        api.assignments(COLLECTOR_ID)
+    assert "investor-secret" in logging_setup.known_secrets()
 
 
 # --------------------------------------------------------------------------------------

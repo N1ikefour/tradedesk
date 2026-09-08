@@ -61,9 +61,9 @@ addopts = "-q --strict-markers"
 
 [tool.mypy]
 python_version = "3.12"
-# `tests` здесь намеренно: `make ci` не гоняет тесты коллектора (цели `test-collector`
-# в Makefile нет), и `lint-collector` — единственная проверка, которая до них доходит.
-# Пусть она хотя бы читает их типы.
+# `tests` здесь намеренно: подделки терминала и API — единственное, чем коллектор вообще
+# проверяется на машине без Windows, и разъехавшийся с настоящим протоколом фейк молча
+# превращает зелёный прогон в бессмыслицу. Типы тестов читаются наравне с кодом.
 files = ["collector", "tests"]
 ignore_missing_imports = true
 warn_redundant_casts = true
