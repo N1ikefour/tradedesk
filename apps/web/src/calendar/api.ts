@@ -19,7 +19,6 @@ import type { components, operations } from '@/api/schema';
 
 export type CalendarMonth = components['schemas']['CalendarResponse'];
 export type CalendarDay = components['schemas']['CalendarDay'];
-export type CalendarAccountDay = components['schemas']['CalendarAccountDay'];
 
 export type CalendarQueryParams =
   operations['read_calendar_api_v1_journal_calendar_get']['parameters']['query'];

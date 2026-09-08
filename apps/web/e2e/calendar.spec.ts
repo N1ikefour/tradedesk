@@ -44,8 +44,12 @@ test('месяц календаря переживает перезагрузк�
   await page.goto('/calendar?month=2026-13');
   await expect(page.getByRole('heading', { name: t.pages.calendar })).toBeVisible();
   await expect(page.getByRole('alert')).toHaveCount(0);
+  // И в адресе мусор не остаётся: показан текущий месяц, а «Сегодня» на нём выключена —
+  // убрать испорченный параметр человеку было бы нечем.
+  await expect(page).toHaveURL(/\/calendar$/);
 
   await page.goto('/calendar?month=%00%00&month=');
   await expect(page.getByRole('heading', { name: t.pages.calendar })).toBeVisible();
   await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page).toHaveURL(/\/calendar$/);
 });

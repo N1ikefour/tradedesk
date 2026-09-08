@@ -15,7 +15,7 @@
  * ссылкой. Счета — из глобального переключателя в шапке (SPEC.md 9.2), поэтому смена
  * выбора меняет ключ запроса и обновляет экран без перезагрузки.
  */
-import { useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router';
 
 import { useAccounts } from '@/accounts/api';
@@ -48,7 +48,8 @@ export function CalendarPage() {
     [timeZone, dayBoundaryHour],
   );
   const currentMonth = monthOfDay(today);
-  const month = readMonth(params.get(MONTH_PARAM), currentMonth);
+  const rawMonth = params.get(MONTH_PARAM);
+  const month = readMonth(rawMonth, currentMonth);
 
   const accountIds = selection.ids;
   const query = useMemo(() => calendarParams(month, accountIds), [month, accountIds]);
@@ -70,17 +71,35 @@ export function CalendarPage() {
   const next = shiftMonth(month, 1);
   const noAccounts = accounts.isSuccess && accounts.data.items.length === 0;
 
-  const goToMonth = (value: string) => {
-    const nextParams = new URLSearchParams(params);
-    // Текущий месяц — состояние по умолчанию, и в адресе его нет: ссылка на «просто
-    // календарь» не должна тащить за собой месяц, в котором её отправили.
-    if (value === currentMonth) {
-      nextParams.delete(MONTH_PARAM);
-    } else {
-      nextParams.set(MONTH_PARAM, value);
+  const goToMonth = useCallback(
+    (value: string) => {
+      setParams(
+        (current) => {
+          const nextParams = new URLSearchParams(current);
+          // Текущий месяц — состояние по умолчанию, и в адресе его нет: ссылка на «просто
+          // календарь» не должна тащить за собой месяц, в котором её отправили.
+          if (value === currentMonth) {
+            nextParams.delete(MONTH_PARAM);
+          } else {
+            nextParams.set(MONTH_PARAM, value);
+          }
+          return nextParams;
+        },
+        { replace: true },
+      );
+    },
+    [currentMonth, setParams],
+  );
+
+  // Непонятный месяц экран показывает не ошибкой, а своим (`readMonth`), — но и в адресе
+  // его не оставляет: показан уже другой месяц, «Сегодня» при этом выключена, и убрать
+  // мусор из ссылки человеку нечем. Второй раз условие не сработает — после замены в
+  // адресе стоит ровно тот месяц, который показан.
+  useEffect(() => {
+    if (rawMonth !== null && rawMonth !== month) {
+      goToMonth(month);
     }
-    setParams(nextParams, { replace: true });
-  };
+  }, [rawMonth, month, goToMonth]);
 
   return (
     <section className="flex w-full flex-col gap-6">

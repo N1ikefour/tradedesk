@@ -1,6 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { render, type RenderResult } from '@testing-library/react';
-import { RouterProvider, createMemoryRouter } from 'react-router';
+import { RouterProvider, createMemoryRouter, type RouterProviderProps } from 'react-router';
 
 import { AppProviders, createQueryClient } from '@/app-providers';
 import type { SessionUser } from '@/auth/session';
@@ -21,7 +21,7 @@ export const TEST_USER: SessionUser = {
  */
 export function renderApp(
   initialEntries: string[] = ['/'],
-): RenderResult & { client: QueryClient } {
+): RenderResult & { client: QueryClient; router: RouterProviderProps['router'] } {
   const client = createQueryClient();
   const router = createMemoryRouter(routes, { initialEntries });
   const result = render(
@@ -29,5 +29,7 @@ export function renderApp(
       <RouterProvider router={router} />
     </AppProviders>,
   );
-  return Object.assign(result, { client });
+  // Роутер отдаётся наружу ради адреса: `router.state.location` — единственное место, где
+  // видно, что экран с ним сделал. Окна у памяти роутера нет, `window.location` не при чём.
+  return Object.assign(result, { client, router });
 }

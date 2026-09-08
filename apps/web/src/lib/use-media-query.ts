@@ -35,3 +35,15 @@ export function useMediaQuery(query: string, fallback: boolean): boolean {
 export function useIsDesktop(): boolean {
   return useMediaQuery(DESKTOP_QUERY, true);
 }
+
+/** Умеет ли указатель наводиться. Ширина этого не говорит: планшет широкий, а наведения нет. */
+export const HOVER_QUERY = '(hover: hover)';
+
+/**
+ * `false` — наведение на этом устройстве не существует, и всё, что показывается по
+ * `:hover`, недостижимо: пальцем не наводят. Гибридный ноутбук с сенсорным экраном сюда
+ * не попадает — основной указатель у него мышь, и он отвечает `hover: hover`.
+ */
+export function useCanHover(): boolean {
+  return useMediaQuery(HOVER_QUERY, true);
+}

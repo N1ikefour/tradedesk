@@ -6,6 +6,7 @@ import type { Account } from '@/accounts/api';
 import { useAccountSelectionStore } from '@/accounts/selection';
 import type { CalendarDay, CalendarMonth } from '@/calendar/api';
 import { t } from '@/i18n';
+import { DESKTOP_QUERY } from '@/lib/use-media-query';
 import { errorResponse, installFetchMock, jsonResponse, type RouteTable } from '@/test/fetch-mock';
 import { renderApp, TEST_USER } from '@/test/render';
 
@@ -108,14 +109,37 @@ async function openCalendar(entry = '/calendar') {
   return rendered;
 }
 
-/** Узкий экран: `matchMedia` в jsdom нет вовсе, поэтому раскладка подменяется явно. */
-function pretendPhone() {
+/** `matchMedia` в jsdom нет вовсе, поэтому экран и указатель подменяются явно. */
+function pretendDevice(matches: (query: string) => boolean) {
   vi.stubGlobal('matchMedia', (query: string) => ({
-    matches: false,
+    matches: matches(query),
     media: query,
     addEventListener: () => {},
     removeEventListener: () => {},
   }));
+}
+
+/** Телефон: узкий экран, наведения нет. */
+function pretendPhone() {
+  pretendDevice(() => false);
+}
+
+/** Планшет: ширина настольная, а наведения нет — пальцем не наводят. */
+function pretendTablet() {
+  pretendDevice((query) => query === DESKTOP_QUERY);
+}
+
+function classesOf(element: Element | null | undefined): string[] {
+  return (element?.getAttribute('class') ?? '').split(/\s+/);
+}
+
+/** Панель разбивки: подпись «По счетам» стоит прямо в ней. */
+function breakdownPanel(): HTMLElement {
+  const panel = screen.getByText(t.calendar.breakdownTitle).parentElement;
+  if (panel === null) {
+    throw new Error('панель разбивки не найдена');
+  }
+  return panel;
 }
 
 beforeEach(() => {
@@ -195,6 +219,58 @@ describe('календарь: разбивка по счетам', () => {
     expect(await screen.findByText('Свинг')).toBeInTheDocument();
     // Сетки на телефоне нет: сумма дня в ячейке шириной с палец обрезалась бы.
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
+  });
+
+  it('панель раскрывается и по приходу фокуса, не только по наведению', async () => {
+    installFetchMock(withCalendar({ accounts: twoAccounts, byMonth: { '2026-09': [day] } }).routes);
+    await openCalendar();
+    await screen.findByText('Скальпинг');
+
+    // Механизм целиком в CSS, а стилей Tailwind в jsdom нет: проверить его можно только по
+    // обеим половинам пары — классу на панели и `group` на её родителе. Сторож стоит здесь
+    // потому, что доступность с клавиатуры держится ровно на этой паре: убрав любую
+    // половину рефакторингом, панель теряют молча, и весь остальной гейт остаётся зелёным.
+    const panel = breakdownPanel();
+    expect(classesOf(panel)).toContain('group-focus-within:opacity-100');
+    expect(classesOf(panel.parentElement)).toContain('group');
+  });
+
+  it('на планшете разбивка открывается нажатием: наводить там нечем', async () => {
+    const user = userEvent.setup();
+    pretendTablet();
+    installFetchMock(withCalendar({ accounts: twoAccounts, byMonth: { '2026-09': [day] } }).routes);
+    await openCalendar();
+
+    // Сетку планшет сохраняет: месячная сетка и итоги недель — то, ради чего экран
+    // называется календарём (SPEC.md 9.3), и менять их на список ради панели незачем.
+    expect(await screen.findByRole('table')).toBeInTheDocument();
+
+    const toggle = screen.getByRole('button', { name: t.calendar.breakdownToggle(7) });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    await user.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    const panel = breakdownPanel();
+    expect(toggle.getAttribute('aria-controls')).toBe(panel.id);
+    // Раскрытая нажатием панель перестаёт быть скрытой и от чтения с экрана.
+    expect(panel).not.toHaveAttribute('aria-hidden');
+    expect(classesOf(panel)).toContain('opacity-100');
+
+    await user.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(breakdownPanel()).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('там, где наведение есть, кнопки в ячейке нет', async () => {
+    installFetchMock(withCalendar({ accounts: twoAccounts, byMonth: { '2026-09': [day] } }).routes);
+    await openCalendar();
+
+    await screen.findByText('Скальпинг');
+    expect(
+      screen.queryByRole('button', { name: t.calendar.breakdownToggle(7) }),
+    ).not.toBeInTheDocument();
   });
 
   it('день одного счёта разбивки не получает: она повторила бы сумму дня', async () => {
@@ -286,13 +362,26 @@ describe('календарь: месяц в адресе', () => {
     expect(months.at(-1)).toBe('2026-09');
   });
 
-  it('мусор в адресе открывает текущий месяц, а не ошибку', async () => {
+  it('мусор в адресе открывает текущий месяц, а не ошибку, и в адресе не остаётся', async () => {
     const { routes, months } = withCalendar();
     installFetchMock(routes);
-    await openCalendar('/calendar?month=2026-13');
+    const { router } = await openCalendar('/calendar?month=2026-13');
 
     await waitFor(() => expect(months).toContain('2026-09'));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    // Показан сентябрь, а «Сегодня» на текущем месяце выключена — не убери мусор экран
+    // сам, убрать его было бы нечем, и ссылка ушла бы дальше такой же.
+    await waitFor(() => expect(router.state.location.search).toBe(''));
+    expect(screen.getByRole('button', { name: t.calendar.currentMonth })).toBeDisabled();
+  });
+
+  it('месяц из адреса, записанный иначе, приводится к виду ответа', async () => {
+    const { routes, months } = withCalendar({ byMonth: { '2026-02': [] } });
+    installFetchMock(routes);
+    const { router } = await openCalendar('/calendar?month=+2026-02+');
+
+    await waitFor(() => expect(months).toContain('2026-02'));
+    await waitFor(() => expect(router.state.location.search).toBe('?month=2026-02'));
   });
 
   it('за пределами того, что принимает сервер, кнопка выключена', async () => {

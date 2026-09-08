@@ -15,9 +15,23 @@
  * журнала (SPEC.md 9.3), — месяц показывается списком торговых дней во всю ширину строки.
  * Дни, ссылки и суммы в обеих раскладках одни и те же, считаны одним `buildMonthGrid`.
  *
+ * ⚠️ Итогов недели в списке нет вовсе, хотя SPEC.md 9.3 требует их справа: недели в списке
+ * нет как сущности — строки идут подряд, только с торговыми днями, и приписать итог
+ * «справа от недели» не к чему. Итог месяца при этом на месте (`MonthTotals` над сеткой),
+ * так что на телефоне теряется именно недельный разрез.
+ *
+ * Наведения нет не только на телефоне: планшет шире 768 px получает сетку, но раскрыть
+ * панель разбивки пальцем не может — тап по ячейке уходит в журнал, а фокус там не
+ * задерживается. Поэтому там, где указатель не умеет наводиться (`useCanHover`), у дня с
+ * разбивкой появляется кнопка, открывающая ту же панель нажатием. Сетка при этом остаётся:
+ * отдать планшету список значило бы отнять у него и месячную сетку, и итоги недель ради
+ * панели, которая на его ширине помещается рядом.
+ *
  * Различие вариантов — только в плотности и в двух добавках полного экрана: итоги недель
  * справа (SPEC.md 9.3) и разбивка дня по счетам.
  */
+import { ChevronDown } from 'lucide-react';
+import { useState } from 'react';
 import { Link } from 'react-router';
 
 import type { CalendarDay } from '@/calendar/api';
@@ -37,7 +51,7 @@ import {
 } from '@/calendar/grid';
 import { weekTotals, type CalendarTotals } from '@/calendar/totals';
 import { t } from '@/i18n';
-import { useIsDesktop } from '@/lib/use-media-query';
+import { useCanHover, useIsDesktop } from '@/lib/use-media-query';
 import { cn } from '@/lib/utils';
 
 export type MonthViewVariant = 'mini' | 'full';
@@ -63,12 +77,26 @@ const STYLE = {
 
 const EMPTY_ACCOUNTS: ReadonlyMap<string, AccountBrief> = new Map();
 
-function Breakdown({ lines, className }: { lines: readonly AccountLine[]; className?: string }) {
+function Breakdown({
+  lines,
+  className,
+  id,
+  exposed = false,
+}: {
+  lines: readonly AccountLine[];
+  className?: string;
+  id?: string;
+  /**
+   * Панель раскрыта кнопкой и потому доступна чтению с экрана. По умолчанию нет: та же
+   * разбивка уже есть в подписи ссылки (`dayAriaLabel`), а панель, появляющаяся по
+   * наведению, вторым голосом читалась бы всегда — включая моменты, когда её не видно.
+   */
+  exposed?: boolean;
+}) {
   return (
-    // Для чтения с экрана та же разбивка уже есть в подписи ссылки (`dayAriaLabel`):
-    // всплывающая панель — вещь для мыши, и читать её вторым голосом незачем.
     <div
-      aria-hidden="true"
+      id={id}
+      aria-hidden={exposed ? undefined : 'true'}
       className={cn('rounded-md border border-border bg-popover p-2 text-xs shadow-md', className)}
     >
       <p className="pb-1 text-[11px] text-muted-foreground">{t.calendar.breakdownTitle}</p>
@@ -143,18 +171,29 @@ const DEFAULT_PLACEMENT: Placement = { openUp: false, alignRight: false };
 /** Суббота и воскресенье: панель шириной с треть таблицы иначе уходит за её правый край. */
 const RIGHT_ALIGNED_FROM = 5;
 
+/**
+ * Раскрытие разбивки нажатием — для указателя, который не умеет наводиться. `undefined`
+ * означает «наведение есть»: кнопка рядом с мышью была бы лишним элементом в ячейке.
+ */
+type Disclosure = {
+  readonly open: boolean;
+  readonly toggle: () => void;
+};
+
 function Cell({
   cell,
   today,
   variant,
   accounts,
   placement = DEFAULT_PLACEMENT,
+  disclosure,
 }: {
   cell: CalendarCell;
   today: string;
   variant: MonthViewVariant;
   accounts: ReadonlyMap<string, AccountBrief>;
   placement?: Placement;
+  disclosure?: Disclosure;
 }) {
   const isToday = cell.iso === today;
   const day = cell.day;
@@ -173,6 +212,8 @@ function Cell({
   }
 
   const lines = variant === 'full' ? accountLines(day, accounts) : [];
+  const open = disclosure?.open ?? false;
+  const panelId = `breakdown-${cell.iso}`;
   return (
     <div className="group relative">
       <Link
@@ -183,16 +224,41 @@ function Cell({
         <DayBody cell={cell} day={day} variant={variant} isToday={isToday} />
       </Link>
       {lines.length === 0 ? null : (
-        // Панель появляется по наведению и по приходу фокуса на ссылку: клавиатура не
-        // наводит мышь, а без фокуса разбивка была бы доступна только ей.
-        <Breakdown
-          lines={lines}
-          className={cn(
-            'pointer-events-none absolute z-20 w-max max-w-[18rem] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100',
-            placement.openUp ? 'bottom-full mb-1' : 'top-full mt-1',
-            placement.alignRight ? 'right-0' : 'left-0',
+        <>
+          {disclosure === undefined ? null : (
+            // Кнопка лежит поверх ссылки, а не внутри неё: внутри ссылки нажатие ушло бы
+            // в журнал вместе с ней. 24 px — минимум WCAG 2.2 для цели нажатия и заодно
+            // предел: в ячейке шириной с палец большая накрыла бы саму сумму дня.
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={panelId}
+              aria-label={t.calendar.breakdownToggle(cell.dayOfMonth)}
+              onClick={disclosure.toggle}
+              className="absolute right-0.5 top-0.5 z-30 flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-accent"
+            >
+              <ChevronDown
+                aria-hidden="true"
+                className={cn('size-3.5 transition-transform', open && 'rotate-180')}
+              />
+            </button>
           )}
-        />
+          {/* Панель появляется по наведению и по приходу фокуса на ссылку: клавиатура не
+              наводит мышь, а без фокуса разбивка была бы доступна только ей. Раскрытая
+              нажатием, она перестаёт быть прозрачной для нажатий: панель накрывает соседние
+              дни, и тап по ней проваливался бы в чужой день. */}
+          <Breakdown
+            id={panelId}
+            lines={lines}
+            exposed={open}
+            className={cn(
+              'pointer-events-none absolute z-20 w-max max-w-[18rem] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100',
+              placement.openUp ? 'bottom-full mb-1' : 'top-full mt-1',
+              placement.alignRight ? 'right-0' : 'left-0',
+              open && 'pointer-events-auto opacity-100',
+            )}
+          />
+        </>
       )}
     </div>
   );
@@ -229,14 +295,19 @@ function MonthGrid({
   today,
   variant,
   accounts,
+  canHover,
 }: {
   weeks: readonly CalendarWeek[];
   title: string;
   today: string;
   variant: MonthViewVariant;
   accounts: ReadonlyMap<string, AccountBrief>;
+  canHover: boolean;
 }) {
   const withTotals = variant === 'full';
+  // Открыт один день на месяц, а не каждый сам по себе: панель шире ячейки и накрывает
+  // соседей, поэтому две раскрытые сразу перекрыли бы друг друга.
+  const [openDay, setOpenDay] = useState<string | null>(null);
   return (
     <div className="overflow-x-auto">
       <table
@@ -281,6 +352,15 @@ function MonthGrid({
                         openUp: weekIndex === weeks.length - 1,
                         alignRight: dayIndex >= RIGHT_ALIGNED_FROM,
                       }}
+                      disclosure={
+                        canHover
+                          ? undefined
+                          : {
+                              open: openDay === cell.iso,
+                              toggle: () =>
+                                setOpenDay((current) => (current === cell.iso ? null : cell.iso)),
+                            }
+                      }
                     />
                   </td>
                 ),
@@ -359,9 +439,17 @@ export function MonthView({
   accounts?: ReadonlyMap<string, AccountBrief>;
 }) {
   const isDesktop = useIsDesktop();
+  const canHover = useCanHover();
   if (isDesktop) {
     return (
-      <MonthGrid weeks={weeks} title={title} today={today} variant={variant} accounts={accounts} />
+      <MonthGrid
+        weeks={weeks}
+        title={title}
+        today={today}
+        variant={variant}
+        accounts={accounts}
+        canHover={canHover}
+      />
     );
   }
   return (

@@ -332,6 +332,8 @@ export const ru = {
 
     breakdownTitle: 'По счетам',
     breakdownLabel: (accounts: string) => `По счетам: ${accounts}`,
+    // Кнопка появляется там, где наведения нет вовсе (планшет): панель нечем открыть.
+    breakdownToggle: (day: number) => `Разбивка по счетам, ${day} число`,
     accountLine: (label: string, trades: number, netPnl: string) =>
       `${label} — ${trades} ${plural(trades, TRADES)}, ${netPnl}`,
     // Счёт, которого нет в списке: его архивировали или удалили, пока экран был открыт.
