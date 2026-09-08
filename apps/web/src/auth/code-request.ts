@@ -67,13 +67,19 @@ function parse(raw: string | null): CodeRequest | null {
  * шаг и тут же стирается: иначе объяснение «код истёк» всплывало бы ещё раз на пустом
  * месте. Проверка срока здесь — вежливость клиента, а не приговор: годен код или нет,
  * знает только сервер, и он же отвечает «неверный код», если часы браузера соврали.
+ *
+ * Отметка из будущего тоже считается просроченной. Разность с ней отрицательна, так что
+ * одна проверка на срок держала бы её вечно — до закрытия вкладки. Сценарий бытовой:
+ * часы ушли вперёд, код запрошен, часы поправили — и человек сидит на шаге ввода с
+ * заведомо мёртвым кодом.
  */
 export function restoreCodeRequest(now: number): RestoredCodeRequest {
   const record = parse(readRaw());
   if (record === null) {
     return { status: 'none' };
   }
-  if (now - record.requestedAt >= CODE_TTL_MS) {
+  const age = now - record.requestedAt;
+  if (age >= CODE_TTL_MS || age < 0) {
     clearCodeRequest();
     return { status: 'expired', email: record.email };
   }

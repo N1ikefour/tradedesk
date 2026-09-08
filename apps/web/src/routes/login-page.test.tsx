@@ -1,6 +1,6 @@
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import { CODE_TTL_MS, rememberCodeRequest } from '@/auth/code-request';
 import { t } from '@/i18n';
@@ -29,6 +29,13 @@ async function fillEmailAndAdvance(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: t.login.requestCode }));
   await screen.findByLabelText(t.login.codeLabel);
 }
+
+// Хранилище окна общее на весь файл — так же, как `localStorage` у соседей
+// (`selection.test.ts`, `theme.test.ts`): незаконченная попытка входа из предыдущего
+// теста иначе поднимала бы следующий сразу на шаге ввода кода.
+beforeEach(() => {
+  window.sessionStorage.clear();
+});
 
 describe('Login', () => {
   it('код из письма вводит пользователя и открывает дашборд', async () => {
@@ -279,6 +286,40 @@ describe('Login', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(t.login.codeExpired);
     expect(screen.getByLabelText(t.login.emailLabel)).toHaveValue(TEST_USER.email);
+    expect(screen.queryByLabelText(t.login.codeLabel)).not.toBeInTheDocument();
+  });
+
+  it('отметка из будущего не восстанавливает шаг: разность отрицательна, но код мёртв', async () => {
+    installFetchMock(anonymous);
+    // Часы ушли вперёд, код запрошен, часы поправили. Простая проверка «прошло ли TTL»
+    // на такой отметке ложна всегда и держала бы шаг кода до закрытия вкладки.
+    rememberCodeRequest(TEST_USER.email, Date.now() + 60 * 60 * 1000);
+    renderApp(['/login']);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(t.login.codeExpired);
+    expect(screen.getByLabelText(t.login.emailLabel)).toHaveValue(TEST_USER.email);
+    expect(screen.queryByLabelText(t.login.codeLabel)).not.toBeInTheDocument();
+  });
+
+  it('too_many_attempts отменяет попытку — возврат с писем не выдаёт код за годный', async () => {
+    installFetchMock({
+      ...anonymous,
+      [VERIFY]: () => errorResponse(422, 'too_many_attempts', 'Попытки исчерпаны'),
+      [OUTBOX]: () => jsonResponse(200, { items: [] }),
+    });
+    const user = userEvent.setup();
+    renderApp(['/login']);
+
+    await fillEmailAndAdvance(user);
+    await user.type(screen.getByLabelText(t.login.codeLabel), '222222');
+    expect(await screen.findByRole('alert')).toHaveTextContent(t.errors.tooManyAttempts);
+
+    await user.click(screen.getByRole('link', { name: t.login.devOutboxLink }));
+    await screen.findByRole('heading', { name: t.outbox.title });
+    await user.click(screen.getByRole('link', { name: t.outbox.backToLogin }));
+
+    // Код погашен сервером: шаг ввода с пустым полем изображал бы работающую попытку.
+    expect(await screen.findByLabelText(t.login.emailLabel)).toBeInTheDocument();
     expect(screen.queryByLabelText(t.login.codeLabel)).not.toBeInTheDocument();
   });
 

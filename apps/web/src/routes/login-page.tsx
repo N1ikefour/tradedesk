@@ -122,6 +122,14 @@ export function LoginPage() {
       setRateLimit({ email: target.toLowerCase(), seconds: cause.retryAfter });
       return;
     }
+    // Попытки исчерпаны — код погашен сервером так же окончательно, как удачным входом,
+    // и отметка о нём стала ложью. Иначе уход за новым письмом и возврат поднимали бы
+    // шаг ввода с пустым полем и без единого слова о том, что вводить уже нечего.
+    // Код, сожжённый неверными вводами, так не ловится: до последней попытки сервер
+    // отвечает `invalid_code`, и отличить исчерпанный код от опечатки клиент не может.
+    if (cause instanceof ApiRequestError && cause.code === ERROR_CODE.tooManyAttempts) {
+      clearCodeRequest();
+    }
     setError(cause);
   };
 

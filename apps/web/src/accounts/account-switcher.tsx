@@ -52,11 +52,13 @@ export function AccountSwitcher() {
   const toggleId = useAccountSelectionStore((state) => state.toggleId);
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement | null>(null);
+  const trigger = useRef<HTMLButtonElement | null>(null);
   const listId = useId();
 
   useDismiss(
     open,
     root,
+    trigger,
     useCallback(() => setOpen(false), []),
   );
 
@@ -102,6 +104,7 @@ export function AccountSwitcher() {
   return (
     <div ref={root} className="relative min-w-0">
       <Button
+        ref={trigger}
         type="button"
         variant="outline"
         size="sm"
