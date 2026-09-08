@@ -96,15 +96,15 @@ if grep -qiE "port is already allocated|address already in use|bind for" "$LOG";
 fi
 
 if [ "$UP_STATUS" != "0" ]; then
-  echo "" >&2
+  td_warn ""
   if [ -n "$UP_STATUS" ]; then
-    echo "docker compose up завершился с кодом $UP_STATUS — окружение не поднято." >&2
+    td_warn "docker compose up завершился с кодом $UP_STATUS — окружение не поднято."
   else
     # Файл пуст только если подоболочку убили сигналом: числа тогда нет ни у кого, и
     # сказать это словами честнее, чем оставить в предложении пробел.
-    echo "docker compose up прерван, код возврата неизвестен — окружение не поднято." >&2
+    td_warn "docker compose up прерван, код возврата неизвестен — окружение не поднято."
   fi
-  echo "Причина — в строках Docker выше. Что делать: SETUP.md, раздел «Если запуск упал»." >&2
+  td_warn "Причина — в строках Docker выше. Что делать: SETUP.md, раздел «Если запуск упал»."
   exit 1
 fi
 

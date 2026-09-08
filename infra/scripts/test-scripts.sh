@@ -438,6 +438,9 @@ same "пробел в пути годен" "$(td_path_non_ascii "/Users/ivan/My 
 same "кириллица в пути не годна" "$(td_path_non_ascii "/Users/Никита/td" && echo да || echo нет)" "да"
 same "кириллица в середине не годна" "$(td_path_non_ascii "C:/Пользователи/td" && echo да || echo нет)" "да"
 same "управляющий символ не годен" "$(td_path_non_ascii "$(printf '/tmp/a\tb')" && echo да || echo нет)" "да"
+# Перевод строки внутри пути легален, а построчный grep его пропускал: каждая строка
+# по отдельности печатна.
+same "перевод строки в пути не годен" "$(td_path_non_ascii "$(printf '/tmp/a\nb')" && echo да || echo нет)" "да"
 
 # Здесь запускается сам start.sh, а не его отдельные куски: X-53 и X-54 — про то, что
 # человек видит на экране, и проверить это можно только прогоном. Docker для этого не
@@ -453,20 +456,62 @@ exit 17
 STUB
 chmod +x "$STUB_BIN/docker"
 
+# Тот же подставной docker, но вместо кода возврата убивает подоболочку, в которой
+# запущен, — так же, как это делает Ctrl-C по всей группе процессов. Кода возврата после
+# этого нет ни у кого, и start.sh обязан сказать это словами, а не оставить дыру
+# в предложении. `sleep` держит открытым конец конвейера: без него tee завершится раньше,
+# чем сигнал дойдёт, и ветка не воспроизведётся.
+STUB_KILL="$WORK/stubkill"
+mkdir -p "$STUB_KILL"
+cat >"$STUB_KILL/docker" <<'STUB'
+#!/bin/sh
+[ "$1" = "info" ] && exit 0
+echo "stub docker: убиваю подоболочку"
+kill -KILL "$PPID" 2>/dev/null
+sleep 1
+STUB
+chmod +x "$STUB_KILL/docker"
+
 make_installation() {
   mkdir -p "$1/infra/scripts"
-  cp "$ROOT/infra/scripts/start.sh" "$ROOT/infra/scripts/common.sh" "$1/infra/scripts/"
-  chmod +x "$1/infra/scripts/start.sh"
+  cp "$ROOT/infra/scripts/start.sh" "$ROOT/infra/scripts/update.sh" \
+    "$ROOT/infra/scripts/restore.sh" "$ROOT/infra/scripts/common.sh" "$1/infra/scripts/"
+  chmod +x "$1/infra/scripts/start.sh" "$1/infra/scripts/update.sh" \
+    "$1/infra/scripts/restore.sh"
   : >"$1/docker-compose.yml"
+  : >"$1/.env.example"
   printf 'POSTGRES_PASSWORD=stub\n' >"$1/.env"
 }
 
 run_start() {
-  # $1 — установка, дальше — переменные окружения вида ИМЯ=значение.
-  installation="$1"
-  shift
-  if env "$@" PATH="$STUB_BIN:$PATH" sh "$installation/infra/scripts/start.sh" \
+  # $1 — подставной docker, $2 — установка, дальше — переменные окружения ИМЯ=значение.
+  bin="$1"
+  installation="$2"
+  shift 2
+  if env "$@" PATH="$bin:$PATH" sh "$installation/infra/scripts/start.sh" \
     >"$WORK/start.out" 2>&1; then
+    echo 0
+  else
+    echo "$?"
+  fi
+}
+
+run_update() {
+  # update.sh при запуске переселяется во временную копию и работает оттуда; проверяется
+  # он тем же способом, что start.sh, — прогоном, потому что проверяется вывод.
+  if env PATH="$STUB_BIN:$PATH" sh "$1/infra/scripts/update.sh" --check \
+    >"$WORK/update.out" 2>&1; then
+    echo 0
+  else
+    echo "$?"
+  fi
+}
+
+run_restore() {
+  # $1 — установка, $2 — файл копии. --yes здесь безопасен: до вопроса дело не дойдёт,
+  # а если дойдёт — упрётся в подставной docker, а не в базу.
+  if env PATH="$STUB_BIN:$PATH" sh "$1/infra/scripts/restore.sh" "$2" --yes \
+    >"$WORK/restore.out" 2>&1; then
     echo 0
   else
     echo "$?"
@@ -478,7 +523,8 @@ if td_path_non_ascii "$WORK"; then
 else
   INST_OK="$WORK/install-ok"
   make_installation "$INST_OK"
-  same "start.sh не рапортует об успехе поверх упавшего compose" "$(run_start "$INST_OK")" "1"
+  same "start.sh не рапортует об успехе поверх упавшего compose" \
+    "$(run_start "$STUB_BIN" "$INST_OK")" "1"
   if grep -q "завершился с кодом 17" "$WORK/start.out"; then
     ok "start.sh называет код возврата compose числом (X-53)"
   else
@@ -486,9 +532,26 @@ else
     sed 's/^/        /' "$WORK/start.out" >&2
   fi
 
+  # Сборку прервали сигналом: кода возврата нет ни у кого, и это должно быть сказано
+  # словами. До X-53 здесь оставался пробел в предложении, а SETUP.md учит человека
+  # смотреть именно на это число.
+  same "start.sh переживает убитую сборку" "$(run_start "$STUB_KILL" "$INST_OK")" "1"
+  START_KILLED="$(cat "$WORK/start.out")"
+  case "$START_KILLED" in
+    *"код возврата неизвестен"*) ok "прерванная сборка названа словами, а не пробелом" ;;
+    *) bad "прерванная сборка описана не так: $START_KILLED" ;;
+  esac
+  case "$START_KILLED" in
+    *"завершился с кодом  "* | *"завершился с кодом —"*)
+      bad "в сообщении осталась дыра на месте кода возврата"
+      ;;
+    *) ok "дыры на месте кода возврата нет" ;;
+  esac
+
   INST_RU="$WORK/установка"
   make_installation "$INST_RU"
-  same "start.sh отказывается стартовать из пути с кириллицей" "$(run_start "$INST_RU")" "1"
+  same "start.sh отказывается стартовать из пути с кириллицей" \
+    "$(run_start "$STUB_BIN" "$INST_RU")" "1"
   START_RU="$(cat "$WORK/start.out")"
   case "$START_RU" in
     *"символы, которые Docker не понимает"*) ok "отказ называет причину, а не gRPC (X-54)" ;;
@@ -510,14 +573,46 @@ else
     *) ok "compose до проверки пути не зовётся" ;;
   esac
 
+  case "$START_RU" in
+    *"TD_ALLOW_NON_ASCII_PATH=1 DOCKER_BUILDKIT=0"*)
+      ok "отказ называет обход целиком, обеими переменными"
+      ;;
+    *) bad "в отказе нет обхода — человек о нём больше нигде не узнает" ;;
+  esac
+
   same "TD_ALLOW_NON_ASCII_PATH=1 снимает проверку" \
-    "$(run_start "$INST_RU" TD_ALLOW_NON_ASCII_PATH=1)" "1"
+    "$(run_start "$STUB_BIN" "$INST_RU" TD_ALLOW_NON_ASCII_PATH=1)" "1"
   if grep -q "завершился с кодом 17" "$WORK/start.out"; then
     ok "со снятой проверкой start.sh доходит до compose"
   else
     bad "TD_ALLOW_NON_ASCII_PATH=1 не пустил дальше:"
     sed 's/^/        /' "$WORK/start.out" >&2
   fi
+
+  # update.sh получил ту же проверку и по более дорогой причине: он переносит файлы
+  # установки. Отказ обязан случиться до этого, а не после.
+  same "update.sh отказывается работать из пути с кириллицей" "$(run_update "$INST_RU")" "1"
+  UPDATE_RU="$(cat "$WORK/update.out")"
+  case "$UPDATE_RU" in
+    *"символы, которые Docker не понимает"*) ok "update.sh отказывает по той же причине" ;;
+    *) bad "update.sh отказал не по пути: $UPDATE_RU" ;;
+  esac
+
+  # У restore довод сильнее, чем у update: он кончается вызовом start.sh, а между началом
+  # и этим отказом лежала бы перезаписанная база.
+  mkdir -p "$INST_RU/backups"
+  : | gzip >"$INST_RU/backups/td-20260101-000000.sql.gz"
+  same "restore.sh отказывается работать из пути с кириллицей" \
+    "$(run_restore "$INST_RU" "$INST_RU/backups/td-20260101-000000.sql.gz")" "1"
+  RESTORE_RU="$(cat "$WORK/restore.out")"
+  case "$RESTORE_RU" in
+    *"символы, которые Docker не понимает"*) ok "restore.sh отказывает по той же причине" ;;
+    *) bad "restore.sh отказал не по пути: $RESTORE_RU" ;;
+  esac
+  case "$RESTORE_RU" in
+    *"stub docker"*) bad "restore.sh дошёл до docker раньше проверки пути" ;;
+    *) ok "restore.sh не трогает базу до проверки пути" ;;
+  esac
 fi
 
 echo ""
