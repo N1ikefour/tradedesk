@@ -35,8 +35,8 @@ Updated: 2026-09-06
 | S1-05 | `POST /ingest/heartbeat` + assignments | backend | **Done** | [PR #16](https://github.com/N1ikefour/tradedesk/pull/16) |
 | S1-06 | Accounts API | backend | **Done** | [PR #14](https://github.com/N1ikefour/tradedesk/pull/14) |
 | S1-07 | Символы | backend | **Done** | [PR #17](https://github.com/N1ikefour/tradedesk/pull/17) |
-| S1-08 | Коллектор: mt5_client + worker | collector | In Progress | `feat/S1-08-collector-worker` |
-| S1-09 | Коллектор: менеджер процессов, heartbeat | collector | Backlog | — |
+| S1-08 | Коллектор: mt5_client + worker | collector | **Done** | [PR #31](https://github.com/N1ikefour/tradedesk/pull/31) |
+| S1-09 | Коллектор: менеджер процессов, heartbeat | collector | In Progress | `feat/S1-09-collector-manager` |
 | S1-10 | Коллектор: установка | collector | Backlog | — |
 | S1-11 | UI Accounts | frontend | **Done** | [PR #18](https://github.com/N1ikefour/tradedesk/pull/18) |
 | S1-12 | Сверка | backend | Backlog | — |
@@ -111,8 +111,8 @@ Updated: 2026-09-06
 | X-13 | Приостановленный запрос выглядит как вечная загрузка | frontend | Todo | — |
 | X-14 | Новая зависимость не доезжает до существующего окружения | infra | Todo | — |
 | X-15 | Линтер ловит кнопку без `type` | frontend | **Done** | [PR #11](https://github.com/N1ikefour/tradedesk/pull/11) |
-| X-16 | Уход на страницу писем сбрасывает форму входа | frontend | Todo | — |
-| X-17 | На Windows нет `init.bat` (+ `X-53`, `X-54`) | infra | In Progress | `fix/X-17-windows-first-run` |
+| X-16 | Уход на страницу писем сбрасывает форму входа (+ `X-36`) | frontend | In Progress | `fix/X-16-first-run-ux` |
+| X-17 | На Windows нет `init.bat` (+ `X-53`, `X-54`) | infra | **Done** | [PR #30](https://github.com/N1ikefour/tradedesk/pull/30) |
 | X-18 | Имя джоба в CI скрывает тесты web | infra | Todo | — |
 | X-19 | Релизный zip-артефакт | infra | **Done** | [PR #25](https://github.com/N1ikefour/tradedesk/pull/25) |
 | X-20 | Кэш `get_settings` отравляет соседние модули тестов | backend | Todo | — |
@@ -131,7 +131,7 @@ Updated: 2026-09-06
 | X-33 | Повторённый query-параметр теряет данные | backend | Todo | — |
 | X-34 | Длину символа не ограничивает никто | backend | Todo | — |
 | X-35 | Уникальность тегов без учёта регистра держится кодом | backend | Todo | — |
-| X-36 | Переключатель ужал меню на телефоне до одного пункта | frontend | Todo | — |
+| X-36 | Переключатель ужал меню на телефоне до одного пункта | frontend | In Progress | входит в `X-16` |
 | X-37 | Нечем засеять позиции: UI проверяется на пустом экране | backend | Todo | — |
 | X-38 | NUL в query-параметре роняет журнал в 500 | backend | Todo | — |
 | X-39 | Виртуализация журнала держится на константе высоты | frontend | Todo | — |
@@ -148,7 +148,7 @@ Updated: 2026-09-06
 | X-50 | Два пересчёта `daily_stats` дерутся за первичный ключ | backend | Todo | — |
 | X-51 | Потолок на размер тела стоит на одном маршруте | backend | Todo | — |
 | X-52 | Токен коллектора даёт запись в любой счёт установки | backend + collector | Todo | — |
-| X-53 | `start.sh` теряет код возврата compose | infra | In Progress | входит в `X-17` |
-| X-54 | Docker Compose не собирает из пути с кириллицей | infra | In Progress | входит в `X-17` |
+| X-53 | `start.sh` теряет код возврата compose | infra | **Done** | [PR #30](https://github.com/N1ikefour/tradedesk/pull/30) |
+| X-54 | Docker Compose не собирает из пути с кириллицей | infra | **Done** | [PR #30](https://github.com/N1ikefour/tradedesk/pull/30) |
 | X-55 | `.bat` в UTF-8, а русская консоль Windows в CP866 | infra | Todo | — |
 | X-56 | `make ci-target` не гоняет тесты коллектора | infra | Todo | — |
