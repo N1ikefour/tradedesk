@@ -53,7 +53,7 @@ Updated: 2026-09-08
 | S2-06 | UI Journal таблица | frontend | **Done** | [PR #22](https://github.com/N1ikefour/tradedesk/pull/22) |
 | S2-07 | UI Position card | frontend | **Done** | [PR #24](https://github.com/N1ikefour/tradedesk/pull/24) |
 | S2-08 | UI Скриншоты | frontend | Backlog | — |
-| S2-09 | UI Calendar | frontend | Backlog | — |
+| S2-09 | UI Calendar | frontend | In Progress | `feat/S2-09-calendar` |
 | S2-10 | UI Dashboard v1 | frontend | **Done** | [PR #27](https://github.com/N1ikefour/tradedesk/pull/27) |
 | S2-11 | Переключатель счетов: создание и полировка | frontend | Backlog | перенесён из S1-11 |
 
