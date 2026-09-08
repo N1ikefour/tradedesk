@@ -34,7 +34,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -77,17 +77,29 @@ CRON_JOBS: list[CronJob] = [
 
 
 async def refresh_daily_stats(
-    ctx: dict[str, Any], account_id: str, days: list[str] | None = None
+    ctx: dict[str, Any],
+    account_id: str,
+    days: list[str] | None = None,
+    within: list[str] | None = None,
 ) -> int:
     """Пересчитывает суточную агрегацию счёта (SPEC.md §10).
 
-    Аргументы примитивные (строки, а не `UUID` и `date`) намеренно: их сериализует
-    очередь, и через неё они переживают перезапуск worker'а вместе с версией кода,
-    которая их положила. Разбор — здесь, на входе задачи; домен получает уже типы.
+    Аргументы примитивные (строки, а не `UUID`, `date` и `datetime`) намеренно: их
+    сериализует очередь, и через неё они переживают перезапуск worker'а вместе с версией
+    кода, которая их положила. Разбор — здесь, на входе задачи; домен получает уже типы.
+
+    `within` — пара ISO-моментов UTC, отрезок «дальше этого измениться не могло». Так
+    ставит задачу `POST /ingest/deals`: дни он посчитать не вправе, правило торгового дня
+    живёт в домене (`domains/analytics/daily_stats.py`).
     """
     parsed = None if days is None else [date.fromisoformat(day) for day in days]
+    span = (
+        None
+        if within is None
+        else (datetime.fromisoformat(within[0]), datetime.fromisoformat(within[1]))
+    )
     async with get_session_factory()() as session:
-        written = await daily_stats.refresh(session, UUID(account_id), parsed)
+        written = await daily_stats.refresh(session, UUID(account_id), parsed, within=span)
     log.info("worker.daily_stats_refreshed", account_id=account_id, days=written)
     return written
 
