@@ -151,3 +151,4 @@ Updated: 2026-09-06
 | X-53 | `start.sh` теряет код возврата compose | infra | In Progress | входит в `X-17` |
 | X-54 | Docker Compose не собирает из пути с кириллицей | infra | In Progress | входит в `X-17` |
 | X-55 | `.bat` в UTF-8, а русская консоль Windows в CP866 | infra | Todo | — |
+| X-56 | `make ci-target` не гоняет тесты коллектора | infra | Todo | — |
