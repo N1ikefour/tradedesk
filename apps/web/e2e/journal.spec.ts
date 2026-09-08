@@ -12,9 +12,8 @@ import { signIn } from './sign-in';
  */
 test('фильтр журнала переживает перезагрузку, испорченная ссылка не роняет экран', async ({
   page,
-  context,
 }) => {
-  await signIn(page, context);
+  await signIn(page);
 
   await page.goto('/journal');
   await expect(page.getByRole('heading', { name: t.pages.journal })).toBeVisible();

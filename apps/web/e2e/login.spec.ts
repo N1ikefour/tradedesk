@@ -15,11 +15,8 @@ import { signIn } from './sign-in';
  * заново, а код входа ограничен десятью запросами в час на IP (SPEC.md 4), и шестая
  * точка входа сделала бы `make smoke` неповторяемым.
  */
-test('вход по коду из /dev/outbox приводит на дашборд с шагами онбординга', async ({
-  page,
-  context,
-}) => {
-  await signIn(page, context);
+test('вход по коду из /dev/outbox приводит на дашборд с шагами онбординга', async ({ page }) => {
+  await signIn(page);
 
   await expect(page).toHaveURL(/\/$/);
 

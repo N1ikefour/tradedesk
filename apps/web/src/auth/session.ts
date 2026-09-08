@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 
 import { api, setUnauthorizedHandler, unwrap, unwrapEmpty } from '@/api/client';
 import { ApiRequestError } from '@/api/errors';
+import { clearCodeRequest } from '@/auth/code-request';
 import type { components } from '@/api/schema';
 
 export type SessionUser = components['schemas']['UserResponse'];
@@ -87,6 +88,9 @@ export function useLogout() {
     onSettled: () => {
       queryClient.setQueryData<SessionUser | null>(SESSION_QUERY_KEY, null);
       queryClient.removeQueries({ queryKey: SESSION_EXPIRED_QUERY_KEY });
+      // Отметка о запрошенном коде осталась бы от входа, которым человек уже
+      // воспользовался, и встретила бы его на /login шагом с заведомо мёртвым кодом.
+      clearCodeRequest();
     },
   });
 }
