@@ -317,7 +317,8 @@ def test_the_stop_flag_lands_in_the_folder_the_manager_watches() -> None:
     assert "stop_flag=env_file.parent / STOP_FLAG_NAME" in source
 
     # `$Here` у `.ps1` и `%~dp0` у `.bat` — один каталог только пока файлы лежат рядом.
-    assert (PACKAGE_ROOT / "install-service.ps1").parent == (PACKAGE_ROOT / "run-collector.bat").parent
+    ps1_dir = (PACKAGE_ROOT / "install-service.ps1").parent
+    assert ps1_dir == (PACKAGE_ROOT / "run-collector.bat").parent
 
 
 def test_the_forced_stop_says_what_it_costs() -> None:
