@@ -31,11 +31,8 @@ async function passwordTraces(page: Page, secret: string) {
   }, secret);
 }
 
-test('счёт добавляется, переживает перезагрузку и удаляется вводом имени', async ({
-  page,
-  context,
-}) => {
-  await signIn(page, context);
+test('счёт добавляется, переживает перезагрузку и удаляется вводом имени', async ({ page }) => {
+  await signIn(page);
 
   const label = `Smoke ${Date.now()}`;
 

@@ -18,9 +18,8 @@ const OTHER_POSITION = '0199a2b0-0000-7000-8000-0000000000ff';
 
 test('карточка по чужой ссылке объясняет отсутствие позиции и не роняет экран', async ({
   page,
-  context,
 }) => {
-  await signIn(page, context);
+  await signIn(page);
 
   await page.goto(`/journal/${OTHER_POSITION}?symbol=EURUSD`);
 

@@ -23,8 +23,8 @@ const TARGET_HOUR = '9';
 const PREVIEW_PREFIX = t.settings.previewNow('');
 const DATE_TIME = /\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/;
 
-test('таймзона и начало дня сохраняются и переживают перезагрузку', async ({ page, context }) => {
-  await signIn(page, context);
+test('таймзона и начало дня сохраняются и переживают перезагрузку', async ({ page }) => {
+  await signIn(page);
 
   await page.goto('/settings');
   const timezone = page.getByLabel(t.settings.timezoneLabel, { exact: true });

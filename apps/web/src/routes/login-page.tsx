@@ -4,6 +4,7 @@ import { Link, Navigate, useLocation, useNavigate } from 'react-router';
 
 import { messageForError } from '@/api/error-message';
 import { ApiRequestError, ERROR_CODE } from '@/api/errors';
+import { clearCodeRequest, rememberCodeRequest, restoreCodeRequest } from '@/auth/code-request';
 import {
   SESSION_EXPIRED_QUERY_KEY,
   useRequestCode,
@@ -51,8 +52,16 @@ export function LoginPage() {
   const requestCode = useRequestCode();
   const verifyCode = useVerifyCode();
 
-  const [step, setStep] = useState<'email' | 'code'>('email');
-  const [email, setEmail] = useState('');
+  // Страница монтируется заново после каждого ухода на письма, поэтому свой первый шаг
+  // она берёт не из воздуха, а из отметки о запрошенном коде — см. `auth/code-request`.
+  const [restored] = useState(() => restoreCodeRequest(Date.now()));
+
+  const [step, setStep] = useState<'email' | 'code'>(
+    restored.status === 'pending' ? 'code' : 'email',
+  );
+  // Адрес возвращается и когда код истёк: человек всё равно запрашивает новый на него,
+  // и заставлять набирать почту повторно незачем.
+  const [email, setEmail] = useState(restored.status === 'none' ? '' : restored.email);
   const [code, setCode] = useState('');
   const [error, setError] = useState<unknown>(null);
   const [rateLimit, setRateLimit] = useState<RateLimit | null>(null);
@@ -67,9 +76,12 @@ export function LoginPage() {
     if (readState(location.state, 'reason') === 'check-failed') {
       return t.login.sessionCheckFailed;
     }
-    return queryClient.getQueryData<boolean>(SESSION_EXPIRED_QUERY_KEY) === true
-      ? t.login.sessionExpired
-      : null;
+    if (queryClient.getQueryData<boolean>(SESSION_EXPIRED_QUERY_KEY) === true) {
+      return t.login.sessionExpired;
+    }
+    // Последним: причина оборванной сессии объясняет, почему человека сюда привели, а
+    // истёкший код — только его собственную прошлую попытку.
+    return restored.status === 'expired' ? t.login.codeExpired : null;
   });
   // Отметка снимается сразу: она описывает один переход, а не состояние пользователя.
   useEffect(() => {
@@ -110,6 +122,14 @@ export function LoginPage() {
       setRateLimit({ email: target.toLowerCase(), seconds: cause.retryAfter });
       return;
     }
+    // Попытки исчерпаны — код погашен сервером так же окончательно, как удачным входом,
+    // и отметка о нём стала ложью. Иначе уход за новым письмом и возврат поднимали бы
+    // шаг ввода с пустым полем и без единого слова о том, что вводить уже нечего.
+    // Код, сожжённый неверными вводами, так не ловится: до последней попытки сервер
+    // отвечает `invalid_code`, и отличить исчерпанный код от опечатки клиент не может.
+    if (cause instanceof ApiRequestError && cause.code === ERROR_CODE.tooManyAttempts) {
+      clearCodeRequest();
+    }
     setError(cause);
   };
 
@@ -120,6 +140,7 @@ export function LoginPage() {
       onSuccess: () => {
         setCode('');
         setStep('code');
+        rememberCodeRequest(target, Date.now());
         // Запрос прошёл — значит лимит на этот адрес больше не действует.
         setRateLimit(null);
         if (resend) {
@@ -152,6 +173,8 @@ export function LoginPage() {
       { email: target, code: value },
       {
         onSuccess: () => {
+          // Код погашен сервером — отметка о нём стала ложью.
+          clearCodeRequest();
           void navigate(redirectTarget(location.state), { replace: true });
         },
         onError: (cause) => {
@@ -184,6 +207,8 @@ export function LoginPage() {
     setCode('');
     setError(null);
     setNotice(null);
+    // Человек отказался от прошлой попытки — возвращать его к ней после письма нельзя.
+    clearCodeRequest();
   };
 
   // Вошедшему на /login делать нечего: уводим туда, откуда пришёл.

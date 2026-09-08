@@ -5,11 +5,11 @@
  * Пресеты («Все реальные») и предупреждение «демо и реал вместе» — `S2-11`.
  *
  * Выпадающий список сделан руками, без `@radix-ui/react-dropdown-menu`: поведение здесь
- * сводится к «закрыться по Escape и по клику мимо», и ради него в проект не заводится ещё
- * одна зависимость — так же, как это уже решено для модального окна.
+ * сводится к «закрыться по Escape и по клику мимо» (`lib/use-dismiss`), и ради него в
+ * проект не заводится ещё одна зависимость — так же, как решено для модального окна.
  */
 import { ChevronDown } from 'lucide-react';
-import { useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useId, useRef, useState } from 'react';
 
 import { useAccounts, type Account } from '@/accounts/api';
 import {
@@ -20,6 +20,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { t } from '@/i18n';
+import { useDismiss } from '@/lib/use-dismiss';
 import { cn } from '@/lib/utils';
 
 function ColorDot({ color, className }: { color: string; className?: string }) {
@@ -51,29 +52,15 @@ export function AccountSwitcher() {
   const toggleId = useAccountSelectionStore((state) => state.toggleId);
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement | null>(null);
+  const trigger = useRef<HTMLButtonElement | null>(null);
   const listId = useId();
 
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const onPointerDown = (event: MouseEvent) => {
-      if (root.current !== null && !root.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open]);
+  useDismiss(
+    open,
+    root,
+    trigger,
+    useCallback(() => setOpen(false), []),
+  );
 
   if (accounts.isPending) {
     return null;
@@ -117,6 +104,7 @@ export function AccountSwitcher() {
   return (
     <div ref={root} className="relative min-w-0">
       <Button
+        ref={trigger}
         type="button"
         variant="outline"
         size="sm"
