@@ -35,7 +35,7 @@ Updated: 2026-09-06
 | S1-05 | `POST /ingest/heartbeat` + assignments | backend | **Done** | [PR #16](https://github.com/N1ikefour/tradedesk/pull/16) |
 | S1-06 | Accounts API | backend | **Done** | [PR #14](https://github.com/N1ikefour/tradedesk/pull/14) |
 | S1-07 | Символы | backend | **Done** | [PR #17](https://github.com/N1ikefour/tradedesk/pull/17) |
-| S1-08 | Коллектор: mt5_client + worker | collector | Backlog | — |
+| S1-08 | Коллектор: mt5_client + worker | collector | In Progress | `feat/S1-08-collector-worker` |
 | S1-09 | Коллектор: менеджер процессов, heartbeat | collector | Backlog | — |
 | S1-10 | Коллектор: установка | collector | Backlog | — |
 | S1-11 | UI Accounts | frontend | **Done** | [PR #18](https://github.com/N1ikefour/tradedesk/pull/18) |
@@ -112,7 +112,7 @@ Updated: 2026-09-06
 | X-14 | Новая зависимость не доезжает до существующего окружения | infra | Todo | — |
 | X-15 | Линтер ловит кнопку без `type` | frontend | **Done** | [PR #11](https://github.com/N1ikefour/tradedesk/pull/11) |
 | X-16 | Уход на страницу писем сбрасывает форму входа | frontend | Todo | — |
-| X-17 | На Windows нет `init.bat` | infra | Todo | — |
+| X-17 | На Windows нет `init.bat` (+ `X-53`, `X-54`) | infra | In Progress | `fix/X-17-windows-first-run` |
 | X-18 | Имя джоба в CI скрывает тесты web | infra | Todo | — |
 | X-19 | Релизный zip-артефакт | infra | **Done** | [PR #25](https://github.com/N1ikefour/tradedesk/pull/25) |
 | X-20 | Кэш `get_settings` отравляет соседние модули тестов | backend | Todo | — |
@@ -148,5 +148,5 @@ Updated: 2026-09-06
 | X-50 | Два пересчёта `daily_stats` дерутся за первичный ключ | backend | Todo | — |
 | X-51 | Потолок на размер тела стоит на одном маршруте | backend | Todo | — |
 | X-52 | Токен коллектора даёт запись в любой счёт установки | backend + collector | Todo | — |
-| X-53 | `start.sh` теряет код возврата compose | infra | Todo | — |
-| X-54 | Docker Compose не собирает из пути с кириллицей | infra | Todo | — |
+| X-53 | `start.sh` теряет код возврата compose | infra | In Progress | входит в `X-17` |
+| X-54 | Docker Compose не собирает из пути с кириллицей | infra | In Progress | входит в `X-17` |
