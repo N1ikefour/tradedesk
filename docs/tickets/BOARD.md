@@ -150,3 +150,4 @@ Updated: 2026-09-06
 | X-52 | Токен коллектора даёт запись в любой счёт установки | backend + collector | Todo | — |
 | X-53 | `start.sh` теряет код возврата compose | infra | In Progress | входит в `X-17` |
 | X-54 | Docker Compose не собирает из пути с кириллицей | infra | In Progress | входит в `X-17` |
+| X-55 | `.bat` в UTF-8, а русская консоль Windows в CP866 | infra | Todo | — |
