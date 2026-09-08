@@ -23,6 +23,10 @@ htmlcov/
 dist/
 build/
 
+# Логи коллектора на машине пользователя: файл на счёт, внутри — тикеты и суммы
+# сделок (SPEC.md 8.2). Создаётся папка запуском run-collector.bat, не тестами.
+apps/collector-mt5/logs/
+
 # --- Node / web ---
 node_modules/
 apps/web/dist/
