@@ -217,6 +217,44 @@ export function canonicalDecimal(raw: string): string | null {
 }
 
 /**
+ * Сумма десятичных строк. Потребитель один — итоги недели и месяца в календаре (SPEC.md
+ * 9.3): дни месяца приходят одним ответом целиком, поэтому их сложение — это сумма всего
+ * множества, а не сумма загруженной части (в отличие от курсорного списка журнала, где
+ * такая сумма была бы враньём, неотличимым от правды).
+ *
+ * Через `BigInt`, как и всё в этом модуле: `Number` на деньгах даёт `0.1 + 0.2`, и сумма
+ * недели переставала бы совпадать с суммой дней, из которых она сложена, на копейку —
+ * ровно то расхождение, ради отсутствия которого числа считает сервер.
+ *
+ * `null`, если хоть одно слагаемое не разобралось: итог, собранный из части слагаемых,
+ * неотличим от верного, а прочерк на его месте честен. Пустой список даёт `"0"` —
+ * складывать нечего, и это ноль, а не «нечего считать»; отличать эти два случая — работа
+ * места, которое знает, чего именно нет.
+ */
+export function sumDecimals(values: readonly string[]): string | null {
+  const parsed: ParsedDecimal[] = [];
+  let digits = 0;
+  for (const value of values) {
+    const item = parseDecimal(value);
+    if (item === null) {
+      return null;
+    }
+    parsed.push(item);
+    digits = Math.max(digits, item.fraction.length);
+  }
+  let total = 0n;
+  for (const item of parsed) {
+    // Слагаемые приводятся к одному масштабу — иначе складывались бы копейки с рублями.
+    const scaled = digitsOf(item) * pow10(digits - item.fraction.length);
+    total += item.negative ? -scaled : scaled;
+  }
+  const negative = total < 0n;
+  const { whole, fraction } = splitScaled(negative ? -total : total, digits);
+  const tail = fraction === '' ? '' : `.${fraction}`;
+  return `${negative ? '-' : ''}${whole}${tail}`;
+}
+
+/**
  * Деление двух десятичных строк с округлением до `fractionDigits`. Потребитель один —
  * отношение R (`net_pnl / risk_amount`, SPEC.md 9.3).
  *

@@ -1,6 +1,7 @@
 /**
  * Запросы дашборда. Все числа берутся с сервера готовыми: `GET /analytics/summary` и
- * `GET /journal/calendar` (SPEC.md 5.4, 5.5). Ни одна величина здесь не собирается
+ * `GET /journal/calendar` (SPEC.md 5.4, 5.5; запрос календаря живёт в `calendar/api.ts` —
+ * он общий с экраном `/calendar`). Ни одна величина здесь не собирается
  * сложением загруженных строк — список курсорный, и сумма видимого была бы неотличимым
  * от правды враньём (`docs/metrics.md` §1.1).
  */
@@ -13,17 +14,12 @@ import type { DashboardPeriod } from '@/dashboard/period';
 import { positionsQueryKey, type PositionsQueryParams } from '@/journal/api';
 
 export type Summary = components['schemas']['SummaryResponse'];
-export type CalendarMonth = components['schemas']['CalendarResponse'];
-export type CalendarDay = components['schemas']['CalendarDay'];
 
 export type SummaryQueryParams = NonNullable<
   operations['read_summary_api_v1_analytics_summary_get']['parameters']['query']
 >;
-export type CalendarQueryParams =
-  operations['read_calendar_api_v1_journal_calendar_get']['parameters']['query'];
 
 export const SUMMARY_QUERY_KEY = ['analytics', 'summary'] as const;
-export const CALENDAR_QUERY_KEY = ['journal', 'calendar'] as const;
 
 /**
  * Сколько открытых позиций показывает список. Их немного по природе вещей, а полный
@@ -53,18 +49,6 @@ export function summaryParams(
   accountIds: readonly string[],
 ): SummaryQueryParams {
   const params: SummaryQueryParams = { from: period.from };
-  const ids = accountIdsParam(accountIds);
-  if (ids !== undefined) {
-    params.account_ids = ids;
-  }
-  return params;
-}
-
-export function calendarParams(
-  period: DashboardPeriod,
-  accountIds: readonly string[],
-): CalendarQueryParams {
-  const params: CalendarQueryParams = { month: period.month };
   const ids = accountIdsParam(accountIds);
   if (ids !== undefined) {
     params.account_ids = ids;
@@ -122,14 +106,6 @@ export function useSummary(params: SummaryQueryParams, enabled: boolean) {
   return useQuery({
     queryKey: [...SUMMARY_QUERY_KEY, params],
     queryFn: () => unwrap(api.GET('/api/v1/analytics/summary', { params: { query: params } })),
-    enabled,
-  });
-}
-
-export function useCalendarMonth(params: CalendarQueryParams, enabled: boolean) {
-  return useQuery({
-    queryKey: [...CALENDAR_QUERY_KEY, params],
-    queryFn: () => unwrap(api.GET('/api/v1/journal/calendar', { params: { query: params } })),
     enabled,
   });
 }

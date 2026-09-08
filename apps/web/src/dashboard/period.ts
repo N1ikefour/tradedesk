@@ -10,13 +10,11 @@
  * сейчас торговый день» — месяц для запроса календаря и подсветку сегодняшней ячейки
  * (`docs/metrics.md` §2.2).
  */
+import { monthOfDay } from '@/calendar/month';
 import { PARAM } from '@/journal/filters';
 import { periodStart, tradingDayIso } from '@/lib/trading-day';
 
 const DASHBOARD_PRESET = 'month' as const;
-
-/** Длина `yyyy-MM` в строке `yyyy-MM-dd`. */
-const MONTH_LENGTH = 7;
 
 export type DashboardPeriod = {
   /** Нижняя граница периода в UTC (ISO с `Z`) — то, что уходит в `from`. */
@@ -35,7 +33,7 @@ export function dashboardPeriod(
   const today = tradingDayIso(now, timeZone, boundaryHour);
   return {
     from: periodStart(DASHBOARD_PRESET, now, timeZone, boundaryHour).toISOString(),
-    month: today.slice(0, MONTH_LENGTH),
+    month: monthOfDay(today),
     today,
   };
 }
@@ -62,20 +60,4 @@ export function journalUnreflectedLink(): string {
 /** Все открытые позиции — без периода: открытая позиция к периоду не привязана. */
 export function journalOpenLink(): string {
   return `/journal?${new URLSearchParams({ [PARAM.status]: 'open' }).toString()}`;
-}
-
-/**
- * Ссылка в журнал за один торговый день. Границы приходят из ответа календаря и
- * подставляются как есть — второго правила дня на клиенте нет (SPEC.md 5.4).
- *
- * `status=closed` обязателен: без него в список приедут ещё и позиции, открытые внутри
- * этого окна, и сумма колонки разойдётся с числом в ячейке (DoD S2-09).
- */
-export function journalDayLink(startsAt: string, endsAt: string): string {
-  const params = new URLSearchParams({
-    [PARAM.from]: startsAt,
-    [PARAM.to]: endsAt,
-    [PARAM.status]: 'closed',
-  });
-  return `/journal?${params.toString()}`;
 }
