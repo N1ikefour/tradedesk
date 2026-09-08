@@ -31,7 +31,7 @@ endif
 SCRIPTS := $(ROOT)/infra/scripts
 
 .PHONY: help install hooks ci ci-api ci-web ci-target lint lint-api lint-collector lint-web \
-        lint-hooks test test-api test-web test-release test-scripts build-web smoke format \
+        lint-hooks test test-api test-collector test-web test-release test-scripts build-web smoke format \
         guard-python \
         guard-precommit guard-web init up down backup restore update migrate downgrade \
         revision types release
@@ -60,7 +60,7 @@ help:
 	@echo "    make ci              ВЕСЬ гейт: то же самое и в том же составе, что гоняет GitHub Actions"
 	@echo "                         (ci-api + ci-web). Перед PR прогоняется именно она"
 	@echo "    make ci-api          джоб api: lint-api + lint-collector + lint-hooks +"
-	@echo "                         test-api + test-release + test-scripts"
+	@echo "                         test-api + test-collector + test-release + test-scripts"
 	@echo "    make ci-web          джоб web: lint-web + test-web + build-web"
 	@echo "    make ci-target       ruff + mypy + unit-тесты в контейнере python:$(PY_VERSION)-slim —"
 	@echo "                         на целевой версии, которой нет на машине. ДОПОЛНЯЕТ make ci,"
@@ -74,6 +74,7 @@ help:
 	@echo "    make lint-hooks      pre-commit run --all-files (в т.ч. detect-private-key)"
 	@echo "    make test            тесты: pytest (api) + vitest (web)"
 	@echo "    make test-api        pytest для apps/api"
+	@echo "    make test-collector  pytest для apps/collector-mt5 (терминал не нужен)"
 	@echo "    make test-web        vitest run для apps/web"
 	@echo "    make test-release    тесты сборщика релизного архива (состав, симлинки,"
 	@echo "                         секреты, форма тега). Входит в make ci-api"
@@ -136,7 +137,7 @@ ci: ci-api ci-web
 # test-release живёт в этом джобе, а не в web: ему нужны python3, git и zip — ровно то,
 # что уже стоит на api-раннере. Гейт на артефакт больше нигде не появится: релизный
 # workflow запускается по тегу, то есть после того, как ломать уже поздно.
-ci-api: lint-api lint-collector lint-hooks test-api test-release test-scripts
+ci-api: lint-api lint-collector lint-hooks test-api test-collector test-release test-scripts
 
 ci-web: lint-web test-web build-web
 
@@ -170,10 +171,16 @@ lint-web: guard-web
 lint-hooks: guard-precommit
 	$(PRECOMMIT) run --all-files
 
-test: test-api test-web
+test: test-api test-collector test-web
 
 test-api: guard-python
 	cd $(API_DIR) && $(PYTEST)
+
+# Тесты коллектора. Гоняются отдельной целью, потому что пакет свой и живёт вне
+# apps/api: без этой строки 198 тестов не видел бы ни гейт, ни CI — а проверить
+# коллектор иначе нечем, библиотека MetaTrader5 есть только под Windows.
+test-collector: guard-python
+	cd $(COLLECTOR_DIR) && $(PYTEST)
 
 test-web: guard-web
 	cd $(WEB_DIR) && $(NPM) run test
