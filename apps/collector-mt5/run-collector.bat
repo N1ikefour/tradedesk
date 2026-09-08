@@ -16,8 +16,10 @@ rem   run-collector.bat --once      один проход: проверить н
 rem   run-collector.bat --reinstall переустановить зависимости и выйти
 rem   run-collector.bat --service   запуск из Планировщика заданий: вывод в logs\run-collector.log
 rem
-rem Переменные окружения (нужны только нам, человеку — нет):
-rem   TD_PYTHON             команда запуска Python вместо поиска 3.12 (без пробелов в пути)
+rem Переменные окружения (нужны только нам, человеку — нет). Обе выводят коллектор за
+rem проверенное, поэтому обе печатают предупреждение на экране:
+rem   TD_PYTHON             команда запуска Python вместо поиска 3.12; подставляется в
+rem                         строку запуска как есть, поэтому пробелы в пути не переживёт
 rem   TD_ALLOW_ANY_PYTHON   разрешить непроверенную версию Python 3.13+
 
 set "PYTHONUTF8=1"
@@ -62,7 +64,14 @@ if not errorlevel 1 (
 rem ---------------------------------------------------------------------------
 rem Python. Версия названа явно: пакет требует 3.12+, но проверен только на 3.12
 rem (.python-version, гейт CI). На 3.13 и 3.14 коллектор не гонял никто.
+rem
+rem Системный Python ищется только тогда, когда собирать .venv не из чего. Уже
+rem собранное окружение живёт своей жизнью: системную версию можно снести или
+rem обновить, а менеджер и процессы счетов всё равно поедут на той, что внутри .venv.
+rem Поэтому версия проверяется ниже ещё раз — у неё.
 rem ---------------------------------------------------------------------------
+
+if exist "%TD_VENV_PY%" goto :venv_ready
 
 set "PY="
 if defined TD_PYTHON goto :py_explicit
@@ -73,7 +82,7 @@ if not errorlevel 1 (
   goto :py_found
 )
 
-python -c "import sys; sys.exit(0 if sys.version[:4] == '3.12' else 1)" >nul 2>nul
+python -c "import sys; sys.exit(0 if sys.version[:4] == '%TD_PY_WANTED%' else 1)" >nul 2>nul
 if not errorlevel 1 (
   set "PY=python"
   goto :py_found
@@ -84,6 +93,11 @@ goto :no_python
 
 :py_explicit
 set "PY=%TD_PYTHON%"
+echo.
+echo ВНИМАНИЕ: TD_PYTHON — .venv будет собран Python'ом, которого никто не проверял:
+echo   %TD_PYTHON%
+echo Странности после этого — не баг коллектора, а эта переменная. Пробелы в пути
+echo здесь не переживут запуск: команда подставляется в строку как есть.
 goto :py_found
 
 :py_any
@@ -104,18 +118,17 @@ rem счетов порождаются через sys.executable, а в .venv �
 rem а не C:\Users\<имя кириллицей>\... (X-43).
 rem ---------------------------------------------------------------------------
 
-if not exist "%TD_VENV_PY%" (
+echo.
+echo Создаю виртуальное окружение .venv ...
+%PY% -m venv "%TD_VENV%"
+if errorlevel 1 (
   echo.
-  echo Создаю виртуальное окружение .venv ...
-  %PY% -m venv "%TD_VENV%"
-  if errorlevel 1 (
-    echo.
-    echo ОШИБКА: не удалось создать .venv. Проверьте, что папка установки не
-    echo «только для чтения» и что на диске есть место, и запустите файл снова.
-    goto :fail
-  )
+  echo ОШИБКА: не удалось создать .venv. Проверьте, что папка установки не
+  echo «только для чтения» и что на диске есть место, и запустите файл снова.
+  goto :fail
 )
 
+:venv_ready
 "%TD_VENV_PY%" -c "import sys" >nul 2>nul
 if errorlevel 1 (
   echo.
@@ -125,6 +138,19 @@ if errorlevel 1 (
   echo и запустите этот файл снова.
   goto :fail
 )
+
+rem Версия того Python, который в самом деле поедет. Отказом это быть не может: .venv
+rem мог быть собран осознанно, через TD_ALLOW_ANY_PYTHON, и отказ сломал бы работающую
+rem установку. Но и промолчать нельзя — иначе непроверенная версия живёт молча.
+"%TD_VENV_PY%" -c "import sys; sys.exit(0 if sys.version[:4] == '%TD_PY_WANTED%' else 1)" >nul 2>nul
+if errorlevel 1 (
+  echo.
+  echo ВНИМАНИЕ: .venv собран не на Python %TD_PY_WANTED%, а коллектор проверен только
+  echo на нём. Пересобрать: удалите папку
+  echo %TD_VENV%
+  echo и запустите этот файл снова — он найдёт нужную версию или скажет, что скачать.
+)
+"%TD_VENV_PY%" -c "import sys; print('Python', sys.version.split()[0], 'из', sys.executable)"
 
 rem ---------------------------------------------------------------------------
 rem Зависимости. Ставятся при первом запуске и после обновления продукта; в обычный
@@ -176,20 +202,55 @@ rem ---------------------------------------------------------------------------
 rem Запуск
 rem ---------------------------------------------------------------------------
 
+if defined TD_SERVICE goto :launch
+if /i "%~1"=="--once" goto :launch_once
+
 echo.
 echo Коллектор запущен. Это окно закрывать нельзя — в нём он и работает.
 echo Остановить: Ctrl+C здесь или файл stop-collector.bat.
 echo Что происходит со счетами, видно в TradeDesk на экране «Счета».
 echo.
+goto :launch
 
-"%TD_VENV_PY%" -m collector.main %*
+:launch_once
+echo.
+echo Один проход: спрашиваю задания, проверяю настройки и связь с TradeDesk.
+echo Синхронизации не будет — для неё запустите файл без ключей.
+echo.
+
+rem Путь к настройкам передаётся явно: иначе он считался бы от текущей папки, а у
+rem запуска из Планировщика она своя. От него же менеджер отсчитывает файл-просьбу
+rem остановиться (collector-stop.flag), которую кладёт stop-collector.bat.
+:launch
+"%TD_VENV_PY%" -m collector.main --env-file "%TD_HOME%collector.env" %*
 set "TD_RC=%errorlevel%"
 
+rem Коды те же, что у процесса счёта (collector/worker.py), и та же таблица есть в
+rem install-service.ps1 — там их читает Планировщик. Расходиться им нельзя.
 echo.
-if "%TD_RC%"=="0" echo Коллектор остановлен.
-if "%TD_RC%"=="1" echo Коллектор аварийно остановился. Подробности — logs\collector.log.
-if "%TD_RC%"=="2" echo Ошибка в collector.env — текст выше называет строку.
-if "%TD_RC%"=="3" echo Коллектор работает только на Windows.
+if "%TD_RC%"=="0" goto :say_stopped
+if "%TD_RC%"=="1" goto :say_crashed
+if "%TD_RC%"=="2" goto :say_config
+if "%TD_RC%"=="3" goto :say_platform
+echo Коллектор остановлен принудительно, код %TD_RC%. Так завершают его stop-collector.bat
+echo и «Снять задачу» в диспетчере задач. Процессы счетов после такой остановки могут
+echo остаться живыми — проверьте диспетчер задач.
+goto :done
+
+:say_stopped
+echo Коллектор остановлен.
+goto :done
+
+:say_crashed
+echo Коллектор аварийно остановился. Подробности — logs\collector.log.
+goto :done
+
+:say_config
+echo Ошибка в collector.env — текст выше называет строку.
+goto :done
+
+:say_platform
+echo Коллектор работает только на Windows.
 goto :done
 
 :no_python
@@ -224,6 +285,7 @@ exit /b %TD_RC%
 rem Запуск из Планировщика: тот же файл, но весь вывод — в logs\run-collector.log.
 rem Возврат кода наружу здесь единственный способ сказать Планировщику, что не вышло.
 :service
+set "TD_SELF=%~f0"
 if not exist "%TD_LOGDIR%" mkdir "%TD_LOGDIR%"
 set "TD_RUNLOG=%TD_LOGDIR%\run-collector.log"
 rem Сюда же уходит stderr менеджера, то есть все строки лога вторым экземпляром: своя
@@ -231,5 +293,17 @@ rem ротация есть у collector.log, а у этого файла её �
 rem один старый файл на 5 МБ, потому что ценность у него одна: последний запуск.
 if exist "%TD_RUNLOG%" for %%F in ("%TD_RUNLOG%") do if %%~zF GTR 5242880 move /y "%TD_RUNLOG%" "%TD_RUNLOG%.old" >nul
 set "TD_SERVICE=1"
-call "%~f0" >>"%TD_RUNLOG%" 2>&1
+
+rem Ключи после --service доезжают до менеджера: без этого «--service --once» молча
+rem превращался бы в бесконечный запуск. Ключ /1 у shift оставляет на месте имя самого
+rem файла: им же мы себя и зовём.
+set "TD_ARGS="
+:service_args
+shift /1
+if "%~1"=="" goto :service_run
+set "TD_ARGS=%TD_ARGS% %1"
+goto :service_args
+
+:service_run
+call "%TD_SELF%"%TD_ARGS% >>"%TD_RUNLOG%" 2>&1
 exit /b %errorlevel%

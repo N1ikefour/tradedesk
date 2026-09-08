@@ -64,7 +64,7 @@ fixture() {
     infra/scripts/common.sh \
     apps/collector-mt5/collector.env.example apps/collector-mt5/run-collector.bat \
     apps/collector-mt5/install-service.ps1 apps/collector-mt5/install-service.bat \
-    apps/collector-mt5/stop-collector.bat \
+    apps/collector-mt5/stop-collector.bat apps/collector-mt5/status-collector.bat \
     infra/scripts/backup.bat infra/scripts/restore.bat infra/scripts/update.bat; do
     printf 'stub\n' >"$repo/$f"
   done

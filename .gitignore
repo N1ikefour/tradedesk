@@ -27,6 +27,11 @@ build/
 # сделок (SPEC.md 8.2). Создаётся папка запуском run-collector.bat, не тестами.
 apps/collector-mt5/logs/
 
+# Просьба менеджеру остановиться: файл живёт секунды, кладёт его stop-collector.bat.
+# Пережить он может только жёсткую остановку — и тогда неотслеживаемым файлом
+# заблокировал бы сборку релиза (infra/scripts/make-release.sh).
+apps/collector-mt5/collector-stop.flag
+
 # --- Node / web ---
 node_modules/
 apps/web/dist/
