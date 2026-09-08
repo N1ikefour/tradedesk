@@ -52,7 +52,6 @@ from collector.config import (
 )
 from collector.logging_setup import MANAGER_LOG_NAME, get_logger, setup_logging
 from collector.worker import (
-    EXIT_ACCOUNT,
     EXIT_CONFIG,
     EXIT_OK,
     EXIT_PLATFORM,
@@ -75,8 +74,16 @@ STOP_TIMEOUT_SECONDS: Final = 10.0
 # Ожидание между тиками режется на куски, чтобы Ctrl+C и SIGTERM не ждали целую минуту.
 NAP_SLICE_SECONDS: Final = 1.0
 
-# Что человек прочтёт про счёт, у которого нет живого процесса. Ключ — `pool.Health.status`.
-HEALTH_REPORTS: Final[dict[pool.MemberStatus, str]] = {
+# Что человек прочтёт про счёт, у которого нет живого процесса. Ключ — `pool.Health.status`,
+# и таблица обязана покрывать его целиком: пропущенное значение — это счёт, о котором
+# менеджер промолчал не по решению, а по недосмотру (закреплено тестом на `get_args`).
+#
+# `None` — «сказать нечего, и это правильный ответ»: на карточке уже стоит причина точнее
+# нашей. Такой счёт получает `state=running` (см. `_member_report`).
+HEALTH_REPORTS: Final[dict[pool.MemberStatus, str | None]] = {
+    "running": None,
+    "explained": None,
+    "not_started": messages.WORKER_NOT_STARTED,
     "restarting": messages.WORKER_RESTARTING,
     "exhausted": messages.WORKER_GAVE_UP,
     "fatal": messages.WORKER_FATAL,
@@ -124,6 +131,11 @@ class Child(Protocol):
 SpawnChild = Callable[[str], Child]
 
 
+def _exit_code_text(code: int | None) -> str:
+    """Код выхода в текст для человека. `None` — процесса не было или код не сообщён."""
+    return "неизвестен" if code is None else str(code)
+
+
 @dataclass
 class Member:
     """Счёт, за которым закреплено место в пуле.
@@ -166,9 +178,12 @@ def spawn_worker(account_id: str, env_file: Path) -> Child:
         target=run_account,
         args=(account_id, str(env_file)),
         name=f"collector-{account_id}",
-        # Демон, чтобы жёсткое завершение менеджера не оставляло сирот с терминалами на
-        # 300–400 МБ каждый. Ограничение демонов (нельзя иметь своих детей) коллектора не
-        # задевает: терминал поднимает не `multiprocessing`, а сама библиотека MT5.
+        # Демон гасит детей при **штатном** выходе менеджера — через `atexit`, и только
+        # так. Жёсткое завершение (`taskkill /F`, «Снять задачу», `kill -9`) `atexit` не
+        # выполняет, и дети переживают родителя: сироты — открытое допущение 39 в
+        # `docs/mt5-assumptions.md`, а не закрытый этим флагом вопрос. Ограничение демонов
+        # (нельзя иметь своих детей) коллектора не задевает: терминал поднимает не
+        # `multiprocessing`, а сама библиотека MT5.
         daemon=True,
     )
     process.start()
@@ -193,6 +208,10 @@ class Manager:
     _members: dict[str, Member] = field(default_factory=dict, init=False)
     _over_limit: tuple[str, ...] = field(default=(), init=False)
     _stopping: bool = field(default=False, init=False)
+    # Список счетов не пришёл на последнем тике: состав пула и перезапуски заморожены.
+    _frozen: bool = field(default=False, init=False)
+    # Чем закончился цикл, если исключением. Прощальный heartbeat зависит от этого.
+    _crash: str | None = field(default=None, init=False)
 
     def run(self, *, max_ticks: int = 0) -> int:
         """Крутить пул. `max_ticks=0` — бесконечно, как в бою; число — столько тиков."""
@@ -210,6 +229,12 @@ class Manager:
                 if max_ticks and ticks >= max_ticks:
                     break
                 self._nap()
+        except Exception as error:
+            # Единственный случай, когда о счёте некому рассказать буквально: менеджер
+            # умирает вместе со своими процессами, а `print` под Task Scheduler уходит в
+            # никуда. Прощальный heartbeat отсюда — единственное, что доедет до карточки.
+            self._crash = messages.MANAGER_CRASHED.format(error=type(error).__name__)
+            raise
         finally:
             self._shutdown()
         return EXIT_OK
@@ -223,6 +248,7 @@ class Manager:
     def _tick(self) -> None:
         self._reap()
         assignments = self._assignments()
+        self._frozen = assignments is None
         if assignments is not None:
             self._apply(assignments)
         self._report()
@@ -233,6 +259,13 @@ class Manager:
         Молчание API не имеет права гасить процессы: одна неудачная минута иначе снимала
         бы все терминалы, а следующая поднимала бы их заново — с полной перезагрузкой
         истории и без единой сделки за это время.
+
+        **Вместе с составом замирают и перезапуски**, потому что `_ensure_running` зовётся
+        из `_apply`. Это решение, а не побочный эффект (`SPEC.md` §8.2): процесс счёта без
+        связи с API умирает сразу — задание с паролем берётся оттуда же, — и поднимать его
+        в этот момент значит сжечь все пять попыток за пять минут, а потом оставить счёт
+        лежать до перезапуска коллектора руками. Пока связи нет, счёт с мёртвым процессом
+        читает `messages.WORKER_RESTART_DEFERRED`, а не обещание немедленного перезапуска.
         """
         try:
             return [item.account_id for item in self.api.assignments(self.settings.collector_id)]
@@ -269,9 +302,10 @@ class Manager:
             child = member.child
             if child is None or child.is_alive():
                 continue
-            # `exitcode` у мёртвого процесса не `None`; страховка на случай, если гонка
-            # оставила его пустым — тогда это падение с неизвестным кодом, а не успех.
-            code = child.exitcode if child.exitcode is not None else EXIT_ACCOUNT
+            # `exitcode` у мёртвого процесса не `None`, но если гонка оставила его пустым —
+            # это падение с неизвестным кодом, и человек прочтёт именно это. Подставить
+            # сюда `EXIT_ACCOUNT` значило бы соврать, что процесс успел назвать причину сам.
+            code = child.exitcode
             lived = self.monotonic() - member.started_at
             member.child = None
             member.health = pool.after_exit(
@@ -305,10 +339,8 @@ class Manager:
                 account_id=member.account_id,
                 reason=type(error).__name__,
             )
-            member.health = pool.after_exit(
+            member.health = pool.after_failed_start(
                 member.health,
-                exit_code=EXIT_ACCOUNT,
-                lived_seconds=0.0,
                 now=self.monotonic(),
                 max_restarts=self.max_restarts,
             )
@@ -368,22 +400,43 @@ class Manager:
         self._send(accounts)
 
     def _member_report(self, member: Member) -> HeartbeatAccount:
-        if member.child is not None and member.child.is_alive():
-            # Без сообщения намеренно: `state` в контракте — это состояние **процесса**
-            # (`SPEC.md` §5.3), и живой процесс не имеет права переписать причину, которую
-            # поставил сам счёт. Пустое сообщение `status_message` не трогает.
+        """Что менеджер скажет про один счёт. Молчание здесь — полноценный ответ.
+
+        **`state=running` от менеджера значит «коллектор ведёт этот счёт», а не «процесс
+        сейчас жив»** (`SPEC.md` §8.2). Живому процессу оно достаётся без сообщения: `state`
+        в контракте — состояние процесса (`SPEC.md` §5.3), и менеджер не имеет права
+        переписать причину, которую поставил сам счёт. То же самое достаётся мёртвому
+        процессу, ушедшему с `EXIT_ACCOUNT`: он причину уже назвал — «счёт не в USD»,
+        «батч отвергнут», — и общий текст менеджера на её месте отправил бы человека
+        собирать логи вместо того, чтобы прочитать диагноз. `running` в этом случае нужен
+        не как утверждение о процессе, а чтобы `last_heartbeat_at` двигался и
+        `check_collectors` (`SPEC.md` §10) через пять минут не заменил точную причину на
+        «коллектор не на связи».
+
+        Живость берётся из последнего `_reap`, а не из свежего `is_alive()`. Иначе отчёт
+        собирался бы из двух источников с разным возрастом: смерть свежая, а причина —
+        от прошлого падения, и на карточку уходило бы «процесс завершился (код -9)» про
+        процесс, поднятый минуту назад. Смерть разбирается следующим тиком, целиком.
+        """
+        status: pool.MemberStatus = "running" if member.child is not None else member.health.status
+        template = self._report_template(status)
+        if template is None:
             return HeartbeatAccount(account_id=member.account_id, state=STATE_RUNNING)
-        template = HEALTH_REPORTS[member.health.status]
         return HeartbeatAccount(
             account_id=member.account_id,
             state=STATE_ERROR,
             message=messages.fit(
                 template.format(
-                    code=member.health.last_exit_code,
+                    code=_exit_code_text(member.health.last_exit_code),
                     attempts=member.health.failures,
                 )
             ),
         )
+
+    def _report_template(self, status: pool.MemberStatus) -> str | None:
+        if status == "restarting" and self._frozen:
+            return messages.WORKER_RESTART_DEFERRED
+        return HEALTH_REPORTS[status]
 
     def _send(self, accounts: Sequence[HeartbeatAccount]) -> None:
         if not accounts:
@@ -406,20 +459,30 @@ class Manager:
             remaining -= nap
 
     def _shutdown(self) -> None:
-        """Погасить всё и сказать об этом. Зовётся и при штатном выходе, и при исключении."""
+        """Погасить всё и сказать об этом. Зовётся и при штатном выходе, и при исключении.
+
+        Штатная остановка — `state=stopped`: она статуса не меняет (`accounts.service`),
+        и это верно, потому что коллектор остановил человек. Крах — `state=error` с текстом
+        `MANAGER_CRASHED`: иначе о нём не узнал бы никто, кроме файла лога, а на карточке
+        через пять минут появилось бы «коллектор не на связи» вместо причины.
+
+        Счета сверх лимита прощального сообщения не получают ни в том, ни в другом случае:
+        на их карточках уже стоит своя причина, и она остаётся верной — синхронизации у
+        них не было и до остановки.
+        """
         account_ids = list(self._members)
         for account_id in account_ids:
             self._stop_member(account_id, reason="shutdown")
         self._over_limit = ()
+        state = STATE_ERROR if self._crash is not None else STATE_STOPPED
+        message = self._crash if self._crash is not None else messages.STOPPED
         self._send(
             [
-                HeartbeatAccount(
-                    account_id=account_id, state=STATE_STOPPED, message=messages.STOPPED
-                )
+                HeartbeatAccount(account_id=account_id, state=state, message=message)
                 for account_id in account_ids
             ]
         )
-        log.info("collector.manager_stopped", accounts=len(account_ids))
+        log.info("collector.manager_stopped", accounts=len(account_ids), crashed=bool(self._crash))
 
 
 # --------------------------------------------------------------------------------------
@@ -441,17 +504,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--once",
         action="store_true",
-        help="Один тик вместо бесконечного цикла: проверить связь и настройки",
+        help=(
+            "Один тик и выход: спросить assignments, поднять процессы счетов и тут же "
+            "погасить их. Проверка связи и настроек, а не синхронизация"
+        ),
     )
     return parser
 
 
 def install_signal_handlers(manager: Manager) -> None:
-    """Ctrl+C и `taskkill` гасят пул по-человечески, а не бросают процессы сиротами.
+    """Ctrl+C и `SIGTERM` гасят пул по-человечески: цикл доходит до `_shutdown`.
 
-    На Windows настоящий сигнал доходит только от консоли (`SIGINT`, `SIGBREAK`):
-    завершение задачи из планировщика убивает процесс без обработчика. Демонизация детей
-    (`spawn_worker`) — как раз страховка на этот случай.
+    ⚠️ На Windows настоящий сигнал доходит только от консоли (`SIGINT`, `SIGBREAK`).
+    `taskkill /F` и «Снять задачу» — то есть обычный способ остановки под Task Scheduler —
+    это `TerminateProcess`: ни обработчика, ни `atexit`, ни `finally`. Процессы счетов
+    после такого остаются жить со своим токеном и своим циклом (`docs/mt5-assumptions.md`,
+    допущение 39), и следующий старт поднимет для тех же счетов вторые.
     """
 
     def handler(signal_number: int, _frame: FrameType | None) -> None:

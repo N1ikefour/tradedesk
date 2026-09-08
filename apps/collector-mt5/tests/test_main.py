@@ -19,7 +19,7 @@ import multiprocessing.queues
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
@@ -39,6 +39,10 @@ from collector.worker import (
 from tests.conftest import COLLECTOR_ID, TOKEN
 
 A, B, C, D = "acc-a", "acc-b", "acc-c", "acc-d"
+
+# Смерть, о которой процесс счёта рассказать не успел: убит системой, OOM, `taskkill /F`.
+# Только о такой менеджеру и есть что сказать — код `EXIT_ACCOUNT` означает обратное.
+CRASH = -9
 
 CHILD_ACCOUNT = "0192f1d4-2c6a-7c3f-9d1e-2b6a8f4c1d55"
 CHILD_PASSWORD = "investor-password-42"
@@ -114,12 +118,20 @@ class FakeManagerApi:
 
     accounts: list[str] = field(default_factory=list)
     assignments_error: ApiError | None = None
+    # Не `ApiError`: так проверяется падение самого менеджера, а не недоступность API.
+    assignments_crash: Exception | None = None
+    # Что случается в мире ПОСЛЕ `_reap` и ДО `_report` этого же тика.
+    on_assignments: Callable[[], None] | None = None
     heartbeat_error: ApiError | None = None
     heartbeats: list[list[HeartbeatAccount]] = field(default_factory=list)
     asked: int = 0
 
     def assignments(self, collector_id: str) -> list[Assignment]:
         self.asked += 1
+        if self.on_assignments is not None:
+            self.on_assignments()
+        if self.assignments_crash is not None:
+            raise self.assignments_crash
         if self.assignments_error is not None:
             raise self.assignments_error
         return [
@@ -343,11 +355,15 @@ def test_a_restart_is_not_immediate(settings: CollectorSettings) -> None:
 
 
 def test_restarts_run_out_and_the_message_says_so(settings: CollectorSettings) -> None:
-    """Перезапуски не бесконечны: кончились — человек получает текст, а не тишину."""
+    """Перезапуски не бесконечны: кончились — человек получает текст, а не тишину.
+
+    Смерть здесь молчаливая (убит системой): о процессе, ушедшем с кодом 4, менеджеру
+    говорить нечего — см. `test_the_reason_named_by_the_worker_survives_the_manager`.
+    """
     api = FakeManagerApi(accounts=[A])
     spawn = FakeSpawn()
     manager, _ = _manager(
-        settings, api, spawn, between_ticks=lambda: spawn.kill_all(EXIT_ACCOUNT), max_restarts=2
+        settings, api, spawn, between_ticks=lambda: spawn.kill_all(CRASH), max_restarts=2
     )
 
     manager.run(max_ticks=7)
@@ -387,13 +403,158 @@ def test_platform_refusal_in_the_child_is_never_retried(settings: CollectorSetti
 
 
 def test_a_process_that_cannot_be_started_is_not_a_crash(settings: CollectorSettings) -> None:
-    """Не хватило памяти на ещё один терминал — менеджер остаётся жив и говорит об этом."""
+    """Не хватило памяти на ещё один терминал — менеджер остаётся жив и говорит об этом.
+
+    Текст здесь свой, а не «пришлите файл лога счёта»: процесса не было, значит и файла
+    `account-<id>.log` не существует — человек искал бы то, чего нет.
+    """
     api = FakeManagerApi(accounts=[A])
     spawn = FakeSpawn(fail=OSError("cannot allocate memory"))
     manager, _ = _manager(settings, api, spawn)
 
     assert manager.run(max_ticks=1) == 0
-    assert api.report(0)[A].state == STATE_ERROR
+    reported = api.report(0)[A]
+    assert reported.state == STATE_ERROR
+    assert reported.message is not None
+    assert "не смог запустить процесс" in reported.message
+    assert "памяти" in reported.message
+    assert "LOG_DIR" not in reported.message
+
+
+# --------------------------------------------------------------------------------------
+# Чья причина попадёт на карточку счёта
+# --------------------------------------------------------------------------------------
+
+
+def test_the_reason_named_by_the_worker_survives_the_manager(
+    settings: CollectorSettings,
+) -> None:
+    """⚠️ Менеджер не имеет права перекрыть причину, которую процесс счёта уже назвал.
+
+    Код 4 — это «я сказал человеку, почему ухожу»: `worker.py` перед каждым таким выходом
+    шлёт heartbeat `state=error` с точным текстом («Счёт не в USD: валюта счёта EUR…»).
+    Общее «пришлите разработчику файл лога» на его месте — обмен диагноза на просьбу
+    собирать логи, ровно тот отказ, против которого написан `messages.py`.
+
+    Менеджер при этом не молчит совсем: `state=running` двигает `last_heartbeat_at`, и
+    через пять минут `check_collectors` не заменит причину на «коллектор не на связи».
+    """
+    api = FakeManagerApi(accounts=[A])
+    spawn = FakeSpawn()
+    manager, _ = _manager(settings, api, spawn, between_ticks=lambda: spawn.kill_all(EXIT_ACCOUNT))
+
+    manager.run(max_ticks=2)
+
+    said = [item for reported in api.heartbeats[:-1] for item in reported]
+    assert said
+    assert all(item.state == STATE_RUNNING for item in said)
+    assert all(item.message is None for item in said)
+
+
+def test_the_reason_survives_the_restart_budget_running_out(
+    settings: CollectorSettings,
+) -> None:
+    """Попытки кончились, а причина осталась верной: счёт как был в евро, так и остался.
+
+    Здесь менеджеру тем более нечего добавить: он уже ничего не делает, а на карточке
+    стоит текст, который объясняет и почему процесс уходит, и что чинить.
+    """
+    api = FakeManagerApi(accounts=[A])
+    spawn = FakeSpawn()
+    manager, _ = _manager(
+        settings,
+        api,
+        spawn,
+        between_ticks=lambda: spawn.kill_all(EXIT_ACCOUNT),
+        max_restarts=2,
+    )
+
+    manager.run(max_ticks=6)
+
+    assert len(spawn.children) == 1 + 2  # перезапуски всё-таки кончились
+    final = api.report(-2)[A]
+    assert final == HeartbeatAccount(account_id=A, state=STATE_RUNNING)
+
+
+def test_a_silent_death_still_reaches_the_human(settings: CollectorSettings) -> None:
+    """Обратная сторона: процесс, убитый системой, ничего сказать не успел.
+
+    Тут сообщение менеджера — единственное, что есть, и молчать нельзя.
+    """
+    api = FakeManagerApi(accounts=[A])
+    spawn = FakeSpawn()
+    manager, _ = _manager(settings, api, spawn, between_ticks=lambda: spawn.kill_all(CRASH))
+
+    manager.run(max_ticks=2)
+
+    told = api.report(-2)[A]
+    assert told.state == STATE_ERROR
+    assert told.message is not None
+    assert "запускает его заново" in told.message
+
+
+def test_a_death_in_the_window_between_reap_and_report_is_not_news_yet(
+    settings: CollectorSettings,
+) -> None:
+    """Процесс умер после `_reap` — менеджер об этом ещё не знает и говорит от последнего `_reap`.
+
+    Иначе отчёт собирался бы из двух источников сразу: живость свежая, а причина — от
+    прошлой смерти, и человек получал бы «процесс завершился (код -9)» про процесс, который
+    менеджер только что поднял. Смерть разбирается следующим тиком, целиком.
+
+    Ребёнок здесь умирает внутри запроса assignments, то есть ровно в этом окне. Пятого
+    тика хватает, чтобы к моменту второй такой смерти у счёта уже была история падений:
+    без неё подмена незаметна.
+    """
+    api = FakeManagerApi(accounts=[A])
+    spawn = FakeSpawn()
+    manager, _ = _manager(settings, api, spawn)
+    api.on_assignments = lambda: spawn.kill_all(CRASH)
+
+    manager.run(max_ticks=5)
+
+    assert len(spawn.children) == 2  # первый умер, второй поднят после паузы
+    assert api.report(4)[A] == HeartbeatAccount(account_id=A, state=STATE_RUNNING)
+    assert all(
+        "неизвестен" not in (item.message or "") for reported in api.heartbeats for item in reported
+    )
+
+
+def test_a_frozen_pool_does_not_promise_a_restart(settings: CollectorSettings) -> None:
+    """Список счетов не пришёл — перезапусков не будет, и обещать их нельзя.
+
+    Перезапуск живёт в `_apply`, а `_apply` пропускается, пока API молчит (решение, а не
+    случайность: поднимать процесс без связи значит сжечь все попытки за пять минут).
+    Пока это так, человек читает «жду связи», а не «запускаю заново».
+    """
+    api = FakeManagerApi(accounts=[A])
+    spawn = FakeSpawn()
+
+    def die_and_go_silent() -> None:
+        spawn.kill_all(CRASH)
+        api.assignments_error = ApiError("TradeDesk не отвечает")
+
+    manager, _ = _manager(settings, api, spawn, between_ticks=die_and_go_silent)
+
+    manager.run(max_ticks=3)
+
+    assert len(spawn.children) == 1  # перезапуска действительно не было
+    told = api.report(-2)[A]
+    assert told.state == STATE_ERROR
+    assert told.message is not None
+    assert "не перезапускает" in told.message
+    assert "запускает его заново" not in told.message
+
+
+def test_every_member_status_ends_in_a_decision(settings: CollectorSettings) -> None:
+    """Новое состояние в `pool.MemberStatus` обязано получить текст или явное молчание.
+
+    Без этой сверки забытое значение уронило бы отчёт `KeyError` — то есть менеджер
+    перестал бы говорить обо **всех** счетах разом, а не только о новом состоянии.
+    """
+    assert set(get_args(pool.MemberStatus)) == set(manager_module.HEALTH_REPORTS)
+    silent = {name for name, text in manager_module.HEALTH_REPORTS.items() if text is None}
+    assert silent == {"running", "explained"}
 
 
 # --------------------------------------------------------------------------------------
@@ -438,6 +599,46 @@ def test_shutdown_stops_children_and_says_the_collector_stopped(
     farewell = api.heartbeats[-1]
     assert {item.state for item in farewell} == {STATE_STOPPED}
     assert {item.account_id for item in farewell} == {A, B}
+
+
+def test_the_manager_crash_reaches_the_account_card(settings: CollectorSettings) -> None:
+    """Единственный случай, когда о счёте рассказать буквально некому, — смерть менеджера.
+
+    Его собственный текст уходит в `print` (консоли под Task Scheduler нет) и в файл лога,
+    то есть на экран не попадает ничего: человек увидит «Коллектор остановлен», а через
+    пять минут — «не на связи». Прощальный heartbeat `state=error` — единственный канал,
+    в котором причина доедет до карточки.
+    """
+    api = FakeManagerApi(accounts=[A, B])
+    spawn = FakeSpawn()
+
+    def break_the_manager() -> None:
+        api.assignments_crash = RuntimeError("boom")
+
+    manager, _ = _manager(settings, api, spawn, between_ticks=break_the_manager)
+
+    with pytest.raises(RuntimeError):
+        manager.run(max_ticks=3)
+
+    farewell = api.report(-1)
+    assert {item.state for item in farewell.values()} == {STATE_ERROR}
+    assert set(farewell) == {A, B}
+    said = farewell[A].message
+    assert said is not None
+    assert "аварийно остановился" in said
+    assert "RuntimeError" in said
+    assert all(child.terminated == 1 for child in spawn.children)
+
+
+def test_a_normal_stop_is_not_reported_as_a_failure(settings: CollectorSettings) -> None:
+    """Остановку попросил человек: `stopped` статуса не меняет (`accounts.service`)."""
+    api = FakeManagerApi(accounts=[A])
+    spawn = FakeSpawn()
+    manager, _ = _manager(settings, api, spawn)
+
+    manager.run(max_ticks=1)
+
+    assert api.report(-1)[A].state == STATE_STOPPED
 
 
 def test_a_stubborn_child_is_killed(settings: CollectorSettings) -> None:

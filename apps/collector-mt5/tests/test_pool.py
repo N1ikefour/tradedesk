@@ -14,6 +14,10 @@ from collector.worker import EXIT_ACCOUNT, EXIT_CONFIG, EXIT_OK, EXIT_PLATFORM
 
 A, B, C, D = "acc-a", "acc-b", "acc-c", "acc-d"
 
+# Смерть, о которой процесс счёта сказать не успел: убит системой. Именно она, а не код 4,
+# доводит человека до сообщений менеджера — код 4 означает, что причина уже названа.
+CRASH = -9
+
 
 # --------------------------------------------------------------------------------------
 # Раздача мест
@@ -127,7 +131,7 @@ def test_limit_below_one_is_a_programming_error() -> None:
 
 
 def test_first_crash_schedules_a_restart() -> None:
-    health = pool.after_exit(pool.HEALTHY, exit_code=EXIT_ACCOUNT, lived_seconds=1.0, now=100.0)
+    health = pool.after_exit(pool.HEALTHY, exit_code=CRASH, lived_seconds=1.0, now=100.0)
     assert health.failures == 1
     assert not health.exhausted
     assert health.retry_after == 100.0 + pool.FIRST_RESTART_DELAY_SECONDS
@@ -135,12 +139,24 @@ def test_first_crash_schedules_a_restart() -> None:
 
 
 def test_restart_waits_out_its_delay() -> None:
-    health = pool.after_exit(pool.HEALTHY, exit_code=EXIT_ACCOUNT, lived_seconds=1.0, now=100.0)
+    health = pool.after_exit(pool.HEALTHY, exit_code=CRASH, lived_seconds=1.0, now=100.0)
     assert not pool.may_start(health, now=100.0)
     assert pool.may_start(health, now=100.0 + pool.FIRST_RESTART_DELAY_SECONDS)
 
 
+def test_the_delays_the_policy_actually_uses_are_five_to_eighty_seconds() -> None:
+    """⚠️ Потолок в 15 минут при `MAX_RESTARTS=5` недостижим, и `SPEC.md` §8.2 говорит это.
+
+    Тест фиксирует **исполняемый** ряд, а не форму функции: девятого падения политика не
+    допускает, и обещать человеку паузу до четверти часа было бы неправдой.
+    """
+    used = [pool.restart_delay_seconds(number) for number in range(1, pool.MAX_RESTARTS + 1)]
+    assert used == [5.0, 10.0, 20.0, 40.0, 80.0]
+    assert max(used) < pool.MAX_RESTART_DELAY_SECONDS
+
+
 def test_delay_doubles_and_stops_at_fifteen_minutes() -> None:
+    """Ограничитель формулы: он сработает, только если вырастет `MAX_RESTARTS`."""
     delays = [pool.restart_delay_seconds(number) for number in range(1, 12)]
     assert delays[:4] == [5.0, 10.0, 20.0, 40.0]
     assert delays[-1] == pool.MAX_RESTART_DELAY_SECONDS
@@ -151,13 +167,63 @@ def test_restarts_are_counted_and_run_out() -> None:
     """Пять перезапусков подряд, шестое падение — сдаёмся и говорим об этом."""
     health = pool.HEALTHY
     for _ in range(pool.MAX_RESTARTS):
-        health = pool.after_exit(health, exit_code=EXIT_ACCOUNT, lived_seconds=0.5, now=0.0)
+        health = pool.after_exit(health, exit_code=CRASH, lived_seconds=0.5, now=0.0)
         assert not health.exhausted
         assert pool.may_start(health, now=1_000_000.0)
-    health = pool.after_exit(health, exit_code=EXIT_ACCOUNT, lived_seconds=0.5, now=0.0)
+    health = pool.after_exit(health, exit_code=CRASH, lived_seconds=0.5, now=0.0)
     assert health.exhausted
     assert health.status == "exhausted"
     assert not pool.may_start(health, now=1_000_000.0)
+
+
+# --------------------------------------------------------------------------------------
+# Кто рассказывает человеку причину
+# --------------------------------------------------------------------------------------
+
+
+def test_a_process_that_named_its_reason_leaves_the_manager_nothing_to_say() -> None:
+    """Код 4 значит «я уже отправил heartbeat с точной причиной» (`worker.py`).
+
+    Менеджеру после такого сказать нечего: его текст общий («пришлите файл лога»), а на
+    карточке стоит конкретное — «счёт не в USD», «батч отвергнут». Перекрыть одно другим
+    значит потерять диагноз.
+    """
+    health = pool.after_exit(pool.HEALTHY, exit_code=EXIT_ACCOUNT, lived_seconds=1.0, now=0.0)
+    assert health.explained
+    assert health.status == "explained"
+    assert pool.may_start(health, now=1_000_000.0)
+
+
+def test_the_reason_outlives_the_restart_budget() -> None:
+    """Перезапуски кончились, а причина осталась верной: счёт как был в евро, так и остался."""
+    health = pool.HEALTHY
+    for _ in range(pool.MAX_RESTARTS + 1):
+        health = pool.after_exit(health, exit_code=EXIT_ACCOUNT, lived_seconds=0.5, now=0.0)
+    assert health.exhausted
+    assert health.status == "explained"
+    assert not pool.may_start(health, now=1_000_000.0)
+
+
+def test_an_unknown_exit_code_is_not_taken_for_an_explanation() -> None:
+    """Система не сообщила код — значит, никто ничего человеку не объяснял."""
+    health = pool.after_exit(pool.HEALTHY, exit_code=None, lived_seconds=0.5, now=0.0)
+    assert not health.explained
+    assert health.status == "restarting"
+    assert health.last_exit_code is None
+
+
+def test_a_process_that_never_started_has_its_own_story() -> None:
+    """`spawn` отказал: кода выхода нет, файла лога счёта нет — просить его бессмысленно."""
+    health = pool.after_failed_start(pool.HEALTHY, now=100.0)
+    assert health.status == "not_started"
+    assert health.failures == 1
+    assert not health.started
+    assert health.retry_after == 100.0 + pool.FIRST_RESTART_DELAY_SECONDS
+
+
+def test_a_pool_member_without_failures_is_running() -> None:
+    """`HEALTHY` — это «жив», а не «упал с неизвестным кодом»."""
+    assert pool.HEALTHY.status == "running"
 
 
 def test_a_process_that_worked_a_while_starts_the_count_over() -> None:

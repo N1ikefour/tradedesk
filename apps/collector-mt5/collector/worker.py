@@ -663,7 +663,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             # которой под Task Scheduler (`S1-10`) нет. В `account-<id>.log` не попадало
             # бы ничего, и краш-петля из-под `S1-09` не оставляла бы следа вовсе.
             log.exception("collector.crashed", account_id=args.account_id)
-            print(messages.CRASHED.format(error=type(error).__name__))
+            crashed = messages.CRASHED.format(error=type(error).__name__)
+            print(crashed)
+            # Heartbeat отсюда — не украшение: `EXIT_ACCOUNT` для менеджера означает «этот
+            # процесс уже объяснил человеку свой уход» (`pool.EXPLAINED_EXIT_CODES`), и он
+            # не станет писать своё поверх. Без этой отправки единственный путь, выходящий
+            # с кодом 4 молча, оставлял бы на карточке предыдущее сообщение — то есть
+            # неправду — до тех пор, пока кто-нибудь не откроет файл лога.
+            with contextlib.suppress(ApiError):
+                api.heartbeat(
+                    settings.collector_id,
+                    [
+                        HeartbeatAccount(
+                            account_id=args.account_id, state=STATE_ERROR, message=crashed
+                        )
+                    ],
+                )
             return EXIT_ACCOUNT
 
 
