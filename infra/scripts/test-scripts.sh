@@ -17,6 +17,10 @@
 #   td_rotate_backups                 ротация, которая удаляет файлы
 #   td_tag_to_version / td_zip_to_tag / td_parse_tag_name   разбор версии и ответа GitHub
 #
+# Исключение — start.sh. Он проверяется целиком, прогоном: X-53 и X-54 про то, что человек
+# читает на экране, и утверждение «сообщение правильное» без запуска ничем не подтверждается.
+# Докер для этого не нужен — подставной `docker` в PATH отвечает за него (см. ниже).
+#
 # Что остаётся непокрытым и почему: сам перенос файлов, метка незавершённого обновления,
 # сборка образов и сверка версии с ответом /api/v1/version — им нужен докер и настоящий
 # релиз, они проверяются прогоном руками (см. SETUP.md, раздел «Не проверено»).
@@ -421,6 +425,100 @@ same "tag_name из ответа GitHub" "$(td_parse_tag_name "$WORK/release.jso
 
 printf '{"message":"Not Found"}\n' >"$WORK/notfound.json"
 same "релизов нет — тега нет" "$(td_parse_tag_name "$WORK/notfound.json")" ""
+
+## ----------------------------------------------------------------------------
+## start.sh: путь установки и код возврата compose
+## ----------------------------------------------------------------------------
+
+echo ""
+echo "-- start.sh: путь и код возврата ------------------------------------"
+
+same "чистая латиница — путь годен" "$(td_path_non_ascii "/Users/ivan/tradedesk" && echo да || echo нет)" "нет"
+same "пробел в пути годен" "$(td_path_non_ascii "/Users/ivan/My Files/td" && echo да || echo нет)" "нет"
+same "кириллица в пути не годна" "$(td_path_non_ascii "/Users/Никита/td" && echo да || echo нет)" "да"
+same "кириллица в середине не годна" "$(td_path_non_ascii "C:/Пользователи/td" && echo да || echo нет)" "да"
+same "управляющий символ не годен" "$(td_path_non_ascii "$(printf '/tmp/a\tb')" && echo да || echo нет)" "да"
+
+# Здесь запускается сам start.sh, а не его отдельные куски: X-53 и X-54 — про то, что
+# человек видит на экране, и проверить это можно только прогоном. Docker для этого не
+# нужен и не поднимается: подставной `docker` в PATH отвечает «info — да», а на compose
+# падает с кодом 17. Это дешевле контейнера и воспроизводит ровно ту ветку.
+STUB_BIN="$WORK/stubbin"
+mkdir -p "$STUB_BIN"
+cat >"$STUB_BIN/docker" <<'STUB'
+#!/bin/sh
+[ "$1" = "info" ] && exit 0
+echo "stub docker: $*"
+exit 17
+STUB
+chmod +x "$STUB_BIN/docker"
+
+make_installation() {
+  mkdir -p "$1/infra/scripts"
+  cp "$ROOT/infra/scripts/start.sh" "$ROOT/infra/scripts/common.sh" "$1/infra/scripts/"
+  chmod +x "$1/infra/scripts/start.sh"
+  : >"$1/docker-compose.yml"
+  printf 'POSTGRES_PASSWORD=stub\n' >"$1/.env"
+}
+
+run_start() {
+  # $1 — установка, дальше — переменные окружения вида ИМЯ=значение.
+  installation="$1"
+  shift
+  if env "$@" PATH="$STUB_BIN:$PATH" sh "$installation/infra/scripts/start.sh" \
+    >"$WORK/start.out" 2>&1; then
+    echo 0
+  else
+    echo "$?"
+  fi
+}
+
+if td_path_non_ascii "$WORK"; then
+  echo "  пропуск  прогон start.sh: во временном каталоге $WORK уже есть не-ASCII"
+else
+  INST_OK="$WORK/install-ok"
+  make_installation "$INST_OK"
+  same "start.sh не рапортует об успехе поверх упавшего compose" "$(run_start "$INST_OK")" "1"
+  if grep -q "завершился с кодом 17" "$WORK/start.out"; then
+    ok "start.sh называет код возврата compose числом (X-53)"
+  else
+    bad "start.sh потерял код возврата compose:"
+    sed 's/^/        /' "$WORK/start.out" >&2
+  fi
+
+  INST_RU="$WORK/установка"
+  make_installation "$INST_RU"
+  same "start.sh отказывается стартовать из пути с кириллицей" "$(run_start "$INST_RU")" "1"
+  START_RU="$(cat "$WORK/start.out")"
+  case "$START_RU" in
+    *"символы, которые Docker не понимает"*) ok "отказ называет причину, а не gRPC (X-54)" ;;
+    *) bad "отказ по пути не назвал причину: $START_RU" ;;
+  esac
+  # Путь сверяется разрешённый: start.sh печатает результат `pwd`, а под macOS TMPDIR —
+  # это симлинк /var → /private/var, и дословное сравнение поймало бы симлинк, а не ошибку.
+  INST_RU_REAL="$(cd "$INST_RU" && pwd)"
+  case "$START_RU" in
+    *"$INST_RU_REAL"*) ok "отказ показывает саму папку" ;;
+    *) bad "в отказе нет пути установки" ;;
+  esac
+  case "$START_RU" in
+    *"C:\\tradedesk"*) ok "отказ показывает пример пути без потери обратного слэша" ;;
+    *) bad "пример пути искажён — echo съел обратный слэш" ;;
+  esac
+  case "$START_RU" in
+    *"stub docker"*) bad "проверка пути пропустила compose вперёд себя" ;;
+    *) ok "compose до проверки пути не зовётся" ;;
+  esac
+
+  same "TD_ALLOW_NON_ASCII_PATH=1 снимает проверку" \
+    "$(run_start "$INST_RU" TD_ALLOW_NON_ASCII_PATH=1)" "1"
+  if grep -q "завершился с кодом 17" "$WORK/start.out"; then
+    ok "со снятой проверкой start.sh доходит до compose"
+  else
+    bad "TD_ALLOW_NON_ASCII_PATH=1 не пустил дальше:"
+    sed 's/^/        /' "$WORK/start.out" >&2
+  fi
+fi
 
 echo ""
 if [ "$FAILED" = "0" ]; then

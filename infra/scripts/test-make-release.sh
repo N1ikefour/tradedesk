@@ -60,7 +60,8 @@ fixture() {
     apps/api/Dockerfile apps/api/alembic.ini apps/web/package.json \
     apps/web/package-lock.json apps/web/nginx.conf apps/web/Dockerfile \
     packages/shared-schemas/ingest-deals.schema.json infra/caddy/Caddyfile \
-    infra/scripts/start.bat infra/scripts/stop.bat infra/scripts/common.sh \
+    infra/scripts/init.bat infra/scripts/start.bat infra/scripts/stop.bat \
+    infra/scripts/common.sh \
     infra/scripts/backup.bat infra/scripts/restore.bat infra/scripts/update.bat; do
     printf 'stub\n' >"$repo/$f"
   done

@@ -240,7 +240,7 @@ REQUIRED="VERSION docker-compose.yml Makefile .env.example .python-version SETUP
 apps/api/Dockerfile apps/api/pyproject.toml apps/api/docker-entrypoint.sh apps/api/alembic.ini
 apps/web/package.json apps/web/package-lock.json apps/web/nginx.conf apps/web/Dockerfile
 apps/collector-mt5/pyproject.toml packages/shared-schemas/ingest-deals.schema.json
-infra/caddy/Caddyfile infra/scripts/init-env.sh infra/scripts/common.sh
+infra/caddy/Caddyfile infra/scripts/init-env.sh infra/scripts/init.bat infra/scripts/common.sh
 infra/scripts/start.sh infra/scripts/start.bat infra/scripts/stop.sh infra/scripts/stop.bat
 infra/scripts/backup.sh infra/scripts/backup.bat infra/scripts/restore.sh infra/scripts/restore.bat
 infra/scripts/update.sh infra/scripts/update.bat"
