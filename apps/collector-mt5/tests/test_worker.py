@@ -697,7 +697,30 @@ def test_an_unexpected_crash_lands_in_the_log_instead_of_a_missing_console(
 
     Без этого рубежа краш-петля из-под `S1-09` не оставляла бы ни строки: последний
     heartbeat — «Коллектор остановлен», в файле лога пусто, и разбираться не с чем.
+
+    ⚠️ Проверяется и **отправка** причины, а не только запись в файл. Менеджер (`S1-09`)
+    читает код 4 как «процесс уже объяснил человеку свой уход» и своего текста поверх не
+    пишет; этот путь — единственный, который возвращает 4, ничего не сказав. Замолчи он
+    здесь — на карточке осталось бы предыдущее сообщение, то есть неправда.
     """
+    sent: list[Any] = []
+
+    class _StubApi:
+        """API без сети: настоящий клиент ретраил бы отправку две минуты."""
+
+        def __init__(self, _settings: Any) -> None:
+            return None
+
+        def __enter__(self) -> _StubApi:
+            return self
+
+        def __exit__(self, *_exc: Any) -> None:
+            return None
+
+        def heartbeat(self, collector_id: str, accounts: Any) -> None:
+            sent.extend(accounts)
+
+    monkeypatch.setattr(worker_module, "ApiClient", _StubApi)
     env_file = tmp_path / "collector.env"
     env_file.write_text(
         "\n".join(
@@ -726,3 +749,7 @@ def test_an_unexpected_crash_lands_in_the_log_instead_of_a_missing_console(
     written = (tmp_path / "logs" / f"account-{ACCOUNT_ID}.log").read_text(encoding="utf-8")
     assert "collector.crashed" in written
     assert "RuntimeError" in written
+
+    assert [beat.state for beat in sent] == ["error"]
+    assert sent[0].message is not None
+    assert "RuntimeError" in sent[0].message
