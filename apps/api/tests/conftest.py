@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 
 from app.core import db as db_module
+from app.core import queue as queue_module
 from app.core import redis as redis_module
 from app.core.config import Settings, get_settings
 from app.core.db import ensure_test_database
@@ -66,14 +67,20 @@ def guard_test_database() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 async def reset_app_state() -> AsyncIterator[None]:
-    """Конфиг и клиенты — синглтоны; между тестами их надо сбрасывать."""
+    """Конфиг и клиенты — синглтоны; между тестами их надо сбрасывать.
+
+    Пул очереди arq тут наравне с остальными: он помнит номер базы Redis из DSN, и
+    оставленный от прошлого модуля пул ставил бы задачи в чужой контейнер.
+    """
     get_settings.cache_clear()
     await db_module.dispose_engine()
     await redis_module.close_redis()
+    await queue_module.close_queue()
     yield
     get_settings.cache_clear()
     await db_module.dispose_engine()
     await redis_module.close_redis()
+    await queue_module.close_queue()
 
 
 @pytest.fixture

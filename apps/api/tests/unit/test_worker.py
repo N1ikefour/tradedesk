@@ -80,29 +80,62 @@ def test_refresh_daily_stats_has_no_schedule() -> None:
     assert [function.__name__ for function in FUNCTIONS] == [REFRESH_DAILY_STATS_NAME]
 
 
-async def test_refresh_daily_stats_parses_its_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Очередь несёт строки — типы восстанавливаются на входе задачи, а не в домене."""
-    seen: list[tuple[Any, Any]] = []
+class _FakeSession:
+    async def __aenter__(self) -> _FakeSession:
+        return self
 
-    class FakeSession:
-        async def __aenter__(self) -> FakeSession:
-            return self
+    async def __aexit__(self, *_: object) -> None:
+        return None
 
-        async def __aexit__(self, *_: object) -> None:
-            return None
 
-    async def fake_refresh(_session: Any, account_id: UUID, days: Any) -> int:
-        seen.append((account_id, days))
+def _capture_refresh(monkeypatch: pytest.MonkeyPatch, seen: list[tuple[Any, Any, Any]]) -> None:
+    async def fake_refresh(
+        _session: Any, account_id: UUID, days: Any, *, within: Any = None
+    ) -> int:
+        seen.append((account_id, days, within))
         return 2
 
-    monkeypatch.setattr(worker_module, "get_session_factory", lambda: lambda: FakeSession())
+    monkeypatch.setattr(worker_module, "get_session_factory", lambda: lambda: _FakeSession())
     monkeypatch.setattr(worker_module.daily_stats, "refresh", fake_refresh)
+
+
+async def test_refresh_daily_stats_parses_its_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Очередь несёт строки — типы восстанавливаются на входе задачи, а не в домене."""
+    seen: list[tuple[Any, Any, Any]] = []
+    _capture_refresh(monkeypatch, seen)
 
     account_id = "0199a0f0-0000-7000-8000-000000000002"
     written = await worker_module.refresh_daily_stats({}, account_id, ["2026-09-02"])
 
     assert written == 2
-    assert seen == [(UUID(account_id), [date(2026, 9, 2)])]
+    assert seen == [(UUID(account_id), [date(2026, 9, 2)], None)]
+
+
+async def test_refresh_daily_stats_parses_the_utc_span(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`within` от ингеста: пара ISO-моментов превращается в `datetime` здесь, не в домене.
+
+    Смещение обязано пережить очередь: `2026-09-02T23:30:00+00:00` и наивная строка того
+    же вида — разные моменты, и разница в 3 часа уводит день в кэше на сутки.
+    """
+    seen: list[tuple[Any, Any, Any]] = []
+    _capture_refresh(monkeypatch, seen)
+
+    account_id = "0199a0f0-0000-7000-8000-000000000002"
+    written = await worker_module.refresh_daily_stats(
+        {}, account_id, None, ["2026-09-02T23:30:00+00:00", "2026-09-03T01:15:00+00:00"]
+    )
+
+    assert written == 2
+    assert seen == [
+        (
+            UUID(account_id),
+            None,
+            (
+                datetime(2026, 9, 2, 23, 30, tzinfo=UTC),
+                datetime(2026, 9, 3, 1, 15, tzinfo=UTC),
+            ),
+        )
+    ]
 
 
 async def test_check_collectors_task_calls_domain(monkeypatch: pytest.MonkeyPatch) -> None:

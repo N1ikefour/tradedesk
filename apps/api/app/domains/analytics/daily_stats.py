@@ -6,20 +6,28 @@
 источника. Пересчёт идемпотентен, дважды запущенный даёт то же самое, и любой сбой
 лечится повторным запуском, а не разбором того, что успело записаться.
 
-`days=None` — «пересчитать все дни счёта», и это всегда безопасный вариант: один проход по
-позициям счёта. Список дней — оптимизация для того, кто точно знает, что тронул: `POST
-/ingest/deals` (`S1-04`) и ручные сделки (`S2-03`), которых ещё нет.
+Без аргументов — «пересчитать все дни счёта», и это всегда безопасный вариант: один проход
+по позициям счёта. Сузить его можно двумя способами, и оба для того, кто точно знает, что
+тронул.
 
-Диапазон дней в режиме «все» берётся с запасом в двое суток вокруг крайних `close_time`:
-день пользователя сдвинут относительно UTC на смещение зоны (до ±14 часов) плюс границу
-дня (до 23 часов). Запас может дать лишние пустые дни — они просто не породят строк;
-нехватка запаса потеряла бы день целиком, поэтому ошибка выбрана в безопасную сторону.
+* `within` — **отрезок UTC**, за пределами которого суточная агрегация измениться не могла.
+  Так зовёт `POST /ingest/deals` (`S1-04`): дни он посчитать не может — день режется по
+  зоне и границе дня **владельца** счёта (§6 `docs/metrics.md`), а ингест приходит по
+  сервисному токену установки и владельца не видит. Правило дня остаётся здесь, в одном
+  месте, а звонящий отдаёт только моменты времени.
+* `days` — готовый список дней, для звонящего, который правило дня уже применил.
+
+Диапазон дней в режимах «все» и `within` берётся с запасом в двое суток вокруг крайних
+моментов: день пользователя сдвинут относительно UTC на смещение зоны (до ±14 часов) плюс
+границу дня (до 23 часов). Запас может дать лишние пустые дни — они просто не породят
+строк; нехватка запаса потеряла бы день целиком, поэтому ошибка выбрана в безопасную
+сторону.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 
@@ -72,13 +80,20 @@ group by days.day
 
 
 async def refresh(
-    session: AsyncSession, account_id: UUID, days: Sequence[date] | None = None
+    session: AsyncSession,
+    account_id: UUID,
+    days: Sequence[date] | None = None,
+    *,
+    within: tuple[datetime, datetime] | None = None,
 ) -> int:
     """Пересчитывает дни счёта. Возвращает число записанных строк.
 
     Счёт, которого уже нет, — не ошибка: задача могла встать в очередь до удаления счёта,
     и падать на этом означало бы держать в очереди вечно неудачную работу.
     """
+    if days is not None and within is not None:
+        raise ValueError("refresh принимает либо список дней, либо отрезок времени")
+
     settings = await _account_day_settings(session, account_id)
     if settings is None:
         return 0
@@ -88,16 +103,19 @@ async def refresh(
     if requested is not None and not requested:
         return 0
 
-    await _delete_days(session, account_id, requested)
+    margin = timedelta(days=DAY_RANGE_MARGIN_DAYS)
+    window = None if within is None else (within[0].date() - margin, within[1].date() + margin)
+    await _delete_days(session, account_id, requested, window)
 
     if requested is not None:
         first_day, last_day = requested[0], requested[-1]
+    elif window is not None:
+        first_day, last_day = window
     else:
         span = await _closed_span(session, account_id)
         if span is None:
             await session.commit()
             return 0
-        margin = timedelta(days=DAY_RANGE_MARGIN_DAYS)
         first_day, last_day = span[0] - margin, span[1] + margin
 
     statement = text(
@@ -150,9 +168,15 @@ async def _closed_span(session: AsyncSession, account_id: UUID) -> tuple[date, d
 
 
 async def _delete_days(
-    session: AsyncSession, account_id: UUID, days: Sequence[date] | None
+    session: AsyncSession,
+    account_id: UUID,
+    days: Sequence[date] | None,
+    window: tuple[date, date] | None,
 ) -> None:
+    """Сносит то, что сейчас будет собрано заново. Без сужения — весь кэш счёта."""
     statement = delete(models.DailyStat).where(models.DailyStat.account_id == account_id)
     if days is not None:
         statement = statement.where(models.DailyStat.day.in_(list(days)))
+    elif window is not None:
+        statement = statement.where(models.DailyStat.day.between(*window))
     await session.execute(statement)

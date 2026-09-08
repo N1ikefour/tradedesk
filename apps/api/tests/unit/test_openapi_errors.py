@@ -29,8 +29,10 @@ API = "/api/v1"
 # Словарь SPEC.md 5.1 плюс то, что порождает не домен, а окружение: 405 от роутера и 500
 # от общего обработчика (S0-02), forbidden_origin от проверки Origin (SPEC.md 4).
 # У 409 и 415 производителя пока нет — они объявлены авансом (415 появится в S2-04,
-# на загрузке вложений; фреймворк его не ставит нигде). Набор продублирован здесь
-# намеренно: тест сверяет схему со спекой, а не с таблицей, из которой схема построена.
+# на загрузке вложений; фреймворк его не ставит нигде). 413 в перечне §5.1 тоже нет,
+# но производитель у него есть с S1-04: батч длиннее 5000 сделок и потолок на размер
+# тела (`core/body_limit.py`). Набор продублирован здесь намеренно: тест сверяет схему
+# со спекой, а не с таблицей, из которой схема построена.
 EXPECTED_GLOBAL_CODES: dict[int, set[str]] = {
     400: {"validation_error"},
     401: {"unauthorized"},
@@ -38,6 +40,7 @@ EXPECTED_GLOBAL_CODES: dict[int, set[str]] = {
     404: {"not_found"},
     405: {"method_not_allowed"},
     409: {"conflict"},
+    413: {"payload_too_large"},
     415: {"unsupported_media_type"},
     422: {"unprocessable_entity"},
     429: {"rate_limited"},
@@ -47,6 +50,7 @@ EXPECTED_GLOBAL_CODES: dict[int, set[str]] = {
 # Доменные коды — поверх общего набора, на своих маршрутах (ADR-0004).
 _ACCOUNT = f"{API}/accounts/{{account_id}}"
 _POSITIONS = f"{API}/journal/positions"
+_INGEST = f"{API}/ingest/deals"
 
 EXPECTED_DOMAIN_CODES: dict[tuple[str, str, int], set[str]] = {
     (f"{API}/auth/verify", "post", 422): {"invalid_code", "too_many_attempts"},
@@ -76,6 +80,10 @@ EXPECTED_DOMAIN_CODES: dict[tuple[str, str, int], set[str]] = {
     # журнале, — пустая сводка выглядела бы как «сделок не было».
     (f"{API}/analytics/summary", "get", 404): {"account_not_found"},
     (f"{API}/journal/calendar", "get", 404): {"account_not_found"},
+    # Ингест (S1-04). Счёт приходит в теле батча, а не из сессии: токен коллектора
+    # владельца не несёт, поэтому неизвестный `account_id` — тот же `account_not_found`.
+    (_INGEST, "post", 404): {"account_not_found"},
+    (_INGEST, "post", 422): {"account_archived"},
 }
 
 
