@@ -74,6 +74,10 @@ fi
 FILE="$(cd "$(dirname "$FILE")" && pwd)/$(basename "$FILE")"
 
 td_require_installation
+# До заливки, а не после: restore кончается вызовом start.sh, а тот из непригодного пути
+# откажется работать (X-54). Довод тот же, что в update.sh, только сильнее — здесь между
+# «начали» и «отказ» лежит перезаписанная база.
+td_require_ascii_path
 td_require_env
 td_require_docker
 

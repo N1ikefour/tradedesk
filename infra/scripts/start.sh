@@ -8,17 +8,18 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # compose не находит docker-compose.yml, то есть штатный путь запуска не работает.
 cd "$ROOT"
 
+# td_env_value и проверка пути живут в common.sh: те же строки нужны update.sh, а две копии
+# сообщения о непригодном пути разошлись бы молча.
+TD_ROOT="$ROOT"
+. "$ROOT/infra/scripts/common.sh"
+
 PROFILE="${PROFILE:-local}"
 # Первый запуск на Windows с bind-mount тратит минуты на npm ci — ждём долго и терпеливо.
 UP_TIMEOUT="${UP_TIMEOUT:-600}"
 
-# Значение переменной из .env: последнее вхождение, без хвостового комментария и пробелов.
-env_value() {
-  grep -E "^$1=" "$ROOT/.env" 2>/dev/null |
-    tail -1 |
-    cut -d= -f2- |
-    sed 's/[[:space:]]*#.*$//; s/^[[:space:]]*//; s/[[:space:]]*$//'
-}
+# Первой проверкой, до .env и до Docker: непригодный путь чинится переносом папки, и делать
+# это нужно раньше, чем человек что-то в этой папке создаст.
+td_require_ascii_path
 
 if [ ! -f "$ROOT/.env" ]; then
   echo "Нет $ROOT/.env — сначала запусти: make init" >&2
@@ -30,7 +31,7 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ -z "$(env_value POSTGRES_PASSWORD)" ]; then
+if [ -z "$(td_env_value POSTGRES_PASSWORD)" ]; then
   echo "В .env пуст POSTGRES_PASSWORD — postgres откажется инициализировать базу." >&2
   echo "Его генерирует make init; если .env писался руками, задайте пароль и повторите." >&2
   exit 1
@@ -41,7 +42,7 @@ if [ "$PROFILE" = "prod" ]; then
   # отдаёт письма с кодами входа для ЛЮБОГО адреса почты, то есть даёт захватить любой
   # аккаунт. Роутер выключается только по APP_ENV=prod (app/main.py), и штатный .env
   # приезжает со значением local — то есть по умолчанию прод открыт настежь.
-  APP_ENV_VALUE="$(env_value APP_ENV)"
+  APP_ENV_VALUE="$(td_env_value APP_ENV)"
   if [ "$APP_ENV_VALUE" != "prod" ]; then
     echo "Профиль prod, а в .env APP_ENV='$APP_ENV_VALUE'. Запуск отменён." >&2
     echo "" >&2
@@ -52,7 +53,7 @@ if [ "$PROFILE" = "prod" ]; then
   fi
   # Плейсхолдер тоже непустой, поэтому проверки на пустоту мало: под этим именем caddy
   # пойдёт за сертификатом Let's Encrypt на чужой домен.
-  DOMAIN_VALUE="$(env_value DOMAIN)"
+  DOMAIN_VALUE="$(td_env_value DOMAIN)"
   case "$DOMAIN_VALUE" in
     "" | localhost | *.local | *.invalid | \
     example.com | *.example.com | example.org | *.example.org | example.net | *.example.net)
@@ -73,8 +74,18 @@ trap 'rm -f "$LOG" "$STATUS_FILE"' EXIT INT TERM
 # tee оставляет сборку видимой в реальном времени, но код возврата конвейера — код tee,
 # и он всегда 0. Настоящий статус compose уносим отдельным файлом: иначе `make up`
 # рапортует «поднят» поверх упавшей сборки.
-{ docker compose --profile "$PROFILE" up -d --build 2>&1; echo "$?" >"$STATUS_FILE"; } | tee "$LOG"
-UP_STATUS="$(cat "$STATUS_FILE")"
+#
+# ⚠️ `set +e` вокруг обязателен (X-53). Под `set -e` падение compose убивает подоболочку
+# раньше, чем она успеет записать код, и человек видел «завершился с кодом » — дыру ровно
+# там, где число нужнее всего: SETUP.md разбирает неполадки как раз по этому числу.
+# Тот же приём и по той же причине — в backup.sh вокруг pg_dump.
+set +e
+{
+  docker compose --profile "$PROFILE" up -d --build 2>&1
+  echo "$?" >"$STATUS_FILE"
+} | tee "$LOG"
+set -e
+UP_STATUS="$(cat "$STATUS_FILE" 2>/dev/null || true)"
 
 if grep -qiE "port is already allocated|address already in use|bind for" "$LOG"; then
   echo "" >&2
@@ -85,8 +96,15 @@ if grep -qiE "port is already allocated|address already in use|bind for" "$LOG";
 fi
 
 if [ "$UP_STATUS" != "0" ]; then
-  echo "" >&2
-  echo "docker compose up завершился с кодом $UP_STATUS — окружение не поднято." >&2
+  td_warn ""
+  if [ -n "$UP_STATUS" ]; then
+    td_warn "docker compose up завершился с кодом $UP_STATUS — окружение не поднято."
+  else
+    # Файл пуст только если подоболочку убили сигналом: числа тогда нет ни у кого, и
+    # сказать это словами честнее, чем оставить в предложении пробел.
+    td_warn "docker compose up прерван, код возврата неизвестен — окружение не поднято."
+  fi
+  td_warn "Причина — в строках Docker выше. Что делать: SETUP.md, раздел «Если запуск упал»."
   exit 1
 fi
 
@@ -172,8 +190,8 @@ wait_for_services || exit 1
 sleep 3
 wait_for_services || exit 1
 
-WEB_PORT="$(env_value WEB_PORT)"
-API_PORT="$(env_value API_PORT)"
+WEB_PORT="$(td_env_value WEB_PORT)"
+API_PORT="$(td_env_value API_PORT)"
 WEB_PORT="${WEB_PORT:-5173}"
 API_PORT="${API_PORT:-8000}"
 
@@ -189,7 +207,7 @@ if [ "$PROFILE" = "local" ]; then
   echo "  http://localhost:$API_PORT/api/v1/dev/outbox"
   echo "Искать его в логах не нужно — в логи код не попадает никогда."
 else
-  echo "  Приложение   https://$(env_value DOMAIN)"
+  echo "  Приложение   https://$(td_env_value DOMAIN)"
 fi
 echo ""
 echo "Остановить: make down"
