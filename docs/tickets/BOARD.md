@@ -31,7 +31,7 @@ Updated: 2026-09-06
 | S1-01 | JSON Schema ингеста | backend | **Done** | [PR #13](https://github.com/N1ikefour/tradedesk/pull/13) |
 | S1-02 | Нормализатор deals | backend | **Done** | [PR #15](https://github.com/N1ikefour/tradedesk/pull/15) |
 | S1-03 | Сборщик позиций (+ `X-44`) | backend | **Done** | [PR #26](https://github.com/N1ikefour/tradedesk/pull/26) |
-| S1-04 | `POST /ingest/deals` | backend | In Progress | `feat/S1-04-ingest-deals` |
+| S1-04 | `POST /ingest/deals` | backend | **Done** | [PR #28](https://github.com/N1ikefour/tradedesk/pull/28) |
 | S1-05 | `POST /ingest/heartbeat` + assignments | backend | **Done** | [PR #16](https://github.com/N1ikefour/tradedesk/pull/16) |
 | S1-06 | Accounts API | backend | **Done** | [PR #14](https://github.com/N1ikefour/tradedesk/pull/14) |
 | S1-07 | Символы | backend | **Done** | [PR #17](https://github.com/N1ikefour/tradedesk/pull/17) |
@@ -62,7 +62,7 @@ Updated: 2026-09-06
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
 | T-01 | SETUP.md финальный | infra | Backlog | — |
-| T-02 | Скрипты update/backup/restore | infra | In Progress | `feat/T-02-update-backup-restore` |
+| T-02 | Скрипты update/backup/restore | infra | **Done** | [PR #29](https://github.com/N1ikefour/tradedesk/pull/29) |
 | T-03 | Экспорт/импорт данных пользователя | backend | Backlog | — |
 | T-04 | Кнопка «Сообщить о проблеме» | frontend + backend | Backlog | — |
 | T-05 | Чек-лист приёмки | оркестратор | Backlog | — |
@@ -78,9 +78,9 @@ Updated: 2026-09-06
 
 | | Что | Состояние |
 |---|---|---|
-| Ингест | ~~`S1-03`~~, `S1-04` | сборщик позиций готов на настоящих данных; остался эндпоинт приёма |
+| Ингест | ~~`S1-03`~~, ~~`S1-04`~~ | **закрыт**: 504 сделки настоящей выгрузки прошли через эндпоинт, 238 позиций, суммы сошлись в 0,00 |
 | Коллектор | `S1-08`, `S1-09`, `S1-10` | писать можно хоть сейчас; проверить — только на Windows с терминалом |
-| Доставка | ~~`X-19`~~ → `T-02` → `T-01` | зип с релиза **готов и проверен живым прогоном**; дальше скрипты обновления и инструкция |
+| Доставка | ~~`X-19`~~ → ~~`T-02`~~ → `T-01` | зип и скрипты готовы; осталась инструкция. ⚠️ **Релизов опубликовано ноль** — пока нет тега, скачивать нечего |
 | Установка | `X-17` | на Windows нет `init.bat`: первый же шаг требует Git Bash |
 | Windows-пути | `X-43`, **`X-54`** | у друга имя пользователя кириллицей. `X-54` хуже: Docker не собирает из пути с кириллицей вовсе, то есть приложение не поднимется с первого запуска, а ошибка ничего не скажет про причину |
 | Первый вход | `X-16` | уход за кодом на страницу писем сбрасывает форму входа |
