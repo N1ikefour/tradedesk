@@ -60,7 +60,8 @@ fixture() {
     apps/api/Dockerfile apps/api/alembic.ini apps/web/package.json \
     apps/web/package-lock.json apps/web/nginx.conf apps/web/Dockerfile \
     packages/shared-schemas/ingest-deals.schema.json infra/caddy/Caddyfile \
-    infra/scripts/start.bat infra/scripts/stop.bat; do
+    infra/scripts/start.bat infra/scripts/stop.bat infra/scripts/common.sh \
+    infra/scripts/backup.bat infra/scripts/restore.bat infra/scripts/update.bat; do
     printf 'stub\n' >"$repo/$f"
   done
   printf '3.12\n' >"$repo/.python-version"
@@ -68,6 +69,7 @@ fixture() {
   printf '[project]\nname = "tradedesk-collector"\nversion = "0.0.0"\n' \
     >"$repo/apps/collector-mt5/pyproject.toml"
   for f in infra/scripts/init-env.sh infra/scripts/start.sh infra/scripts/stop.sh \
+    infra/scripts/backup.sh infra/scripts/restore.sh infra/scripts/update.sh \
     apps/api/docker-entrypoint.sh; do
     printf '#!/bin/sh\n' >"$repo/$f"
     chmod +x "$repo/$f"

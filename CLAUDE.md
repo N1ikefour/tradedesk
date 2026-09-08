@@ -64,7 +64,7 @@ Skills: `.claude/skills/ingest-mt5/` — домен нормализации dea
 
 ```
 make ci        # ВЕСЬ гейт: ci-api + ci-web. Ровно тот же состав гоняет GitHub Actions
-make ci-api    # lint-api + lint-collector + lint-hooks + test-api + test-release
+make ci-api    # lint-api + lint-collector + lint-hooks + test-api + test-release + test-scripts
 make ci-web    # lint-web + test-web + build-web
 make ci-target # ruff + mypy + unit-тесты на ЦЕЛЕВОМ Python 3.12 в контейнере
 ```
@@ -82,6 +82,14 @@ make hooks     # pre-commit install (после make install)
 make init      # .env из .env.example с генерацией секретов. Существующий .env НЕ перезаписывает
 make up        # docker compose --profile local up -d --build, ждёт готовности, печатает URL
 make down      # остановка; данные в volume остаются
+```
+
+**Данные установки (`T-02`, единственные команды, работающие на данных человека):**
+
+```
+make backup                       # проверенный дамп в backups/td-<дата>.sql.gz, хранит 14
+make restore file=backups/….gz    # показывает, что перезапишет, и требует слова restore
+make update [ARGS=--check]        # сверка MASTER_KEY → backup → архив релиза поверх → build → up
 ```
 
 **Проверки по отдельности:**

@@ -52,8 +52,14 @@ make ci
 
 | Цель | Что внутри |
 |---|---|
-| `make ci-api` | `lint-api` + `lint-collector` + `lint-hooks` + `test-api` |
+| `make ci-api` | `lint-api` + `lint-collector` + `lint-hooks` + `test-api` + `test-release` + `test-scripts` |
 | `make ci-web` | `lint-web` + `test-web` + `build-web` |
+
+`test-release` (`X-19`) проверяет сборщик релизного архива. `test-scripts` (`T-02`) —
+всё, на чём держатся `backup`, `restore` и `update`: разбор дампа, ротация (она удаляет
+файлы), предпросмотр `restore`, сверка `MASTER_KEY`, разбор версии и ответа GitHub. Эти
+куски вынесены в `infra/scripts/common.sh` чистыми функциями именно ради теста — Docker
+ни той цели, ни другой не нужен.
 
 `make lint && make test` — подмножество: они не собирают web.
 

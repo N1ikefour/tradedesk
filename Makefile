@@ -31,8 +31,10 @@ endif
 SCRIPTS := $(ROOT)/infra/scripts
 
 .PHONY: help install hooks ci ci-api ci-web ci-target lint lint-api lint-collector lint-web \
-        lint-hooks test test-api test-web test-release build-web smoke format guard-python \
-        guard-precommit guard-web init up down migrate downgrade revision types release
+        lint-hooks test test-api test-web test-release test-scripts build-web smoke format \
+        guard-python \
+        guard-precommit guard-web init up down backup restore update migrate downgrade \
+        revision types release
 
 ## ----------------------------------------------------------------------------
 ## Справка
@@ -47,10 +49,18 @@ help:
 	@echo "                         Существующий .env НЕ перезаписывает: в нём MASTER_KEY"
 	@echo "    make up              docker compose --profile local up -d --build, печатает URL"
 	@echo "    make down            остановка окружения, данные в volume остаются"
+	@echo "    make backup          дамп базы в backups/td-<дата>.sql.gz, дамп проверяется,"
+	@echo "                         остаются последние 14 по времени создания"
+	@echo "    make restore file=backups/td-….sql.gz"
+	@echo "                         восстановить базу из бэкапа. Показывает, что перезапишет,"
+	@echo "                         и снимает страховочный бэкап перед заливкой"
+	@echo "    make update          обновиться до последнего релиза: сверка MASTER_KEY,"
+	@echo "                         бэкап, распаковка архива поверх установки, build, up."
+	@echo "                         make update ARGS=--check — только проверить"
 	@echo "    make ci              ВЕСЬ гейт: то же самое и в том же составе, что гоняет GitHub Actions"
 	@echo "                         (ci-api + ci-web). Перед PR прогоняется именно она"
 	@echo "    make ci-api          джоб api: lint-api + lint-collector + lint-hooks +"
-	@echo "                         test-api + test-release"
+	@echo "                         test-api + test-release + test-scripts"
 	@echo "    make ci-web          джоб web: lint-web + test-web + build-web"
 	@echo "    make ci-target       ruff + mypy + unit-тесты в контейнере python:$(PY_VERSION)-slim —"
 	@echo "                         на целевой версии, которой нет на машине. ДОПОЛНЯЕТ make ci,"
@@ -67,6 +77,9 @@ help:
 	@echo "    make test-web        vitest run для apps/web"
 	@echo "    make test-release    тесты сборщика релизного архива (состав, симлинки,"
 	@echo "                         секреты, форма тега). Входит в make ci-api"
+	@echo "    make test-scripts    проверки backup/restore/update без докера: битый дамп,"
+	@echo "                         ротация, предпросмотр restore, сверка MASTER_KEY,"
+	@echo "                         разбор версии. Входит в make ci-api"
 	@echo "    make build-web       vite build для apps/web"
 	@echo "    make smoke           playwright-смоук входа против поднятого make up."
 	@echo "                         В make ci НЕ входит: браузеры ставятся отдельно"
@@ -123,7 +136,7 @@ ci: ci-api ci-web
 # test-release живёт в этом джобе, а не в web: ему нужны python3, git и zip — ровно то,
 # что уже стоит на api-раннере. Гейт на артефакт больше нигде не появится: релизный
 # workflow запускается по тегу, то есть после того, как ломать уже поздно.
-ci-api: lint-api lint-collector lint-hooks test-api test-release
+ci-api: lint-api lint-collector lint-hooks test-api test-release test-scripts
 
 ci-web: lint-web test-web build-web
 
@@ -173,6 +186,12 @@ build-web: guard-web
 test-release:
 	@$(SCRIPTS)/test-make-release.sh
 
+# Всё, на чём держатся backup, restore и update, вынесено в common.sh чистыми функциями —
+# и проверяется здесь без докера: разбор дампа, ротация (она удаляет файлы), предпросмотр
+# restore, сверка MASTER_KEY, разбор версии. Что осталось за докером — сказано в скрипте.
+test-scripts:
+	@$(SCRIPTS)/test-scripts.sh
+
 # Смоук входа (SPEC.md 13) против поднятого `make up`. Отдельная цель, а не часть `make ci`:
 # браузеры Playwright ставятся сотнями мегабайт и нужны одному тесту, а из набора SPEC.md 13
 # сейчас достижим только вход — остальных экранов ещё нет. Зовётся осознанно.
@@ -201,6 +220,21 @@ up:
 
 down:
 	@$(SCRIPTS)/stop.sh
+
+# Резервная копия и восстановление (SPEC.md 11.3). Единственные команды, которые человек
+# запускает на СВОИХ данных: всё остальное в проекте перезапускается с нуля, а потерянный
+# журнал не восстанавливает никто. Логика — в скриптах, здесь только вход.
+backup:
+	@$(SCRIPTS)/backup.sh
+
+restore:
+	@test -n "$(file)" || { \
+	  echo 'Нужен файл: make restore file=backups/td-20260907-120000.sql.gz'; \
+	  ls -t backups/td-*.sql.gz 2>/dev/null | sed 's|^|    |'; exit 1; }
+	@$(SCRIPTS)/restore.sh "$(file)"
+
+update:
+	@$(SCRIPTS)/update.sh $(ARGS)
 
 migrate: guard-python
 	cd $(API_DIR) && $(VENV_BIN)/alembic upgrade head
