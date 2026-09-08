@@ -64,7 +64,7 @@ Skills: `.claude/skills/ingest-mt5/` — домен нормализации dea
 
 ```
 make ci        # ВЕСЬ гейт: ci-api + ci-web. Ровно тот же состав гоняет GitHub Actions
-make ci-api    # lint-api + lint-collector + lint-hooks + test-api + test-release + test-scripts
+make ci-api    # lint-api + lint-collector + lint-hooks + test-api + test-collector + test-release + test-scripts
 make ci-web    # lint-web + test-web + build-web
 make ci-target # ruff + mypy + unit-тесты на ЦЕЛЕВОМ Python 3.12 в контейнере
 ```
@@ -99,7 +99,7 @@ make lint      # = lint-api + lint-collector + lint-web
 make lint-api / lint-collector    # ruff check + ruff format --check + mypy
 make lint-web                     # eslint + prettier --check + tsc --noEmit
 make lint-hooks                   # pre-commit run --all-files
-make test      # = test-api (pytest) + test-web (vitest)
+make test      # = test-api + test-collector (pytest) + test-web (vitest)
 make build-web # vite build
 make smoke     # playwright-смоук входа против поднятого make up. В make ci НЕ входит
 make format    # автоформат
@@ -122,7 +122,7 @@ make types             # openapi запущенного api → apps/web/src/api
 
 Установка и первый запуск для человека, который репозитория не знает, — `SETUP.md`.
 
-Коллектор MT5 ещё не собран: в `apps/collector-mt5/` пока только пакет-заглушка. `run-collector.bat` и `install-service.ps1` появятся в `S1-10`.
+Коллектор MT5 собран наполовину (`S1-08`): есть процесс одного счёта — подключение к терминалу, окно выборки, батч, heartbeat, — и он гоняется `make test-collector`. Запустить его можно только на Windows: библиотеки `MetaTrader5` под macOS и Linux не существует, поэтому на машине разработки проверяются лишь чистые функции и цикл на подделках. Менеджер процессов — `S1-09`; `run-collector.bat` и `install-service.ps1` — `S1-10`.
 
 ⚠️ `make ci` включает `pre-commit run --all-files`, а часть хуков умеет править файлы (`ruff --fix`, форматтеры). Прогон гейта может изменить рабочее дерево — это не поломка, а поведение хуков.
 
