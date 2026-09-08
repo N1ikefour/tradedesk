@@ -37,7 +37,7 @@ Updated: 2026-09-08
 | S1-07 | Символы | backend | **Done** | [PR #17](https://github.com/N1ikefour/tradedesk/pull/17) |
 | S1-08 | Коллектор: mt5_client + worker | collector | **Done** | [PR #31](https://github.com/N1ikefour/tradedesk/pull/31) |
 | S1-09 | Коллектор: менеджер процессов, heartbeat | collector | **Done** | [PR #32](https://github.com/N1ikefour/tradedesk/pull/32) |
-| S1-10 | Коллектор: установка | collector | Backlog | — |
+| S1-10 | Коллектор: установка | collector | In Progress | `feat/S1-10-collector-install` |
 | S1-11 | UI Accounts | frontend | **Done** | [PR #18](https://github.com/N1ikefour/tradedesk/pull/18) |
 | S1-12 | Сверка | backend | Backlog | — |
 
