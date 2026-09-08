@@ -77,8 +77,9 @@ help:
 	@echo "    make test-web        vitest run для apps/web"
 	@echo "    make test-release    тесты сборщика релизного архива (состав, симлинки,"
 	@echo "                         секреты, форма тега). Входит в make ci-api"
-	@echo "    make test-scripts    проверка распознавания битого дампа в backup/restore."
-	@echo "                         Docker не нужен. Входит в make ci-api"
+	@echo "    make test-scripts    проверки backup/restore/update без докера: битый дамп,"
+	@echo "                         ротация, предпросмотр restore, сверка MASTER_KEY,"
+	@echo "                         разбор версии. Входит в make ci-api"
 	@echo "    make build-web       vite build для apps/web"
 	@echo "    make smoke           playwright-смоук входа против поднятого make up."
 	@echo "                         В make ci НЕ входит: браузеры ставятся отдельно"
@@ -185,11 +186,11 @@ build-web: guard-web
 test-release:
 	@$(SCRIPTS)/test-make-release.sh
 
-# Проверка того, чем backup и restore отличают целый дамп от огрызка (T-02). Docker не
-# нужен: разбор дампа — чистая функция над файлом, и именно она стоит между человеком
-# и бэкапом, который выглядит целым, а восстанавливается наполовину.
+# Всё, на чём держатся backup, restore и update, вынесено в common.sh чистыми функциями —
+# и проверяется здесь без докера: разбор дампа, ротация (она удаляет файлы), предпросмотр
+# restore, сверка MASTER_KEY, разбор версии. Что осталось за докером — сказано в скрипте.
 test-scripts:
-	@$(SCRIPTS)/test-backup-verify.sh
+	@$(SCRIPTS)/test-scripts.sh
 
 # Смоук входа (SPEC.md 13) против поднятого `make up`. Отдельная цель, а не часть `make ci`:
 # браузеры Playwright ставятся сотнями мегабайт и нужны одному тесту, а из набора SPEC.md 13

@@ -27,6 +27,11 @@ td_say() {
   echo "$1"
 }
 
+# То, что человек обязан увидеть, даже когда вывод скрипта заглушён (`backup --quiet`).
+td_warn() {
+  echo "$1" >&2
+}
+
 # Значение переменной из .env: последнее вхождение, без хвостового комментария и пробелов.
 # Та же логика, что в start.sh. Секреты этой функцией не читаются.
 td_env_value() {
@@ -110,9 +115,12 @@ td_ensure_postgres() {
     health="${info##* }"
     [ "$state" = "running" ] && [ "$health" = "healthy" ] && break
     case "$state" in
-      exited | dead | missing)
+      # restarting — это цикл перезапусков, а не «ещё стартует». Без него контейнер,
+      # падающий и поднимающийся заново, выбирал бы все 120 секунд и только потом
+      # сказал бы правду. Список тот же, что в start.sh.
+      restarting | exited | dead | paused | removing | missing)
         td_compose logs --tail 25 postgres >&2 2>/dev/null || true
-        td_die "postgres не запустился."
+        td_die "postgres не запустился (состояние: $state)."
         ;;
     esac
     [ "$(date +%s)" -lt "$deadline" ] ||
@@ -208,6 +216,242 @@ td_verify_dump() {
     td_die "В $file нет отметки об окончании дампа.
 pg_dump до конца не дошёл: файл обрывается на середине данных. Такой файл
 восстанавливать нельзя — часть строк в нём просто отсутствует."
+}
+
+# Таблицы, без которых файл — не дамп TradeDesk. Все четыре заведены первой же миграцией
+# (b07a46275bbc), поэтому их отсутствие означает чужую базу, а не старую версию нашей.
+# Без этой проверки дамп соседнего проекта проходил бы по одному наличию CREATE TABLE,
+# и его таблицы доливались бы в базу журнала.
+TD_REQUIRED_TABLES="users trading_accounts deals positions"
+
+td_dump_looks_like_tradedesk() {
+  report="$1"
+  missing=""
+  for table in $TD_REQUIRED_TABLES; do
+    grep -qx "CREATED $table" "$report" || missing="$missing $table"
+  done
+  printf '%s' "${missing# }"
+}
+
+# Таблицы, которые есть в базе, но которых в дампе нет вовсе. Дамп с --clean сносит только
+# то, что в нём есть, — такие таблицы восстановление не тронет. Разница с «в дампе 0 строк»
+# принципиальная: там строки исчезнут, здесь останутся.
+#
+# $1 — файл «имя<TAB>строк» (вывод td_table_counts), $2 — отчёт td_dump_report.
+td_dump_absent_tables() {
+  while IFS="$(printf '\t')" read -r table count <&3; do
+    [ -n "$table" ] || continue
+    grep -qx "CREATED $table" "$2" || printf '%s\n' "$table"
+  done 3<"$1"
+}
+
+# Строки таблицы «сейчас в базе / станет из бэкапа». Отдельной функцией, потому что это
+# единственное, что человек видит перед необратимой операцией: врущий здесь столбец
+# дороже любого другого вывода в проекте, и он проверяется тестом без докера.
+#
+# $1 — файл «имя<TAB>строк», $2 — отчёт td_dump_report.
+td_restore_preview() {
+  while IFS="$(printf '\t')" read -r table count <&3; do
+    [ -n "$table" ] || continue
+    if grep -qx "CREATED $table" "$2"; then
+      from_dump="$(awk -v t="$table" '$1 == "TABLE" && $2 == t { print $3 }' "$2")"
+      [ -n "$from_dump" ] || from_dump=0
+      mark=" "
+      [ "$from_dump" -ge "$count" ] 2>/dev/null || mark="←"
+      printf '  %s %-20s %13s   %s\n' "$mark" "$table" "$count" "$from_dump"
+    else
+      printf '  %s %-20s %13s   %s\n' " " "$table" "$count" "останется как есть"
+    fi
+  done 3<"$1"
+}
+
+# Значения key_version из блока COPY public.account_credentials — отпечатки ключа, которым
+# зашифрованы пароли счетов в этом дампе (ADR-0003). Номер колонки читается из заголовка
+# COPY, а не константой: порядок колонок задаёт pg_dump, и миграция его меняет.
+#
+# Разбор — тем же конечным автоматом, что и td_dump_report: заголовки COPY распознаются
+# только вне блока данных. Иначе заметка пользователя, начинающаяся со слов
+# «COPY public.account_credentials (…) FROM stdin;», открыла бы поддельный блок и подсунула
+# бы свои «отпечатки» — то есть решала бы за скрипт, тем ли ключом зашифрован бэкап.
+td_dump_key_versions() {
+  gzip -dc "$1" 2>/dev/null | awk '
+    BEGIN { FS = "\t"; idx = 0; incopy = 0; want = 0 }
+    incopy {
+      if ($0 == "\\.") { incopy = 0; want = 0; next }
+      if (want && idx > 0 && $idx != "") print $idx
+      next
+    }
+    /^COPY public\./ {
+      incopy = 1; want = 0; idx = 0
+      name = $0
+      sub(/^COPY public\./, "", name)
+      sub(/[ (].*$/, "", name)
+      gsub(/"/, "", name)
+      if (name != "account_credentials") next
+      want = 1
+      cols = $0
+      sub(/^[^(]*\(/, "", cols)
+      sub(/\).*$/, "", cols)
+      n = split(cols, arr, /,/)
+      for (i = 1; i <= n; i++) {
+        col = arr[i]
+        gsub(/[" \t]/, "", col)
+        if (col == "key_version") idx = i
+      }
+      next
+    }
+  ' | sort -u
+}
+
+# Отпечаток текущего MASTER_KEY (и предыдущего, если задан) — считает контейнер api тем же
+# кодом, что шифрует данные. Ключ приезжает туда через env_file и в shell не попадает
+# вовсе: ни в переменную, ни в список процессов, ни в вывод.
+#
+# Печатает «cur <n>» и, если задан MASTER_KEY_PREVIOUS, «prev <n>». Ненулевой код — не
+# смогли посчитать; что делать дальше, решает вызывающий: update отказывается, restore
+# продолжает с оговоркой.
+TD_PY_FINGERPRINT='
+import os
+import sys
+
+from app.core.security import key_fingerprint, parse_master_key
+
+current = os.environ.get("MASTER_KEY", "").strip()
+if not current:
+    sys.exit("MASTER_KEY пуст")
+print("cur %d" % key_fingerprint(parse_master_key(current, variable="MASTER_KEY")))
+previous = os.environ.get("MASTER_KEY_PREVIOUS", "").strip()
+if previous:
+    print("prev %d" % key_fingerprint(
+        parse_master_key(previous, variable="MASTER_KEY_PREVIOUS")))
+'
+
+td_key_fingerprints() {
+  fp_err="$(mktemp "${TMPDIR:-/tmp}/td-fp.XXXXXX")"
+  if ! fp_out="$(td_compose run --rm --no-deps -T --entrypoint python api \
+    -c "$TD_PY_FINGERPRINT" 2>"$fp_err")"; then
+    sed 's/^/      /' "$fp_err" >&2
+    rm -f "$fp_err"
+    return 1
+  fi
+  rm -f "$fp_err"
+  printf '%s\n' "$fp_out"
+}
+
+# Сверка отпечатков: $1 — текущий, $2 — предыдущий (может быть пуст), дальше — отпечатки,
+# найденные в базе или в дампе. Печатает одну строку «<вердикт><TAB><чужие отпечатки>»:
+#
+#   none      сверять не с чем — ни одного отпечатка не передано
+#   current   всё зашифровано текущим ключом
+#   previous  всё на предыдущем ключе: ротация начата и не закончена
+#   unknown   есть отпечатки, которых нет ни в одном ключе из .env — ключ чужой
+#
+# Чистая функция без докера: это самая дорогая логика задачи, и она обязана быть под тестом.
+td_key_verdict() {
+  kv_cur="$1"
+  kv_prev="$2"
+  shift 2
+  kv_unknown=""
+  kv_matched=0
+  kv_any=0
+  for kv in "$@"; do
+    [ -n "$kv" ] || continue
+    kv_any=1
+    if [ "$kv" = "$kv_cur" ]; then
+      kv_matched=1
+    elif [ -n "$kv_prev" ] && [ "$kv" = "$kv_prev" ]; then
+      :
+    else
+      kv_unknown="$kv_unknown $kv"
+    fi
+  done
+  if [ "$kv_any" = "0" ]; then
+    printf 'none\t\n'
+  elif [ -n "$kv_unknown" ]; then
+    printf 'unknown\t%s\n' "${kv_unknown# }"
+  elif [ "$kv_matched" = "1" ]; then
+    printf 'current\t\n'
+  else
+    printf 'previous\t\n'
+  fi
+}
+
+# Версия пакета из тега: 'v' не входит, '-rc1' пишется как 'rc1' (PEP 440).
+# Ровно то же преобразование делает infra/scripts/make-release.sh.
+td_tag_to_version() {
+  printf '%s' "${1#v}" | sed 's/-rc/rc/'
+}
+
+# Тег из имени архива: tradedesk-0.2.0.zip → v0.2.0. Имя ничего не доказывает — версию
+# внутри архива update сверяет отдельно, уже после распаковки.
+td_zip_to_tag() {
+  printf 'v%s' "$(basename "$1" .zip | sed 's/^tradedesk-//')"
+}
+
+# tag_name из ответа GitHub. Разбор без jq и без python: на машине пользователя нет ни
+# того, ни другого. `head -1` достаточно, потому что tag_name идёт раньше body, где текст
+# релиза мог бы содержать такую же строку.
+td_parse_tag_name() {
+  tr ',' '\n' <"$1" |
+    sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+    head -1
+}
+
+# Ротация: оставить последние $2 целых бэкапов в каталоге $1, не трогая файл $3.
+#
+# Считаем по времени изменения (`ls -t`), а не по имени: имя с датой врёт, если системная
+# дата уехала, и сортировка по нему удалила бы свежий файл вместо старого.
+#
+# В $2 засчитываются только файлы, которые распаковываются. Иначе достаточно положить
+# в backups/ два десятка пустых td-*.sql.gz, чтобы следующий прогон удалил все настоящие
+# копии и оставил мусор: имя ничего не доказывает, а ротация удаляет. Мусор при этом не
+# удаляется — он назван вслух: право сносить чужие файлы по несовпадению формата скрипт
+# себе не берёт.
+#
+# Файл с датой из будущего сортируется первым и ротацию переживает всегда. Так и оставлено:
+# он занимает одно место из $2, но это дешевле, чем удалять бэкап по подозрению к его mtime.
+td_rotate_backups() {
+  rot_dir="$1"
+  rot_keep="$2"
+  rot_protect="${3:-}"
+  [ "${rot_keep:-0}" -gt 0 ] || return 0
+
+  rot_list="$(mktemp "${TMPDIR:-/tmp}/td-rot.XXXXXX")"
+  rot_bad="$(mktemp "${TMPDIR:-/tmp}/td-rotbad.XXXXXX")"
+  ls -t "$rot_dir"/td-*.sql.gz >"$rot_list" 2>/dev/null || true
+
+  rot_kept=0
+  rot_removed=0
+  while IFS= read -r rot_file <&3; do
+    [ -n "$rot_file" ] || continue
+    [ -f "$rot_file" ] || continue
+    if ! gzip -t "$rot_file" 2>/dev/null; then
+      basename "$rot_file" >>"$rot_bad"
+      continue
+    fi
+    if [ "$rot_kept" -lt "$rot_keep" ]; then
+      rot_kept=$((rot_kept + 1))
+      continue
+    fi
+    [ "$rot_file" != "$rot_protect" ] || continue
+    rm -f "$rot_file"
+    rot_removed=$((rot_removed + 1))
+    td_say "  удалён старый бэкап: $(basename "$rot_file")"
+  done 3<"$rot_list"
+
+  if [ "$rot_removed" != "0" ]; then
+    td_say ""
+    td_say "Оставлено последних целых бэкапов: $rot_kept."
+  fi
+
+  if [ -s "$rot_bad" ]; then
+    td_warn ""
+    td_warn "⚠️  В $rot_dir лежат файлы с именем бэкапа, которые не распаковываются:"
+    sed 's/^/      /' "$rot_bad" >&2
+    td_warn "    Это не бэкапы. Ротация их не считает и не удаляет — разберитесь сами."
+  fi
+
+  rm -f "$rot_list" "$rot_bad"
 }
 
 # sha256 первым полем. На Windows sha256sum приезжает с Git for Windows.
