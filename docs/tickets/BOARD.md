@@ -152,3 +152,4 @@ Updated: 2026-09-06
 | X-54 | Docker Compose не собирает из пути с кириллицей | infra | **Done** | [PR #30](https://github.com/N1ikefour/tradedesk/pull/30) |
 | X-55 | `.bat` в UTF-8, а русская консоль Windows в CP866 | infra | Todo | — |
 | X-56 | `make ci-target` не гоняет тесты коллектора | infra | Todo | — |
+| X-57 | Жёсткое завершение менеджера оставляет процессы сиротами | collector | Todo | — |
