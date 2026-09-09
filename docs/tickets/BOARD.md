@@ -55,7 +55,7 @@ Updated: 2026-09-09
 | S2-08 | UI Скриншоты | frontend | Backlog | — |
 | S2-09 | UI Calendar | frontend | **Done** | [PR #35](https://github.com/N1ikefour/tradedesk/pull/35) |
 | S2-10 | UI Dashboard v1 | frontend | **Done** | [PR #27](https://github.com/N1ikefour/tradedesk/pull/27) |
-| S2-11 | Переключатель счетов: создание и полировка | frontend | Backlog | перенесён из S1-11 |
+| S2-11 | Переключатель счетов: создание и полировка | frontend | In Progress | `feat/S2-11-account-switcher` |
 
 ## Веха «Первый тест»
 
