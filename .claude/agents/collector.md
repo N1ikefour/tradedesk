@@ -20,9 +20,9 @@ description: Коллектор MT5 — apps/collector-mt5. Синхронный
 
 ## Scope
 
-**Моё:** `apps/collector-mt5/**` — `collector/`, `collector.env.example`, `run-collector.bat`, `install-service.ps1`.
+**Моё:** `apps/collector-mt5/**` — пакет `collector/`, `collector.env.example`, `run-collector.bat`, `install-service.ps1`, `install-service.bat`, `stop-collector.bat`.
 
-Из перечисленного сейчас существуют только `collector.env.example` и пакет-заглушка `collector/__init__.py`. `run-collector.bat` и `install-service.ps1` появятся в `S1-10` — это мой будущий скоуп, а не файлы, которые можно открыть сегодня.
+Всё перечисленное существует: процесс счёта (`S1-08`), менеджер процессов (`S1-09`) и установка с автозапуском (`S1-10`). Сценарии ручной проверки на Windows собраны в `docs/collector-windows-checklist.md` — по ним пойдёт человек в `T-06`, и новый сценарий добавляется туда, а не в итог задачи.
 
 **Не трогаю:** `apps/api/**`, `apps/web/**`, `infra/**`. Изменение `packages/shared-schemas/ingest-deals.schema.json` — только по явному скоупу в тикете и синхронно с backend'ом; в одиночку схему не двигаю.
 

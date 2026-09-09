@@ -122,7 +122,10 @@ build`). Готовые образы потребовали бы registry и а�
 - все имена файлов — ASCII (Windows-распаковщик корёжит остальное, а путь установки
   у первого пользователя и так кириллический — `X-43`);
 - на месте всё, без чего не пройдёт `SETUP.md`: `docker-compose.yml`, `Makefile`,
-  `.env.example`, скрипты, `Dockerfile`-ы, `VERSION`;
+  `.env.example`, скрипты, `Dockerfile`-ы, `VERSION`, а с `S1-10` — и файлы установки
+  коллектора (`run-collector.bat`, `install-service.bat`, `install-service.ps1`,
+  `stop-collector.bat`, `status-collector.bat`, `collector.env.example`): без любого из них коллектор на машине
+  пользователя не ставится вовсе, а заметить пропажу было бы некому;
 - у `infra/scripts/*.sh` и `docker-entrypoint.sh` есть бит исполнения — и он **пережил
   упаковку**: архив тут же распаковывается обратно и права проверяются на распакованном;
 - версия в `pyproject.toml` разбирается как toml и равна тегу.
