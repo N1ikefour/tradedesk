@@ -174,6 +174,7 @@ def _manager(
     *,
     between_ticks: Callable[[], None] | None = None,
     max_restarts: int = pool.MAX_RESTARTS,
+    stop_flag: Path | None = None,
 ) -> tuple[Manager, Clock]:
     """Менеджер с подделками. `between_ticks` — что случилось в мире, пока он спал.
 
@@ -195,6 +196,7 @@ def _manager(
         sleep=sleep,
         monotonic=clock,
         max_restarts=max_restarts,
+        stop_flag=stop_flag,
     )
     return manager, clock
 
@@ -672,6 +674,73 @@ def test_stop_breaks_the_loop(settings: CollectorSettings) -> None:
 
     assert api.asked == 1
     assert clock.value == manager_module.NAP_SLICE_SECONDS
+
+
+def test_the_stop_flag_takes_the_manager_through_a_normal_shutdown(
+    settings: CollectorSettings, tmp_path: Path
+) -> None:
+    """`stop-collector.bat` просит менеджер выйти файлом, а не убивает его.
+
+    Разница видна на карточках счетов: собственный выход доходит до `_shutdown`, то есть
+    до `state=stopped`, а `TerminateProcess` не доходит никуда — счета молчат пять минут
+    и уезжают в «коллектор не на связи» после осознанного действия человека.
+    """
+    flag = tmp_path / manager_module.STOP_FLAG_NAME
+    api = FakeManagerApi(accounts=[A, B])
+    spawn = FakeSpawn()
+    manager, _ = _manager(settings, api, spawn, between_ticks=lambda: flag.touch(), stop_flag=flag)
+
+    # Потолок тиков — страховка от зависшего теста, а не то, что проверяется: остановить
+    # цикл на первом же обязан файл, и это видно по числу заданных вопросов.
+    assert manager.run(max_ticks=5) == 0
+
+    assert api.asked == 1
+    assert all(child.terminated == 1 for child in spawn.children)
+    farewell = api.report(-1)
+    assert {item.state for item in farewell.values()} == {STATE_STOPPED}
+    assert set(farewell) == {A, B}
+
+
+def test_the_stop_flag_is_taken_away_once_it_is_heard(
+    settings: CollectorSettings, tmp_path: Path
+) -> None:
+    """Оставленный файл остановил бы и следующий запуск — через секунду и молча."""
+    flag = tmp_path / manager_module.STOP_FLAG_NAME
+    api = FakeManagerApi(accounts=[A])
+    spawn = FakeSpawn()
+    manager, _ = _manager(settings, api, spawn, between_ticks=lambda: flag.touch(), stop_flag=flag)
+
+    manager.run(max_ticks=5)
+
+    assert not flag.exists()
+
+
+def test_a_flag_left_from_the_last_time_does_not_stop_the_new_run(
+    settings: CollectorSettings, tmp_path: Path
+) -> None:
+    """Файл мог пережить прошлую остановку — например, менеджер сняли жёстко после него."""
+    flag = tmp_path / manager_module.STOP_FLAG_NAME
+    flag.touch()
+    api = FakeManagerApi(accounts=[A])
+    spawn = FakeSpawn()
+    manager, _ = _manager(settings, api, spawn, stop_flag=flag)
+
+    manager.run(max_ticks=2)
+
+    assert api.asked == 2
+
+
+def test_without_a_flag_path_the_manager_does_not_look_for_one(
+    settings: CollectorSettings,
+) -> None:
+    """Менеджер, запущенный не нашими скриптами, не обязан ничего знать про файл."""
+    api = FakeManagerApi(accounts=[A])
+    spawn = FakeSpawn()
+    manager, _ = _manager(settings, api, spawn)
+
+    manager.run(max_ticks=2)
+
+    assert api.asked == 2
 
 
 def test_the_pause_between_ticks_is_the_heartbeat_interval(

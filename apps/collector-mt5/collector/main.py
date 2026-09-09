@@ -74,6 +74,15 @@ STOP_TIMEOUT_SECONDS: Final = 10.0
 # Ожидание между тиками режется на куски, чтобы Ctrl+C и SIGTERM не ждали целую минуту.
 NAP_SLICE_SECONDS: Final = 1.0
 
+# Просьба остановиться, положенная рядом с `collector.env` кем-то снаружи процесса.
+#
+# На Windows попросить чужой процесс выйти нечем: `SIGTERM` там не межпроцессный, а
+# `CTRL_BREAK` доставляется только тому, кто присоединился к консоли жертвы, — то есть
+# ценой собственной консоли. Всё остальное (`taskkill /F`, «Снять задачу») — это
+# `TerminateProcess`: цикл до `_shutdown` не доходит, и `state=stopped` на карточки не
+# уезжает. Файл — единственная просьба, которую менеджер может услышать сам.
+STOP_FLAG_NAME: Final = "collector-stop.flag"
+
 # Что человек прочтёт про счёт, у которого нет живого процесса. Ключ — `pool.Health.status`,
 # и таблица обязана покрывать его целиком: пропущенное значение — это счёт, о котором
 # менеджер промолчал не по решению, а по недосмотру (закреплено тестом на `get_args`).
@@ -205,6 +214,8 @@ class Manager:
     sleep: Sleep = time.sleep
     monotonic: Monotonic = time.monotonic
     max_restarts: int = pool.MAX_RESTARTS
+    # Куда смотреть в поисках просьбы остановиться. `None` — не смотреть вовсе.
+    stop_flag: Path | None = None
     _members: dict[str, Member] = field(default_factory=dict, init=False)
     _over_limit: tuple[str, ...] = field(default=(), init=False)
     _stopping: bool = field(default=False, init=False)
@@ -221,6 +232,9 @@ class Manager:
             max_accounts=self.settings.max_accounts,
             interval=self.settings.heartbeat_interval_seconds,
         )
+        # Флаг от прошлой остановки убирается до первого тика: иначе менеджер прочёл бы
+        # чужую просьбу и вышел через секунду после старта, не объяснив почему.
+        self._forget_stop_flag()
         ticks = 0
         try:
             while not self._stopping:
@@ -457,6 +471,25 @@ class Manager:
             nap = min(NAP_SLICE_SECONDS, remaining)
             self.sleep(nap)
             remaining -= nap
+            if self._stop_requested():
+                log.info("collector.manager_stop_requested", flag=str(self.stop_flag))
+                self.stop()
+
+    def _stop_requested(self) -> bool:
+        if self.stop_flag is None:
+            return False
+        try:
+            return self.stop_flag.exists()
+        except OSError:
+            # Недоступный путь — это «просьбы нет», а не повод уронить менеджер: файл
+            # кладёт кто-то другой, и его права нам не подчиняются.
+            return False
+
+    def _forget_stop_flag(self) -> None:
+        if self.stop_flag is None:
+            return
+        with contextlib.suppress(OSError):
+            self.stop_flag.unlink(missing_ok=True)
 
     def _shutdown(self) -> None:
         """Погасить всё и сказать об этом. Зовётся и при штатном выходе, и при исключении.
@@ -482,6 +515,9 @@ class Manager:
                 for account_id in account_ids
             ]
         )
+        # Просьба выполнена: файл убирается здесь, а не только на старте, — иначе он
+        # остановил бы следующий запуск, сделанный человеком тут же, следом.
+        self._forget_stop_flag()
         log.info("collector.manager_stopped", accounts=len(account_ids), crashed=bool(self._crash))
 
 
@@ -520,6 +556,9 @@ def install_signal_handlers(manager: Manager) -> None:
     это `TerminateProcess`: ни обработчика, ни `atexit`, ни `finally`. Процессы счетов
     после такого остаются жить со своим токеном и своим циклом (`docs/mt5-assumptions.md`,
     допущение 39), и следующий старт поднимет для тех же счетов вторые.
+
+    Поэтому снаружи менеджер просят выйти файлом (`STOP_FLAG_NAME`), а не сигналом: это
+    единственная дорога к `_shutdown` для того, кто не сидит в его консоли.
     """
 
     def handler(signal_number: int, _frame: FrameType | None) -> None:
@@ -564,6 +603,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             settings=settings,
             api=api,
             spawn=lambda account_id: spawn_worker(account_id, env_file),
+            stop_flag=env_file.parent / STOP_FLAG_NAME,
         )
         install_signal_handlers(manager)
         try:
