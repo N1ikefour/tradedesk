@@ -162,7 +162,8 @@ export function AccountForm({
   onCancel,
 }: {
   account?: Account;
-  onDone?: () => void;
+  /** Сохранённый счёт — тот, что вернул сервер: только в нём есть `id` нового счёта. */
+  onDone?: (saved: Account) => void;
   onCancel?: () => void;
 }) {
   const editing = account ?? null;
@@ -224,7 +225,7 @@ export function AccountForm({
     if (patch !== null && Object.keys(patch).length === 0) {
       return;
     }
-    const onSuccess = () => {
+    const onSuccess = (saved: Account) => {
       // Пароль стирается из состояния сразу после успеха: форма правки остаётся на
       // экране, и введённое значение иначе продолжало бы жить в DOM.
       setValues((previous) => ({ ...previous, password: '' }));
@@ -232,7 +233,7 @@ export function AccountForm({
       // Вторая копия пароля — тело мутации. Форма правки со страницы счёта не уходит,
       // и размонтирование её не стирает: `variables` жили бы всю сессию.
       mutation.forget();
-      onDone?.();
+      onDone?.(saved);
     };
     if (patch === null) {
       create.mutate(buildCreate(values), { onSuccess });
