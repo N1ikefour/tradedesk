@@ -7,7 +7,7 @@
  * проект не заводится ещё одна зависимость — так же, как решено для модального окна.
  */
 import { Check, ChevronDown, Plus, TriangleAlert } from 'lucide-react';
-import { useCallback, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import { AccountCreateDialog } from '@/accounts/account-create-dialog';
 import { useAccounts, type Account } from '@/accounts/api';
@@ -22,7 +22,14 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { t } from '@/i18n';
 import { useDismiss } from '@/lib/use-dismiss';
+import { useMediaQuery } from '@/lib/use-media-query';
 import { cn } from '@/lib/utils';
+
+/**
+ * Граница, за которой список висит на кнопке, а не на окне, — та же `sm`, что и в классах
+ * ниже. До неё список приколот к окну (`fixed`), а шапка едет вместе со страницей.
+ */
+const ANCHORED_QUERY = '(min-width: 640px)';
 
 function ColorDot({ color, className }: { color: string; className?: string }) {
   return (
@@ -84,12 +91,30 @@ export function AccountSwitcher() {
   const trigger = useRef<HTMLButtonElement | null>(null);
   const listId = useId();
 
+  const anchored = useMediaQuery(ANCHORED_QUERY, true);
+
   useDismiss(
     open,
     root,
     trigger,
     useCallback(() => setOpen(false), []),
   );
+
+  /**
+   * На узком экране список приколот к окну, а шапка — нет: прокрутка уводит кнопку вверх,
+   * и список остаётся висеть сам по себе (измерено на 375 px: при `scrollY = 73` кнопка
+   * уехала на `top = -63`, список остался на `top = 64`). Прокрутка страницы — это уход от
+   * переключателя, поэтому список закрывается, как и по клику мимо. Там, где он висит на
+   * кнопке, закрывать нечего: он едет вместе с ней.
+   */
+  useEffect(() => {
+    if (!open || anchored) {
+      return;
+    }
+    const close = () => setOpen(false);
+    window.addEventListener('scroll', close, { passive: true });
+    return () => window.removeEventListener('scroll', close);
+  }, [open, anchored]);
 
   if (accounts.isPending) {
     return null;
@@ -214,7 +239,9 @@ export function AccountSwitcher() {
                     type="checkbox"
                     className="size-4 shrink-0 accent-primary"
                     checked={chosen.has(account.id)}
-                    onChange={() => toggleId(account.id)}
+                    // Отмеченное на экране и есть основа для щелчка (`toggleId`): пресет
+                    // разворачивается в явный список, из которого счёт вычитается.
+                    onChange={() => toggleId(account.id, resolved.ids)}
                   />
                   <AccountLine account={account} />
                 </label>

@@ -29,7 +29,18 @@ export type AccountSelection = {
 type SelectionActions = {
   /** Явный список счетов. Пустой список означает «все»: выбор без единого счёта — не выбор. */
   readonly selectIds: (ids: readonly string[]) => void;
-  readonly toggleId: (id: string) => void;
+  /**
+   * Галочка поверх того, что нарисовано отмеченным, — набор `checked` приходит снаружи.
+   *
+   * Пресет — правило, и во что оно развернулось, знает только экран: список счетов store
+   * не видит. Пока набор считался здесь, «Все реальные» рисовал галочки на реальных
+   * счетах, а щелчок по одной из них начинал список с нуля — то есть снятая галочка
+   * оставалась отмеченной, а остальные реальные молча выпадали из выборки.
+   *
+   * Инвариант: `checked` — ровно то, что человек видит отмеченным, поэтому результат
+   * щелчка совпадает с нарисованным всегда, а не только у пресета «Все».
+   */
+  readonly toggleId: (id: string, checked: readonly string[]) => void;
   readonly selectAll: () => void;
   readonly selectAllReal: () => void;
 };
@@ -98,15 +109,15 @@ function sanitize(raw: unknown): AccountSelection {
 
 export const useAccountSelectionStore = create<AccountSelection & SelectionActions>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       ...INITIAL,
       selectIds: (ids) => set(fromIds(ids)),
-      toggleId: (id) => {
-        const current = get();
-        const explicit = current.mode === 'single' || current.mode === 'multi';
-        const ids = explicit ? current.ids : [];
-        set(fromIds(ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id]));
-      },
+      toggleId: (id, checked) =>
+        set(
+          fromIds(
+            checked.includes(id) ? checked.filter((value) => value !== id) : [...checked, id],
+          ),
+        ),
       selectAll: () => set(INITIAL),
       selectAllReal: () => set({ mode: 'all_real', ids: [] }),
     }),
@@ -269,12 +280,22 @@ export function mixesDemoAndReal(
  * Спрашивается сразу после создания, когда список счетов ещё перезапрашивается, поэтому
  * новый счёт добавляется к известным здесь же: иначе пресет «Все реальные» ответил бы
  * «нет» про реальный счёт просто потому, что его в списке пока нет.
+ *
+ * Списка счетов может не быть вовсе — тогда нечем проверить, не протух ли явный выбор
+ * целиком. Пустой список на его месте прочитал бы любой явный выбор как протухший, то
+ * есть как «все», и человеку с одним выбранным счётом ответил бы «счёт уже в выборе».
+ * Ложное успокоение здесь хуже ложной тревоги: под ним прячут кнопку, которой это
+ * исправляют, а панель существует ради честного ответа. Поэтому неизвестный список —
+ * это «явный выбор жив», и правило остаётся правилом.
  */
 export function coversNewAccount(
   selection: AccountSelection,
-  accounts: readonly Account[],
+  accounts: readonly Account[] | undefined,
   created: Account,
 ): boolean {
+  if (accounts === undefined) {
+    return selection.mode === 'all' || (selection.mode === 'all_real' && !created.is_demo);
+  }
   const known = accounts.some((account) => account.id === created.id)
     ? accounts
     : [...accounts, created];

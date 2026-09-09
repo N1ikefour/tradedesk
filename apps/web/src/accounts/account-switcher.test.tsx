@@ -8,9 +8,9 @@
  *
  * Экран под шапкой — календарь: он дешевле журнала и дашборда и об одном запросе.
  */
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Account } from '@/accounts/api';
 import { useAccountSelectionStore } from '@/accounts/selection';
@@ -34,6 +34,7 @@ const CREATE = 'POST /api/v1/accounts';
 const DEMO_ONE = '0199a2b0-0000-7000-8000-0000000000d1';
 const DEMO_TWO = '0199a2b0-0000-7000-8000-0000000000d2';
 const REAL_ONE = '0199a2b0-0000-7000-8000-0000000000r1';
+const REAL_TWO = '0199a2b0-0000-7000-8000-0000000000r2';
 const CREATED_ID = '0199a2b0-0000-7000-8000-0000000000ff';
 
 function account(overrides: Partial<Account> = {}): Account {
@@ -74,6 +75,13 @@ const MIXED: Account[] = [account(), account({ id: REAL_ONE, label: 'Реал', 
 const ALL_REAL: Account[] = [
   account({ id: REAL_ONE, label: 'Реал', is_demo: false }),
   account({ id: DEMO_TWO, label: 'Второй реал', is_demo: false }),
+];
+
+/** Два реальных счёта нужны, чтобы «Все реальные» разворачивался больше чем в один. */
+const TWO_REAL_ONE_DEMO: Account[] = [
+  account({ id: REAL_ONE, label: 'Реал: первый', is_demo: false }),
+  account({ id: REAL_TWO, label: 'Реал: второй', is_demo: false }),
+  account(),
 ];
 
 function routes(items: Account[], extra: RouteTable = {}): RouteTable {
@@ -203,6 +211,50 @@ describe('пресеты выбора', () => {
     );
   });
 
+  /**
+   * Инвариант: нарисованное состояние галочки и результат щелчка по ней совпадают.
+   *
+   * Пресет рисует галочки на счетах, которые под него подошли, поэтому щелчок обязан
+   * вычитать счёт из этого набора. Пока основа щелчка считалась «пустой», снятая галочка
+   * оставалась отмеченной, а соседние реальные счета молча уходили из выборки.
+   */
+  it('снятая галочка при «Всех реальных» вычитает счёт, а соседний остаётся в выборке', async () => {
+    useAccountSelectionStore.setState({ mode: 'all_real', ids: [] });
+    const user = userEvent.setup();
+    await openCalendar(TWO_REAL_ONE_DEMO);
+
+    const list = await openSwitcher(user);
+    const first = within(list).getByRole('checkbox', { name: /Реал: первый/ });
+    const second = within(list).getByRole('checkbox', { name: /Реал: второй/ });
+    expect(first).toBeChecked();
+    expect(second).toBeChecked();
+
+    await user.click(first);
+
+    expect(first).not.toBeChecked();
+    expect(second).toBeChecked();
+    expect(useAccountSelectionStore.getState()).toMatchObject({
+      mode: 'single',
+      ids: [REAL_TWO],
+    });
+  });
+
+  it('галочка на демо-счёте поверх «Всех реальных» добавляется к ним, а не заменяет их', async () => {
+    useAccountSelectionStore.setState({ mode: 'all_real', ids: [] });
+    const user = userEvent.setup();
+    await openCalendar(TWO_REAL_ONE_DEMO);
+
+    const list = await openSwitcher(user);
+    await user.click(within(list).getByRole('checkbox', { name: /Демо: скальпинг/ }));
+
+    expect(useAccountSelectionStore.getState()).toMatchObject({
+      mode: 'multi',
+      ids: [REAL_ONE, REAL_TWO, DEMO_ONE],
+    });
+    // Демо к реалам — это ровно то смешение, о котором предупреждают.
+    expect(await screen.findByText(t.accountSwitcher.mixedBadge)).toBeInTheDocument();
+  });
+
   it('«Все счета» возвращает выбор к полному и снимает галочки', async () => {
     useAccountSelectionStore.setState({ mode: 'single', ids: [REAL_ONE] });
     const user = userEvent.setup();
@@ -215,6 +267,44 @@ describe('пресеты выбора', () => {
 
     expect(useAccountSelectionStore.getState().mode).toBe('all');
     expect(within(list).getByRole('checkbox', { name: /Реал/ })).not.toBeChecked();
+  });
+});
+
+describe('список на узком экране', () => {
+  /**
+   * `matchMedia` в jsdom нет вовсе, поэтому ширина подменяется явно: без подмены экран
+   * считается широким, а там список висит на кнопке и едет вместе с ней.
+   */
+  function pretendNarrow(): void {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+  }
+
+  it('прокрутка страницы закрывает список: он приколот к окну, а шапка едет вместе с ней', async () => {
+    pretendNarrow();
+    const user = userEvent.setup();
+    await openCalendar(ALL_DEMO);
+
+    const list = await openSwitcher(user);
+    fireEvent.scroll(window);
+
+    await waitFor(() => {
+      expect(list).not.toBeInTheDocument();
+    });
+  });
+
+  it('на широком экране прокрутка список не закрывает: он висит на кнопке', async () => {
+    const user = userEvent.setup();
+    await openCalendar(ALL_DEMO);
+
+    const list = await openSwitcher(user);
+    fireEvent.scroll(window);
+
+    expect(list).toBeInTheDocument();
   });
 });
 
@@ -374,7 +464,13 @@ describe('заведение счёта из шапки', () => {
     });
   });
 
-  it('пароль не остаётся ни в поле, ни в разметке, ни в кэше мутаций', async () => {
+  /**
+   * Название говорит ровно о том, что тест держит. Поля к этому моменту уже нет: форма
+   * уходит с экрана вместе с успехом, и «пароль стёрт из поля» здесь проверять не на чем.
+   * Явное стирание состояния держит форма правки, которая на экране остаётся, — там оно
+   * и закреплено (`routes/account-page.test.tsx`).
+   */
+  it('после создания пароля нет ни в разметке, ни в кэше мутаций', async () => {
     const user = userEvent.setup();
     installFetchMock(routes(ALL_DEMO, { [CREATE]: () => jsonResponse(201, created) }));
     const { client } = renderApp(['/calendar']);
@@ -420,6 +516,85 @@ describe('заведение счёта из шапки', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
     expect(calls.filter((call) => `${call.method} ${call.path}` === CREATE)).toHaveLength(0);
+  });
+
+  /** Заголовок окна — единственное, что остаётся на месте формы: он обязан смениться. */
+  it('после создания окно называется «Счёт добавлен», а не «Добавить счёт»', async () => {
+    const user = userEvent.setup();
+    await fillForm(user);
+
+    expect(screen.getByRole('dialog')).toHaveAccessibleName(t.accounts.formCreateTitle);
+
+    await user.click(screen.getByRole('button', { name: t.accounts.create }));
+
+    await screen.findByText(t.accountSwitcher.createdLead('Демо: пятый'));
+    expect(screen.getByRole('dialog')).toHaveAccessibleName(t.accountSwitcher.createdTitle);
+  });
+
+  /**
+   * Счёт «вручную» коллектор не ведёт, и обещать ему первый синк нельзя: сделки к нему
+   * добавляет человек, и ждать их появления бессмысленно.
+   */
+  it('у счёта «вручную» окно говорит про ручное добавление сделок, а не про коллектор', async () => {
+    const user = userEvent.setup();
+    const manual = account({
+      id: CREATED_ID,
+      label: 'Ручной',
+      platform: 'manual',
+      server: null,
+      login: null,
+    });
+    await openCalendar(ALL_DEMO, { [CREATE]: () => jsonResponse(201, manual) });
+
+    const list = await openSwitcher(user);
+    await user.click(within(list).getByRole('button', { name: t.accountSwitcher.add }));
+    const dialog = await screen.findByRole('dialog');
+    await user.selectOptions(within(dialog).getByLabelText(t.accounts.platformLabel), 'manual');
+    await user.type(within(dialog).getByLabelText(t.accounts.labelLabel), 'Ручной');
+
+    // Полей MT5 у такого счёта нет вовсе — пароль спрашивать не за чем.
+    expect(within(dialog).queryByLabelText(t.accounts.passwordLabel)).not.toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: t.accounts.create }));
+
+    expect(await within(dialog).findByText(t.accountSwitcher.createdManual)).toBeInTheDocument();
+    expect(within(dialog).queryByText(t.accountSwitcher.createdMt5)).not.toBeInTheDocument();
+  });
+
+  /**
+   * Два счёта из одного нажатия — это два счёта у брокера в работе коллектора. Защиты
+   * здесь две, и мимо одной проходит то, что ловит другая: атрибут `disabled` держит
+   * второй щелчок, а проверка в обработчике — отправку формы, которая до кнопки не
+   * доходит (Enter в поле, второй щелчок до перерисовки).
+   */
+  it('пока запрос идёт, повторная отправка второго счёта не создаёт', async () => {
+    const user = userEvent.setup();
+    let release = (): void => {};
+    const answered = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const calls = await fillForm(user, async () => {
+      await answered;
+      return jsonResponse(201, created);
+    });
+
+    await user.click(screen.getByRole('button', { name: t.accounts.create }));
+
+    const pending = await screen.findByRole('button', { name: t.accounts.creating });
+    expect(pending).toBeDisabled();
+    // «Отмена» на время запроса тоже заперта: она увела бы окно из-под ответа сервера.
+    expect(screen.getByRole('button', { name: t.common.cancel })).toBeDisabled();
+
+    await user.click(pending);
+    const form = pending.closest('form');
+    if (form === null) {
+      throw new Error('Форма счёта не найдена');
+    }
+    fireEvent.submit(form);
+
+    release();
+    await screen.findByText(t.accountSwitcher.createdLead('Демо: пятый'));
+    expect(calls.filter((call) => `${call.method} ${call.path}` === CREATE)).toHaveLength(1);
   });
 
   /**

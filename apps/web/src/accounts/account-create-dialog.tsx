@@ -58,7 +58,7 @@ function CreatedPanel({ account, onClose }: { account: Account; onClose: () => v
   const accounts = useAccounts(false);
   const selection = useAccountSelection();
   const selectIds = useAccountSelectionStore((state) => state.selectIds);
-  const covered = coversNewAccount(selection, accounts.data?.items ?? [], account);
+  const covered = coversNewAccount(selection, accounts.data?.items, account);
   const panel = useRef<HTMLDivElement | null>(null);
 
   // Кнопка «Добавить», на которой стоял фокус, исчезает вместе с формой, и фокус

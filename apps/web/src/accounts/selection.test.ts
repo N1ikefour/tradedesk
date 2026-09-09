@@ -189,6 +189,24 @@ describe('новый счёт и текущий выбор', () => {
       true,
     );
   });
+
+  /**
+   * Без списка счетов проверить, не протух ли явный выбор, нечем. Пустой список на его
+   * месте прочитал бы любой явный выбор как «все» и ответил бы «счёт уже в выборе» тому,
+   * у кого выбран один счёт, — то есть спрятал бы кнопку, которой это исправляют.
+   */
+  it('без списка счетов явный выбор считается живым, а не протухшим', () => {
+    expect(coversNewAccount({ mode: 'single', ids: [FIRST] }, undefined, CREATED)).toBe(false);
+    expect(coversNewAccount({ mode: 'multi', ids: [FIRST, SECOND] }, undefined, CREATED)).toBe(
+      false,
+    );
+  });
+
+  it('без списка счетов правила отвечают сами: «все» — да, «все реальные» — по виду счёта', () => {
+    expect(coversNewAccount({ mode: 'all', ids: [] }, undefined, CREATED)).toBe(true);
+    expect(coversNewAccount({ mode: 'all_real', ids: [] }, undefined, CREATED)).toBe(false);
+    expect(coversNewAccount({ mode: 'all_real', ids: [] }, undefined, CREATED_REAL)).toBe(true);
+  });
 });
 
 describe('хранилище выбора', () => {
@@ -199,26 +217,42 @@ describe('хранилище выбора', () => {
     expect(useAccountSelectionStore.getState()).toMatchObject({ mode: 'all_real', ids: [] });
   });
 
-  it('галочка поверх пресета начинает новый явный список, а не дополняет правило', () => {
+  /**
+   * Основа щелчка — то, что нарисовано отмеченным, и приходит она снаружи: правило
+   * `all_real` разворачивается в список счетов, которого store не видит.
+   */
+  it('галочка поверх пресета вычитает счёт из развёрнутого правила, а не начинает с нуля', () => {
     useAccountSelectionStore.getState().selectAllReal();
-    useAccountSelectionStore.getState().toggleId(SECOND);
+    // Экран нарисовал отмеченными оба реальных счёта — их и передаёт.
+    useAccountSelectionStore.getState().toggleId(FIRST, [FIRST, SECOND]);
 
     expect(useAccountSelectionStore.getState()).toMatchObject({ mode: 'single', ids: [SECOND] });
+  });
+
+  it('галочка на счёте, которого в правиле не было, добавляет его к развёрнутому списку', () => {
+    useAccountSelectionStore.getState().selectAllReal();
+    useAccountSelectionStore.getState().toggleId(SECOND, [FIRST]);
+
+    expect(useAccountSelectionStore.getState()).toMatchObject({
+      mode: 'multi',
+      ids: [FIRST, SECOND],
+    });
   });
 
   it('снятая последняя галочка возвращает выбор к «всем»', () => {
     const { toggleId } = useAccountSelectionStore.getState();
 
-    toggleId(FIRST);
+    toggleId(FIRST, []);
     expect(useAccountSelectionStore.getState()).toMatchObject({ mode: 'single', ids: [FIRST] });
 
-    toggleId(FIRST);
+    toggleId(FIRST, [FIRST]);
     expect(useAccountSelectionStore.getState()).toMatchObject({ mode: 'all', ids: [] });
   });
 
-  it('первая галочка поверх «всех» выбирает один счёт, а не добавляет к невидимому списку', () => {
+  it('первая галочка поверх «всех» выбирает один счёт: отмеченного там нет ничего', () => {
     useAccountSelectionStore.getState().selectAll();
-    useAccountSelectionStore.getState().toggleId(SECOND);
+    // При пресете «Все» галочки сняты, поэтому основа щелчка пуста.
+    useAccountSelectionStore.getState().toggleId(SECOND, []);
 
     expect(useAccountSelectionStore.getState().ids).toEqual([SECOND]);
   });
