@@ -7,11 +7,9 @@
  * лежат в URL, потому что ссылкой на отфильтрованный список делятся, а выбором счетов
  * нет: это настройка рабочего места, а не описание того, что на экране.
  *
- * Пресеты «Все реальные» и предупреждение «демо и реал вместе» — `S2-11`. Здесь есть
- * форма состояния под них, чтобы хранилище не пришлось переучивать задним числом вместе
- * с уже сохранёнными у людей значениями, и семантика режима `all_real`: раз значение
- * умеет попасть в хранилище (руками, из другой вкладки, из будущей версии), оно обязано
- * что-то означать уже сейчас, а не разбираться в `S2-11` задним числом.
+ * Режим `all_real` — правило, а не список: он разворачивается по загруженным счетам на
+ * каждый запрос. Поэтому счёт, заведённый или перекрашенный в демо после выбора пресета,
+ * попадает в выборку или уходит из неё сам, без переспрашивания человека.
  */
 import { useMemo } from 'react';
 import { create } from 'zustand';
@@ -33,6 +31,7 @@ type SelectionActions = {
   readonly selectIds: (ids: readonly string[]) => void;
   readonly toggleId: (id: string) => void;
   readonly selectAll: () => void;
+  readonly selectAllReal: () => void;
 };
 
 const INITIAL: AccountSelection = { mode: 'all', ids: [] };
@@ -109,6 +108,7 @@ export const useAccountSelectionStore = create<AccountSelection & SelectionActio
         set(fromIds(ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id]));
       },
       selectAll: () => set(INITIAL),
+      selectAllReal: () => set({ mode: 'all_real', ids: [] }),
     }),
     {
       name: SELECTION_STORAGE_KEY,
@@ -202,4 +202,83 @@ export function useAccountIds(): ResolvedAccountIds {
 /** `account_ids=uuid,uuid` — формат SPEC.md 5.1. Пустой выбор параметра не даёт. */
 export function accountIdsParam(ids: readonly string[]): string | undefined {
   return ids.length === 0 ? undefined : ids.join(',');
+}
+
+/** Счета, попавшие в выборку. Пустой `ids` при `empty = false` — это «все». */
+function selectedAccounts(
+  resolved: ResolvedAccountIds,
+  accounts: readonly Account[],
+): readonly Account[] {
+  if (!resolved.ready || resolved.empty) {
+    return [];
+  }
+  return resolved.ids.length === 0
+    ? accounts
+    : accounts.filter((account) => resolved.ids.includes(account.id));
+}
+
+/**
+ * Показывать ли пресет «Все реальные» (SPEC.md 9.2).
+ *
+ * У первого пользователя все четыре счёта демо, и пресет дал бы ему пустой экран по
+ * нажатию — то есть выглядел бы поломкой ровно там, где он и работает как задумано.
+ * Обратный край не лучше: без единого демо-счёта «Все реальные» и «Все» — одна и та же
+ * выборка, и две кнопки с одним действием заставляют искать между ними разницу.
+ *
+ * Поэтому пресет — не постоянный элемент, а ответ на вопрос «какие из них смотреть»,
+ * и появляется он ровно тогда, когда вопрос есть: счета обоих видов сразу. Выключенная
+ * кнопка тут хуже отсутствующей: она обещает действие и требует объяснения, почему его
+ * нет, — а объяснять нечего, реальных счетов просто ни одного.
+ *
+ * Исключение — уже выбранный `all_real`: значение переживает архивацию последнего
+ * реального счёта и приезжает из другой вкладки. Спрятать пресет под ним значило бы
+ * оставить человека с пустым журналом и без единого способа увидеть, чем он пуст.
+ */
+export function showsAllRealPreset(
+  selection: AccountSelection,
+  accounts: readonly Account[],
+): boolean {
+  if (selection.mode === 'all_real') {
+    return true;
+  }
+  return (
+    accounts.some((account) => account.is_demo) && accounts.some((account) => !account.is_demo)
+  );
+}
+
+/**
+ * В выборке демо и реал одновременно (SPEC.md 9.2, §14 «Демо + реал в сводке»).
+ *
+ * Считается по фактическому составу выборки, а не по имени пресета: смешать их вручную
+ * галочками так же легко, как пресетом «Все», и результат тот же — сумма, в которой
+ * тренировочные деньги сложены с настоящими. Обратная сторона того же правила важнее:
+ * у человека с одними демо-счетами пресет «Все» ничего не смешивает, и предупреждение,
+ * висящее там постоянно, за неделю перестало бы читаться.
+ */
+export function mixesDemoAndReal(
+  resolved: ResolvedAccountIds,
+  accounts: readonly Account[],
+): boolean {
+  const chosen = selectedAccounts(resolved, accounts);
+  return chosen.some((account) => account.is_demo) && chosen.some((account) => !account.is_demo);
+}
+
+/**
+ * Попадёт ли только что заведённый счёт в текущую выборку.
+ *
+ * Спрашивается сразу после создания, когда список счетов ещё перезапрашивается, поэтому
+ * новый счёт добавляется к известным здесь же: иначе пресет «Все реальные» ответил бы
+ * «нет» про реальный счёт просто потому, что его в списке пока нет.
+ */
+export function coversNewAccount(
+  selection: AccountSelection,
+  accounts: readonly Account[],
+  created: Account,
+): boolean {
+  const known = accounts.some((account) => account.id === created.id)
+    ? accounts
+    : [...accounts, created];
+  return selectedAccounts(resolveSelection(selection, known), known).some(
+    (account) => account.id === created.id,
+  );
 }
