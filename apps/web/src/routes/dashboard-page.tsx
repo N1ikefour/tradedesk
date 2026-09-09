@@ -17,12 +17,11 @@ import { useAccountIds } from '@/accounts/selection';
 import { messageForError } from '@/api/error-message';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { calendarParams, useCalendarMonth } from '@/calendar/api';
 import {
-  calendarParams,
   openPositionsParams,
   summaryParams,
   unreflectedParams,
-  useCalendarMonth,
   useHasAnyReflection,
   useOpenPositions,
   useSummary,
@@ -100,7 +99,10 @@ export function DashboardPage() {
   // Параметры запоминаются: они же ключи запросов, и новый объект на каждый рендер
   // заставлял бы TanStack Query пересобирать ключ на каждую перерисовку экрана.
   const summaryQuery = useMemo(() => summaryParams(period, accountIds), [period, accountIds]);
-  const calendarQuery = useMemo(() => calendarParams(period, accountIds), [period, accountIds]);
+  const calendarQuery = useMemo(
+    () => calendarParams(period.month, accountIds),
+    [period.month, accountIds],
+  );
   const openQuery = useMemo(() => openPositionsParams(accountIds), [accountIds]);
   const unreflectedQuery = useMemo(
     () => unreflectedParams(period, accountIds),

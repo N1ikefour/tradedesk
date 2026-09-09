@@ -1,5 +1,5 @@
 /**
- * Сетка месяца для календаря-мини. Сетку рисует фронт, а дни приносит сервер
+ * Сетка месяца. Сетку рисует фронт, а дни приносит сервер
  * (`docs/metrics.md` §5): в ответе только дни, где была хотя бы одна закрытая позиция,
  * поэтому пустая ячейка — это день, которого в ответе нет, а не потерянные данные.
  *
@@ -9,7 +9,7 @@
  */
 import { getDay, getDaysInMonth, parseISO } from 'date-fns';
 
-import type { CalendarDay } from '@/dashboard/api';
+import type { CalendarDay } from '@/calendar/api';
 
 export type CalendarCell = {
   /** `yyyy-MM-dd` — им же сравнивается «сегодня». */

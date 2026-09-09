@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CalendarDay } from '@/dashboard/api';
-import { buildMonthGrid, tradedCells } from '@/dashboard/calendar-grid';
+import type { CalendarDay } from '@/calendar/api';
+import { buildMonthGrid, tradedCells } from '@/calendar/grid';
 
 function nextDay(iso: string): string {
   const at = new Date(`${iso}T00:00:00Z`);

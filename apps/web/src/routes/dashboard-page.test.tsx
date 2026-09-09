@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Account } from '@/accounts/api';
 import { useAccountSelectionStore } from '@/accounts/selection';
-import type { CalendarDay, CalendarMonth, Summary } from '@/dashboard/api';
+import type { CalendarDay, CalendarMonth } from '@/calendar/api';
+import type { Summary } from '@/dashboard/api';
 import { OPEN_POSITIONS_LIMIT, UNREFLECTED_PROBE_LIMIT } from '@/dashboard/api';
 import { t } from '@/i18n';
 import type { PositionListItem } from '@/journal/api';
@@ -276,7 +277,7 @@ describe('дашборд: календарь-мини', () => {
 
     // Сетка без единой суммы читается как «не загрузилось», поэтому рядом стоит фраза.
     // Убирать сам месяц незачем: он показывает, за какой период сказано «сделок нет».
-    expect(await screen.findByText(t.dashboard.calendarEmpty)).toBeInTheDocument();
+    expect(await screen.findByText(t.calendar.empty)).toBeInTheDocument();
     expect(screen.getByRole('table', { name: /сентябрь 2026/i })).toBeInTheDocument();
   });
 

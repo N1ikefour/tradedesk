@@ -11,7 +11,7 @@ import { JournalPage } from '@/routes/journal-page';
 import { SettingsPage } from '@/routes/settings-page';
 import { PositionPage } from '@/routes/position-page';
 import { DashboardPage } from '@/routes/dashboard-page';
-import { CalendarPage } from '@/routes/stub-pages';
+import { CalendarPage } from '@/routes/calendar-page';
 import { DEV_OUTBOX_AVAILABLE } from '@/lib/env';
 
 /**
