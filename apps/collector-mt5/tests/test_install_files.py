@@ -82,6 +82,23 @@ def _powershell_function(name: str) -> str:
     raise AssertionError(f"у функции {name} не закрыта скобка")
 
 
+def _stop_outcomes() -> dict[str, str]:
+    """Что человек читает про каждый исход остановки — по исходам, а не одним куском.
+
+    Ключ — как об исходе говорить в отказе теста; значение — текст, который до человека
+    доходит: две ветки `Stop-Collector` и шапка `stop-collector.bat`, где та же разница
+    объяснена словами до всякого запуска.
+    """
+    body = _powershell_function("Stop-Collector")
+    graceful, mark, forced = body.partition("} else {")
+    assert mark, "принудительной ветки в Stop-Collector нет"
+    _, mark, graceful = graceful.partition("} elseif ($graceful) {")
+    assert mark, "мягкой ветки в Stop-Collector нет"
+    header, mark, _ = _text("stop-collector.bat").partition("where powershell")
+    assert mark, "шапка stop-collector.bat кончается не там, где её искали"
+    return {"мягкая ветка": graceful, "принудительная ветка": forced, "шапка .bat": header}
+
+
 def _task_result_table() -> dict[str, str]:
     """Таблица `$TaskResultText` из `install-service.ps1`, ключ → текст для человека."""
     text = _text("install-service.ps1")
@@ -274,11 +291,12 @@ def test_an_unexpected_exit_code_is_still_explained() -> None:
 
 
 def test_the_stop_asks_the_manager_before_it_kills_him() -> None:
-    """Порядок — это и есть разница между «остановлен» и «не на связи».
+    """Порядок — это и есть разница между прощанием и расстрелом.
 
     `Stop-ScheduledTask` снимает дерево процессов задачи целиком, то есть убивает
     менеджер: спрошенный после неё уже некому услышать просьбу. А `Stop-Process -Force`
-    не доводит менеджер до `_shutdown`, где он единственный раз шлёт `state=stopped`.
+    не доводит менеджер до `_shutdown`, где он единственный раз гасит процессы счетов
+    сам. На карточках счетов эта разница не видна вовсе — только в диспетчере задач.
     """
     body = _powershell_function("Stop-Collector")
 
@@ -302,10 +320,11 @@ def test_the_stop_flag_lands_in_the_folder_the_manager_watches() -> None:
     смотрит менеджер. Цепочка идёт через три языка: `.ps1` строит путь от `$Here`, `.bat`
     отдаёт менеджеру `--env-file "%TD_HOME%collector.env"` от `%~dp0`, а менеджер берёт
     каталог этого файла. Разойдись любое звено — `Request-GracefulStop` создаст файл,
-    которого никто не ждёт, отчитается «менеджер успел попрощаться», и остановка молча
-    выродится в принудительную: `state=stopped` не уйдёт, счета через пять минут покажут
-    «коллектор не на связи». Ни один тест этого не поймал бы: имена совпадают, порядок
-    вызовов верен, текст на экране правильный.
+    которого никто не ждёт, менеджер о просьбе не узнает, и остановка молча выродится в
+    принудительную: двадцать секунд ожидания впустую, процессы счетов гасятся силой,
+    прощального `state=stopped` нет. Ни один тест этого не поймал бы: имена совпадают,
+    порядок вызовов верен, а текст на экране честно скажет «остановлен принудительно» —
+    и будет верен, потому что так и вышло.
     """
     ps1 = _text("install-service.ps1")
     bat = _text("run-collector.bat")
@@ -332,6 +351,33 @@ def test_the_forced_stop_says_what_it_costs() -> None:
 
     assert "принудительно" in body
     assert "не на связи" in body
+
+
+def test_no_stop_outcome_promises_the_cards_will_say_stopped() -> None:
+    """Карточки счетов двух исходов остановки не различают, и обещать обратное нельзя.
+
+    `accounts.service.apply_heartbeat` ставит `status_message` только при `state='error'`:
+    `state='stopped'` двигает одно `last_heartbeat_at`, а состояния «Коллектор остановлен»
+    нет и в перечне карточки (`SPEC.md` §9.3). Значит после **любой** остановки на карточке
+    сначала не меняется ничего, а через пять минут `check_collectors` пишет «Коллектор не
+    на связи». Скрипт, обещающий там слово «остановлен», заставляет человека при каждой
+    удачной мягкой остановке заключить, что прощание не доехало, — и противоречит строке,
+    которую сам же напечатал абзацем выше.
+
+    Правило держится на том, что ёлочки в этих файлах цитируют видимое на экране TradeDesk:
+    цитаты со словом «остановлен» там быть не может, а сказав про карточки, исход обязан
+    назвать то, что на них появится на самом деле. `test_the_forced_stop_says_what_it_costs`
+    такой возврат пропускает: он ищет слова в теле функции целиком.
+    """
+    outcomes = _stop_outcomes()
+    for outcome, said in outcomes.items():
+        promised = re.findall(r"«[^»]*остановлен[^»]*»", said, re.IGNORECASE)
+        assert not promised, f"{outcome} обещает на карточке {promised}"
+        if "карточ" in said.lower():
+            assert "не на связи" in said.lower(), f"{outcome} говорит о карточках не то"
+
+    # Иначе правило выше стало бы вакуумным: молчание про карточки его не нарушает.
+    assert any("карточ" in said.lower() for said in outcomes.values())
 
 
 def test_the_log_tail_is_read_without_guessing_the_code_page() -> None:
