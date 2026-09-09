@@ -61,7 +61,7 @@ Updated: 2026-09-09
 
 | ID | Задача | Роль | Статус | Ветка / PR |
 |---|---|---|---|---|
-| T-01 | SETUP.md финальный | infra | Backlog | — |
+| T-01 | SETUP.md финальный | infra | In Progress | `feat/T-01-setup-final` |
 | T-02 | Скрипты update/backup/restore | infra | **Done** | [PR #29](https://github.com/N1ikefour/tradedesk/pull/29) |
 | T-03 | Экспорт/импорт данных пользователя | backend | Backlog | — |
 | T-04 | Кнопка «Сообщить о проблеме» | frontend + backend | Backlog | — |
