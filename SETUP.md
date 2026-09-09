@@ -59,8 +59,12 @@
 Команды ниже показаны в двух видах: короткие `make …` и длинные `sh infra/scripts/…`.
 Делают они **одно и то же** — `make` просто вызывает те же скрипты.
 
-- **macOS:** `make` приходит с Command Line Tools. Если `make --version` ругается —
-  выполните `xcode-select --install`.
+- **macOS:** `make` приходит с Command Line Tools. Если `make --version` ругается,
+  посмотрите на текст ошибки — причины две и лечатся по-разному:
+  - «command not found» — инструментов нет: `xcode-select --install`;
+  - «You have not agreed to the Xcode license agreements» — инструменты есть, но после
+    обновления Xcode нужно заново принять лицензию: `sudo xcodebuild -license accept`.
+    Пока она не принята, **не работает ни одна цель** — ни `make up`, ни `make ci`.
 - **Linux:** `make` обычно уже стоит; если нет — поставьте пакет `make`.
 - **Windows:** `make` в системе нет. Смотрите блок ниже.
 
