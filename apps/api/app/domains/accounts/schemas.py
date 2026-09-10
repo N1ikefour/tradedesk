@@ -1,11 +1,16 @@
 """Тела запросов и ответов счетов — SPEC.md 5.2.
 
 ⚠️ Пароль счёта не входит ни в одну модель ответа и не может войти. `CLAUDE.md` §5 и
-SPEC.md 3.2: он читается только `GET /internal/collector/assignments` (S1-05). Поэтому
-`AccountResponse` собирается полем за полем в `from_account`, а не `model_validate`
-поверх ORM-объекта: список полей ответа — явный текст, который видно в диффе. Инвариант
-закрыт тестами `tests/unit/test_accounts_contract.py` и сканом настоящих тел ответов
-в `tests/integration/test_accounts.py`.
+SPEC.md 3.2. С `T-07` его не отдаёт **никакой** маршрут, включая
+`GET /internal/collector/assignments`: в терминал входит человек, коллектору входить
+нечем и незачем. Поэтому `AccountResponse` собирается полем за полем в `from_account`,
+а не `model_validate` поверх ORM-объекта: список полей ответа — явный текст, который
+видно в диффе. Инвариант закрыт тестами `tests/unit/test_accounts_contract.py` и сканом
+настоящих тел ответов в `tests/integration/test_accounts.py`.
+
+⚠️ На входе поле осталось и осталось необязательным (`T-07`, ADR-0006). Убрать его из
+тела запроса — второй шаг по SPEC.md 11.4: сначала перестать требовать, удалить в
+следующем релизе. Сохранённое значение сегодня не читает никто.
 """
 
 from __future__ import annotations
@@ -46,7 +51,7 @@ PASSWORD_CONTROL_ERROR = "Пароль не должен содержать пе
 SORT_ORDER_ERROR = f"Порядок сортировки — целое от {SORT_ORDER_MIN} до {SORT_ORDER_MAX}"
 NULL_NOT_ALLOWED_ERROR = "Значение не может быть null"
 
-MT5_REQUIRED_ERROR = "Для счёта MT5 обязательны server, login и password"
+MT5_REQUIRED_ERROR = "Для счёта MT5 обязательны server и login"
 MT5_ONLY_ERROR = "Поля server, login и password есть только у счетов MT5"
 
 # Тот же класс символов, что отвергают схемы auth и users: строка уезжает в UI и в логи.
@@ -73,7 +78,16 @@ ACCOUNT_COLORS: tuple[str, ...] = get_args(AccountColor)
 
 # SecretStr, а не str: в `repr` модели запроса пароль иначе печатается целиком, а `repr`
 # уезжает и в traceback, и в лог через `scrub_unserializable` (S0-04).
-Password = Annotated[SecretStr, Field(description="Пароль инвестора. В ответах не возвращается")]
+Password = Annotated[
+    SecretStr,
+    Field(
+        description=(
+            "Устарело (T-07): коллектору пароль не нужен — в терминал входит человек. "
+            "Присланное значение шифруется и хранится, но не читается ничем и ни в одном "
+            "ответе не возвращается"
+        )
+    ),
+]
 
 
 def _reject_control_chars(value: str, code: str, error: str = CONTROL_CHARS_ERROR) -> str:
@@ -206,12 +220,16 @@ class AccountCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _platform_fields(self) -> AccountCreateRequest:
-        """Связка полей зависит от платформы — проверить её может только модель целиком."""
-        mt5_fields: tuple[object, ...] = (self.server, self.login, self.password)
+        """Связка полей зависит от платформы — проверить её может только модель целиком.
+
+        `password` в обязательные не входит с `T-07`: в терминал входит человек, и счёт
+        без пароля — единственный путь, который предлагает интерфейс. Запрет на пароль
+        у не-mt5 остаётся: смысла он там не имел и не имеет.
+        """
         if self.platform == "mt5":
-            if any(value is None for value in mt5_fields):
+            if self.server is None or self.login is None:
                 raise PydanticCustomError("platform_fields", MT5_REQUIRED_ERROR)
-        elif any(value is not None for value in mt5_fields):
+        elif any(value is not None for value in (self.server, self.login, self.password)):
             raise PydanticCustomError("platform_fields", MT5_ONLY_ERROR)
         return self
 
@@ -222,10 +240,11 @@ class AccountUpdateRequest(BaseModel):
     `broker` — единственное обнуляемое: явный `null` очищает брокера. Остальные поля
     обнулить нечем, `null` в них — ошибка валидации, а не «сбрось значение».
 
-    ⚠️ Присутствие `password` или **изменение** `server`/`login` сбрасывает статус
-    (см. `service.update_account`). Форма редактирования отправляет карточку целиком,
-    поэтому решает не присутствие поля, а разница значений: иначе переименование счёта
-    останавливало бы работающий синк.
+    ⚠️ **Изменение** `server`/`login` сбрасывает статус (см. `service.update_account`).
+    Форма редактирования отправляет карточку целиком, поэтому решает не присутствие поля,
+    а разница значений: иначе переименование счёта останавливало бы работающий синк.
+    Присланный `password` статуса больше не трогает (`T-07`): входа коллектора в терминал,
+    ради которого сбрасывался статус, не существует.
     """
 
     model_config = ConfigDict(extra="forbid")

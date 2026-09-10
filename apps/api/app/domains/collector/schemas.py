@@ -1,7 +1,8 @@
 """Тела запросов и ответов коллектора — SPEC.md 5.3 и 5.6.
 
-⚠️ `AssignmentResponse` — **единственная модель ответа во всём API, содержащая пароль
-счёта** (`CLAUDE.md` §5). Поэтому она собирается полем за полем в `issued`, как
+⚠️ `AssignmentResponse` **пароля не содержит и содержать не должна** (`T-07`, ADR-0006):
+в терминал MT5 входит человек, коллектору входить нечем. Пароля теперь нет ни в одном
+ответе API вовсе. Модель собирается полем за полем в `issued`, как
 `AccountResponse.from_account`, и её состав заморожен тестом
 `tests/unit/test_collector_contract.py`: любое новое поле здесь обязано пройти через
 правку теста, то есть через ревью.
@@ -164,24 +165,17 @@ class HeartbeatResponse(BaseModel):
 
 
 class AssignmentResponse(BaseModel):
-    """Задание коллектору на один счёт — SPEC.md 5.6. **Содержит пароль.**"""
+    """Задание коллектору на один счёт — SPEC.md 5.6. **Пароля не содержит.**"""
 
     model_config = ConfigDict(extra="forbid")
 
     account_id: UUID
     server: str
-    login: int
-    password: str = Field(
-        # `repr=False` — то же решение, что у `service.Assignment`, и по той же причине.
-        # Модель собирает роутер, а значит она лежит в кадрах FastAPI при сериализации
-        # ответа: любое исключение оттуда печатает кадр, а `scrub_unserializable` вырезает
-        # только **известные** секреты, и пароля счёта среди них нет. Защита обязана стоять
-        # на обоих объектах пути — асимметрия закреплена тестом.
-        repr=False,
+    login: int = Field(
         description=(
-            "Пароль инвестора. Единственный ответ API, где он есть; в пользовательские "
-            "маршруты не попадает никогда"
-        ),
+            "Номер счёта. Коллектор сверяет с ним счёт, открытый в терминале: подключение "
+            "идёт к терминалу человека, и чужой счёт иначе попал бы в этот журнал молча"
+        )
     )
     sync_requested_at: UtcDatetime | None = Field(
         description="Просьба пользователя о внеочередном синке (SPEC.md 5.2)"
@@ -190,7 +184,7 @@ class AssignmentResponse(BaseModel):
     status: AccountStatus
 
     @classmethod
-    def issued(cls, account: TradingAccount, password: str) -> AssignmentResponse:
+    def issued(cls, account: TradingAccount) -> AssignmentResponse:
         """Сборка по явному списку полей — тот же приём, что в `AccountResponse`.
 
         `server` и `login` в модели счёта nullable (у csv и manual их нет), а здесь
@@ -203,7 +197,6 @@ class AssignmentResponse(BaseModel):
             account_id=account.id,
             server=account.server,
             login=account.login,
-            password=password,
             sync_requested_at=account.sync_requested_at,
             last_sync_at=account.last_sync_at,
             status=account.status,  # type: ignore[arg-type]
@@ -214,9 +207,8 @@ class AssignmentListResponse(BaseModel):
     """Конверт выдачи — SPEC.md 5.6.
 
     Не голый массив: в него нечего добавить, не сломав потребителя, а курсорная пагинация
-    из SPEC.md 5.1 однажды потребует именно добавления поля рядом с `items`. Потребитель
-    (`S1-08`) ещё не написан — момент, когда это стоит ноль. Ту же форму отдаёт
-    `GET /accounts`.
+    из SPEC.md 5.1 однажды потребует именно добавления поля рядом с `items`. Ту же форму
+    отдаёт `GET /accounts`.
     """
 
     model_config = ConfigDict(extra="forbid")

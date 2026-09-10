@@ -107,8 +107,8 @@ export function AccountsPage() {
         title={t.accounts.formCreateTitle}
         className="max-w-xl"
       >
-        {/* Форма пересоздаётся при каждом открытии: прошлый ввод, включая пароль, не должен
-            пережить закрытие окна. */}
+        {/* Форма пересоздаётся при каждом открытии: прошлый ввод не должен пережить
+            закрытие окна. */}
         {creating ? (
           <AccountForm onDone={() => setCreating(false)} onCancel={() => setCreating(false)} />
         ) : null}

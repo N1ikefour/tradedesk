@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 
 import { t } from '@/i18n';
 
@@ -13,24 +13,6 @@ import { signIn } from './sign-in';
  * стенде смоука его нет. Поэтому смоук доходит до `pending` — состояния, в котором счёт
  * и обязан ждать коллектора.
  */
-const INVESTOR_PASSWORD = 'smoke-investor-8f21';
-
-/**
- * Где пароль может остаться на живой странице. Разметки мало: значение поля живёт в
- * свойстве `value`, и проверка одного `page.content()` прошла бы над заполненным полем.
- */
-async function passwordTraces(page: Page, secret: string) {
-  return page.evaluate((value) => {
-    const fields = document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
-      'input, textarea',
-    );
-    return {
-      markup: document.documentElement.outerHTML.includes(value),
-      fields: Array.from(fields).filter((field) => field.value.includes(value)).length,
-    };
-  }, secret);
-}
-
 test('счёт добавляется, переживает перезагрузку и удаляется вводом имени', async ({ page }) => {
   await signIn(page);
 
@@ -45,10 +27,10 @@ test('счёт добавляется, переживает перезагруз
   await form.getByLabel(t.accounts.serverLabel, { exact: true }).fill('Smoke-Server');
   await form.getByLabel(t.accounts.loginLabel, { exact: true }).fill('5001234');
 
-  // Подсказка про инвесторский пароль — главное содержимое этой формы: человек вводит
-  // пароль от счёта с деньгами, и объяснение обязано быть на экране, а не в документации.
-  await expect(form.getByText(t.accounts.passwordWhy)).toBeVisible();
-  await form.getByLabel(t.accounts.passwordLabel, { exact: true }).fill(INVESTOR_PASSWORD);
+  // `T-07`: пароля счёта форма не спрашивает вовсе, и на живой странице поля такого типа
+  // нет ни одного. Вместо него — строка о том, чем коллектор попадёт в счёт.
+  await expect(form.getByText(t.accounts.loginHint)).toBeVisible();
+  expect(await form.locator('input[type="password"]').count()).toBe(0);
 
   await form.getByRole('button', { name: t.accounts.create, exact: true }).click();
 
@@ -58,13 +40,8 @@ test('счёт добавляется, переживает перезагруз
   // коллектор» стоят ещё и в тексте блока «Коллектор» ниже.
   await expect(page.getByText(t.accounts.statusPending, { exact: true })).toBeVisible();
 
-  // Пароль не возвращается ни в ответе, ни в разметке, ни в полях — проверяется фактом
-  // на живой странице.
-  expect(await passwordTraces(page, INVESTOR_PASSWORD)).toEqual({ markup: false, fields: 0 });
-
   await page.reload();
   await expect(page.getByRole('heading', { name: label })).toBeVisible();
-  expect(await passwordTraces(page, INVESTOR_PASSWORD)).toEqual({ markup: false, fields: 0 });
 
   await page.getByRole('button', { name: t.accounts.delete, exact: true }).click();
   const confirm = page.getByRole('dialog');

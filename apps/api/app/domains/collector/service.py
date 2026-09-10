@@ -1,17 +1,19 @@
 """Выдача заданий коллектору и приём heartbeat — SPEC.md 5.3, 5.6.
 
 Статусы счетов этот модуль не решает: переходы живут в `accounts.service`, рядом с
-`apply_sync_result`, и здесь только вызываются. Здесь — выборка, закрепление коллектора
-за счётом, расшифровка credentials и журнал доступа.
+`apply_sync_result`, и здесь только вызываются. Здесь — выборка и закрепление коллектора
+за счётом.
 
-**Расшифровка credentials выполняется ровно в этом файле и больше нигде** (`CLAUDE.md`
-§5). Всё, что с ней связано, собрано в `issue_assignments`, чтобы граница была одним
-местом, а не свойством, которое надо проверять по всему коду.
+**Задание больше не несёт пароля** (`T-07`, ADR-0006): в терминал MT5 входит человек,
+коллектор подключается к открытому. Отсюда следствие, которое стоит держать в голове при
+правках этого файла: `decrypt_credentials` здесь не вызывается — и не должен. Пароль,
+который никому не нужен, не обязан ни ездить по сети, ни лежать в кадрах стека
+(`docs/PROJECT_CONTEXT.md`, риск 5).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
@@ -19,34 +21,11 @@ from sqlalchemy import ColumnElement, and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
-from app.core.security import CredentialsDecryptionError, decrypt_credentials
 from app.domains.accounts import models as account_models
 from app.domains.accounts import service as accounts
 from app.domains.collector.schemas import HeartbeatRequest
 
 log = get_logger(__name__)
-
-PASSWORD_FIELD = "password"
-
-# Credentials не читаются — счёт бесполезен коллектору, и пользователь должен узнать об
-# этом от системы, а не по тишине в журнале. Текст без подробностей: причина неудачи
-# расшифровки наружу не раскрывается (S0-05).
-CREDENTIALS_UNREADABLE_MESSAGE = (
-    "Не удалось прочитать сохранённый пароль счёта. Введите его заново в настройках счёта."
-)
-
-
-@dataclass(frozen=True)
-class Assignment:
-    """Счёт и расшифрованный пароль к нему.
-
-    `repr` пароля подавлен: объект живёт на пути, где любое исключение печатает кадр
-    стека, а `scrub_unserializable` вырезает только **известные** секреты — пароль счёта
-    в их число не входит и входить не может.
-    """
-
-    account: account_models.TradingAccount
-    password: str = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -67,7 +46,9 @@ def assignable() -> ColumnElement[bool]:
     кроме mt5, поэтому мутация, снимающая одну проверку, второй и ловится. Роли у них
     всё-таки разные. `platform = 'mt5'` — намерение: коллектор ходит только в MT5.
     `server`/`login` — физическая гарантия, на которой стоит `AssignmentResponse.issued`:
-    в модели ответа они не nullable, и без неё выдача падала бы пятисоткой.
+    в модели ответа они не nullable, и без неё выдача падала бы пятисоткой. `login` при
+    этом стал ещё и рабочим полем: по нему коллектор сверяет, в какой счёт вошёл человек
+    в открытом терминале.
 
     Чей это счёт — отдельное условие у каждого вызова: `_claim` берёт ничьи,
     `issue_assignments` отдаёт свои.
@@ -101,79 +82,43 @@ async def _claim(session: AsyncSession, collector_id: str) -> list[UUID]:
     return list((await session.execute(statement)).scalars().all())
 
 
-async def issue_assignments(session: AsyncSession, collector_id: str) -> list[Assignment]:
-    """Счета этого коллектора вместе с паролями. `GET`, который пишет в базу.
+async def issue_assignments(
+    session: AsyncSession, collector_id: str
+) -> list[account_models.TradingAccount]:
+    """Счета этого коллектора. `GET`, который пишет в базу.
 
     Побочный эффект требует SPEC.md 5.6 («при выдаче `collector_id` фиксируется за
     счётом») — без него второй коллектор в сети забрал бы себе те же счета, и два
-    терминала полезли бы в один брокерский аккаунт.
+    процесса полезли бы в один брокерский аккаунт.
 
-    Счёт, чьи credentials не читаются, из выдачи выпадает и уходит в `needs_attention`.
-    Уронить весь ответ пятисоткой из-за одного счёта нельзя: остальные счета этой
-    установки перестали бы синкаться заодно с ним.
+    Наличие сохранённого пароля на выдачу не влияет никак: счёт без credentials — норма
+    с `T-07`, а не поломка. Прежняя ветка «credentials не читаются → `needs_attention`»
+    убрана вместе с чтением: она объявляла бы неисправным каждый нормально заведённый
+    счёт.
     """
-    await _claim(session, collector_id)
+    claimed = await _claim(session, collector_id)
     statement = (
-        select(account_models.TradingAccount, account_models.AccountCredential)
-        .outerjoin(
-            account_models.AccountCredential,
-            account_models.AccountCredential.account_id == account_models.TradingAccount.id,
-        )
+        select(account_models.TradingAccount)
         .where(account_models.TradingAccount.collector_id == collector_id, assignable())
         .order_by(
             account_models.TradingAccount.created_at,
             account_models.TradingAccount.id,
         )
     )
-    rows = (await session.execute(statement)).all()
-
-    issued: list[Assignment] = []
-    unreadable: list[UUID] = []
-    for account, credential in rows:
-        password = _read_password(account, credential)
-        if password is None:
-            unreadable.append(account.id)
-            account.status = accounts.STATUS_NEEDS_ATTENTION
-            account.status_message = CREDENTIALS_UNREADABLE_MESSAGE
-            continue
-        issued.append(Assignment(account=account, password=password))
+    issued = list((await session.execute(statement)).scalars().all())
     await session.commit()
 
-    for assignment in issued:
-        # SPEC.md 5.6: доступ логируется (account_id, collector_id, время) без пароля.
-        # Время добавляет структурный логгер. Одна запись на счёт, а не на запрос: это
-        # журнал того, что пароль покинул систему, и «сколько раз» здесь — не агрегат.
+    if claimed:
+        # Только закрепление, а не каждая выдача: секрета в ответе больше нет, и строка
+        # на счёт каждую минуту была бы шумом. Записывается ровно событие «счёт достался
+        # этому коллектору» — единственное, что тут вообще меняется в данных, и первое,
+        # что спрашивают, когда счёт ведёт не та машина (SPEC.md 5.6).
         log.info(
-            "collector.credentials_issued",
-            account_id=str(assignment.account.id),
+            "collector.accounts_claimed",
             collector_id=collector_id,
-        )
-    if unreadable:
-        log.error(
-            "collector.credentials_unreadable",
-            collector_id=collector_id,
-            account_ids=[str(account_id) for account_id in unreadable],
+            account_ids=[str(account_id) for account_id in claimed],
         )
     return issued
-
-
-def _read_password(
-    account: account_models.TradingAccount,
-    credential: account_models.AccountCredential | None,
-) -> str | None:
-    """Открытый пароль или `None`. Ничего не логирует: здесь он в руках."""
-    if credential is None:
-        return None
-    try:
-        decrypted = decrypt_credentials(
-            credential.ciphertext,
-            credential.wrapped_data_key,
-            credential.key_version,
-            account_id=account.id,
-        )
-    except CredentialsDecryptionError:
-        return None
-    return decrypted.get(PASSWORD_FIELD)
 
 
 async def apply_heartbeat(

@@ -1,34 +1,26 @@
-"""Контракт маршрутов коллектора (S1-05), без живых зависимостей.
+"""Контракт маршрутов коллектора (S1-05, `T-07`), без живых зависимостей.
 
-Главное здесь — **пароль счёта выходит наружу ровно одним маршрутом**. `CLAUDE.md` §5
-и SPEC.md 5.6 разрешают это только `GET /internal/collector/assignments`, и проверка
-смотрит не на код, а на схему, которую объявляет само приложение: любая вторая операция,
-у которой в ответе появится пароль, красит этот файл.
+Главное здесь — **пароль счёта не выходит наружу ни одним маршрутом**. До `T-07` его
+отдавал `GET /internal/collector/assignments`; теперь в терминал MT5 входит человек,
+коллектору входить нечем, и секрета в ответах API не осталось вовсе (ADR-0006). Проверка
+смотрит не на код, а на схему, которую объявляет само приложение: любая операция, у
+которой в ответе появится пароль, красит этот файл.
 
 Второе — дверь перед ним. Ответы на отсутствующий и на неверный токен обязаны быть
-неразличимы, иначе подбирающий узнаёт, что форма `Bearer …` принята.
-
-Третье — пароль не печатается **ни одним** объектом на этом пути. Их три: `Assignment`
-собирает сервис, `AssignmentResponse` — роутер, `AssignmentListResponse` — конверт вокруг
-него, и все три попадают в кадры стека. У конверта защита производная: его `repr` собран
-из `repr` элементов и держится, пока держится защита внутри. Производная защита проверяется
-наравне с собственной — иначе асимметрия на одном из трёх объектов ничем не ловится.
+неразличимы, иначе подбирающий узнаёт, что форма `Bearer …` принята. Дверь осталась
+нужной и без пароля: за ней состав установки — счета, серверы брокеров и номера счетов.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
-from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 
 from app.core.openapi import JSON_MEDIA_TYPE
-from app.domains.accounts.models import TradingAccount
-from app.domains.collector.schemas import AssignmentListResponse, AssignmentResponse
-from app.domains.collector.service import Assignment
 
 API = "/api/v1"
 ASSIGNMENTS = f"{API}/internal/collector/assignments"
@@ -37,14 +29,13 @@ ORIGIN = "http://test"
 
 TOKEN = "test-collector-token"
 
-# Ровно то, что SPEC.md 5.6 обещает коллектору. Список заморожен: добавить поле в ответ,
-# который несёт пароль, можно только правкой этого множества — то есть через ревью.
+# Ровно то, что SPEC.md 5.6 обещает коллектору. Список заморожен: добавить поле в задание
+# можно только правкой этого множества — то есть через ревью.
 ALLOWED_ASSIGNMENT_FIELDS = frozenset(
     {
         "account_id",
         "server",
         "login",
-        "password",
         "sync_requested_at",
         "last_sync_at",
         "status",
@@ -52,9 +43,6 @@ ALLOWED_ASSIGNMENT_FIELDS = frozenset(
 )
 
 SECRET_NAME_MARKERS = ("password", "secret", "credential", "ciphertext", "wrapped", "token")
-
-# Значение, которого нет больше нигде: по нему обыскиваются repr обоих объектов.
-REPR_PROBE_PASSWORD = "repr-probe-pw-4b7e0d"
 
 
 @pytest.fixture
@@ -125,7 +113,7 @@ def _success_schemas(document: dict[str, Any]) -> Iterator[tuple[str, dict[str, 
                     yield f"{method.upper()} {path}", content["schema"]
 
 
-# --- пароль выходит ровно одним маршрутом ------------------------------------
+# --- пароль не выходит ни одним маршрутом ------------------------------------
 
 
 def test_assignment_declares_exactly_the_allowed_fields(document: dict[str, Any]) -> None:
@@ -136,8 +124,13 @@ def test_assignment_declares_exactly_the_allowed_fields(document: dict[str, Any]
     assert model["additionalProperties"] is False
 
 
-def test_password_appears_in_exactly_one_success_response(document: dict[str, Any]) -> None:
-    """Обход всего API по именам: секрет под безобидным именем тоже считается утечкой."""
+def test_no_success_response_in_the_whole_api_carries_a_secret(document: dict[str, Any]) -> None:
+    """Обход всего API по именам: секрет под безобидным именем тоже считается утечкой.
+
+    Пустой список, а не «ровно один маршрут», — в этом и состоит `T-07`: пароль перестал
+    ездить по сети, потому что перестал быть кому-то нужен. Возврат поля в задание красит
+    этот тест первым.
+    """
     leaking = sorted(
         where
         for where, schema in _success_schemas(document)
@@ -145,7 +138,7 @@ def test_password_appears_in_exactly_one_success_response(document: dict[str, An
         if any(marker in name.lower() for marker in SECRET_NAME_MARKERS)
     )
 
-    assert leaking == [f"GET {ASSIGNMENTS}"], f"пароль в ответах: {leaking}"
+    assert leaking == [], f"секрет в ответах: {leaking}"
 
 
 def test_assignments_answer_with_an_items_envelope(document: dict[str, Any]) -> None:
@@ -169,71 +162,22 @@ def test_sync_requested_at_is_part_of_the_assignment(document: dict[str, Any]) -
     assert "sync_requested_at" in model["required"]
 
 
-# --- пароль не печатается ни одним объектом пути ------------------------------
+# --- расшифровки на этом пути больше нет --------------------------------------
 
 
-def _transient_account() -> TradingAccount:
-    """Счёт в памяти: `repr` от базы не зависит, поднимать Postgres ради него незачем."""
-    return TradingAccount(
-        id=uuid4(),
-        user_id=uuid4(),
-        label="Демо",
-        platform="mt5",
-        is_demo=True,
-        color="#000000",
-        currency="USD",
-        server="FTMO-Demo",
-        login=7001234,
-        status="pending",
-    )
+def test_the_collector_domain_imports_no_decryption() -> None:
+    """Единственный код, который читал пароли, убран — а не «перестал их отдавать».
 
-
-def _objects_on_the_path() -> list[tuple[str, object]]:
-    """Все объекты, через которые проходит расшифрованный пароль, — из одного счёта."""
-    account = _transient_account()
-    issued = AssignmentResponse.issued(account, REPR_PROBE_PASSWORD)
-    return [
-        ("Assignment", Assignment(account=account, password=REPR_PROBE_PASSWORD)),
-        ("AssignmentResponse", issued),
-        ("AssignmentListResponse", AssignmentListResponse(items=[issued])),
-    ]
-
-
-@pytest.mark.parametrize(
-    "subject",
-    [pytest.param(subject, id=name) for name, subject in _objects_on_the_path()],
-)
-def test_no_object_on_the_path_prints_the_password(subject: object) -> None:
-    """`repr` кадра стека — путь, по которому пароль уходит в лог и в Sentry.
-
-    `scrub_unserializable` вырезает только **известные** секреты, а пароль счёта зашифрован
-    и подстроки для скраба взять неоткуда (`CLAUDE.md` §5). Значит защита стоит на самих
-    объектах — и обязана стоять на каждом: асимметрия ничем другим не ловится.
-
-    Конверт здесь наравне с элементом намеренно. Своей защиты у него нет — `repr` списка
-    собирается из `repr` элементов, — и ровно поэтому она молча исчезает вместе с чужой.
+    Спрятать значение из ответа, оставив расшифровку, значило бы сохранить открытый пароль
+    в кадрах стека — тот самый канал, которым он уезжает в Sentry
+    (`docs/PROJECT_CONTEXT.md`, риск 5). Импорт в модуль — обязательный шаг любого такого
+    возврата, поэтому проверяется он: `from app.core.security import decrypt_credentials`
+    красит этот тест сразу, ещё до первого вызова.
     """
-    assert REPR_PROBE_PASSWORD not in repr(subject)
-    assert REPR_PROBE_PASSWORD not in str(subject)
+    from app.domains.collector import service
 
-
-def test_password_still_travels_inside_every_object() -> None:
-    """Обратная половина: спрятать поле из `repr` — не то же, что убрать его из ответа.
-
-    Без этой проверки «починка» вида `exclude=True` оставила бы тест выше зелёным и
-    отправила бы коллектору задание без пароля.
-    """
-    by_name = dict(_objects_on_the_path())
-    assignment = by_name["Assignment"]
-    response = by_name["AssignmentResponse"]
-    envelope = by_name["AssignmentListResponse"]
-
-    assert isinstance(assignment, Assignment)
-    assert isinstance(response, AssignmentResponse)
-    assert isinstance(envelope, AssignmentListResponse)
-    assert assignment.password == REPR_PROBE_PASSWORD
-    assert response.model_dump()["password"] == REPR_PROBE_PASSWORD
-    assert envelope.model_dump()["items"][0]["password"] == REPR_PROBE_PASSWORD
+    assert not hasattr(service, "decrypt_credentials")
+    assert not hasattr(service, "CredentialsDecryptionError")
 
 
 # --- дверь перед ним ---------------------------------------------------------
