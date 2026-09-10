@@ -4,17 +4,17 @@
     Автозапуск коллектора MT5 через Планировщик заданий Windows (SPEC.md 8.2 п.4).
 
 .DESCRIPTION
-    Служба Windows из менеджера (S1-09) не выходит: это обычный процесс, и без обёртки
-    вроде nssm служба его не переживёт. Планировщик заданий — то, что имеется в виду в
-    спеке словами «регистрация при входе в систему».
+    Служба Windows из коллектора не выходит: это обычный процесс, и без обёртки вроде
+    nssm служба его не переживёт. Планировщик заданий — то, что имеется в виду в спеке
+    словами «регистрация при входе в систему».
 
     Задача запускает run-collector.bat --service, то есть тот же файл, которым коллектор
     запускается руками. Рабочая папка задаётся явно: по умолчанию Планировщик стартует
     задачу из C:\Windows\System32, и относительный LOG_DIR уехал бы туда.
 
-    Вход в систему, а не «запускать независимо от входа»: терминал MetaTrader 5 —
-    оконная программа, ей нужен рабочий стол пользователя. Заодно это избавляет от
-    хранения пароля Windows в Планировщике.
+    Вход в систему, а не «запускать независимо от входа»: терминал MetaTrader 5 открывает
+    сам человек (X-66), и это оконная программа — ей нужен рабочий стол сеанса. Заодно это
+    избавляет от хранения пароля Windows в Планировщике.
 
 .PARAMETER Remove
     Снять автозапуск: остановить коллектор и удалить задачу.
@@ -25,9 +25,12 @@
 
 .PARAMETER Stop
     Остановить коллектор, не трогая автозапуск (то же делает stop-collector.bat).
-    Сначала просьба выйти самому — файлом collector-stop.flag, который менеджер видит
+    Сначала просьба выйти самому — файлом collector-stop.flag, который коллектор видит
     своим тиком, — и только потом сила. Сигнал чужому процессу на Windows не доставить,
-    а TerminateProcess не доводит менеджер до прощального heartbeat.
+    а TerminateProcess не доводит коллектор до прощального heartbeat.
+
+    Терминал MetaTrader 5 остановка не закрывает и закрывать не должна: его открыл
+    человек, и коллектор только отпускает свой канал к нему.
 
 .PARAMETER NoStart
     При установке не запускать задачу сразу.
@@ -51,10 +54,10 @@ $Bat = Join-Path $Here 'run-collector.bat'
 $VenvPython = Join-Path $Here '.venv\Scripts\python.exe'
 $EnvFile = Join-Path $Here 'collector.env'
 $RunLog = Join-Path $Here 'logs\run-collector.log'
-# Тот же файл, что ищет менеджер (collector/main.py, STOP_FLAG_NAME): просьба выйти самому.
+# Тот же файл, что ищет коллектор (collector/main.py, STOP_FLAG_NAME): просьба выйти самому.
 $StopFlag = Join-Path $Here 'collector-stop.flag'
 
-# Сколько ждать, пока менеджер попрощается. Обычно это 1-2 секунды, но тик с недоступным
+# Сколько ждать, пока коллектор попрощается. Обычно это 1-2 секунды, но тик с недоступным
 # API тянется минутами (ретраи httpx), и столько ждать по двойному клику нельзя: за
 # потолком — принудительная остановка и честный текст про её цену.
 $GracefulStopSeconds = 20
@@ -65,7 +68,7 @@ $GracefulStopSeconds = 20
 # Int32 и Int64 нельзя — поиск по ней молча не находил бы половину значений.
 #
 # ⚠️ Коды 0-3 сюда приходят не от Планировщика, а от самого коллектора: это код выхода
-# действия, то есть run-collector.bat. Их значения заданы в collector/worker.py и
+# действия, то есть run-collector.bat. Их значения заданы в collector/main.py и
 # продублированы в run-collector.bat; тексты обязаны совпадать с тамошними (закреплено
 # тестом tests/test_install_files.py). Самый частый из них — 2: человек правит
 # collector.env руками, и ошибка в нём видна только здесь и в хвосте лога.
@@ -164,8 +167,8 @@ function Read-CollectorEnv {
 }
 
 # Процессы коллектора — это python.exe из нашего .venv, и только он. Отбор по пути к
-# файлу, а не по командной строке: процессы счетов порождаются через multiprocessing,
-# и слова «collector» в их командной строке нет вовсе.
+# файлу, а не по командной строке: процесс у коллектора теперь один (X-66), но искать его
+# надёжнее по пути — командную строку Windows отдаёт не всегда.
 function Get-CollectorProcess {
     Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
         Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -eq $VenvPython) }
@@ -178,27 +181,11 @@ function Test-AsciiPath([string]$Path) {
     return $true
 }
 
-function Show-Terminals {
-    $root = (Read-CollectorEnv)['MT5_PORTABLE_ROOT']
-    if (-not $root) { return }
-    $terminals = @(Get-CimInstance Win32_Process -Filter "Name = 'terminal64.exe'" |
-        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root, 'OrdinalIgnoreCase') })
-    if ($terminals.Count -eq 0) { return }
-    Write-Host ''
-    Write-Warn "остались открытыми терминалы коллектора: $($terminals.Count) шт."
-    foreach ($terminal in $terminals) {
-        Write-Note "PID $($terminal.ProcessId) — $($terminal.ExecutablePath)"
-    }
-    Write-Note 'Коллектор не закрывает их сам (docs/mt5-assumptions.md, допущение 36).'
-    Write-Note 'Каждый занимает 300-400 МБ. Закрыть можно окнами терминалов или'
-    Write-Note 'в диспетчере задач; на данные это не влияет.'
-}
-
 # Просьба остановиться, а не выстрел. Сигнал чужому процессу на Windows не доставить, а
-# Stop-Process и «Снять задачу» — это TerminateProcess: менеджер не доходит до своего
-# _shutdown и не гасит процессы счетов сам, а они переживают смерть родителя
-# (X-57, допущение 39). Искать и гасить их приходится дальше этому скрипту, и упрямый
-# процесс он может не добить. На карточках счетов разницы между исходами нет никакой.
+# Stop-Process и «Снять задачу» — это TerminateProcess: коллектор не доходит до своего
+# _shutdown, то есть не отпускает канал к терминалу и не шлёт прощальный heartbeat.
+# Сирот после этого не остаётся — процесс у коллектора один (X-66 снял X-57), — но на
+# карточках счетов разницы между исходами по-прежнему нет никакой.
 function Request-GracefulStop {
     try {
         New-Item -ItemType File -Path $StopFlag -Force | Out-Null
@@ -239,17 +226,11 @@ function Stop-Collector {
     }
 
     $running = @(Get-CollectorProcess)
-    if ($running.Count -gt 0) {
-        # Менеджер гасится первым: живой менеджер поднимает процесс счёта заново в течение
-        # своего тика, и порядок «сначала счета» оставил бы их поднятыми.
-        $managers = @($running | Where-Object { $_.CommandLine -like '*collector.main*' })
-        $workers = @($running | Where-Object { $_.CommandLine -notlike '*collector.main*' })
-        foreach ($process in @($managers) + @($workers)) {
-            Write-Step "Останавливаю процесс $($process.ProcessId) ..."
-            Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
-        }
-        Start-Sleep -Seconds 2
+    foreach ($process in $running) {
+        Write-Step "Останавливаю процесс $($process.ProcessId) ..."
+        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
     }
+    if ($running.Count -gt 0) { Start-Sleep -Seconds 2 }
 
     Remove-StopFlag
     $left = @(Get-CollectorProcess)
@@ -258,8 +239,9 @@ function Stop-Collector {
     } elseif ($found -eq 0) {
         Write-Step 'Процессов коллектора и не было.'
     } elseif ($graceful) {
-        Write-Step 'Коллектор остановлен: менеджер успел попрощаться.'
-        Write-Note 'Процессов коллектора не осталось — он погасил их сам.'
+        Write-Step 'Коллектор остановлен: он успел попрощаться.'
+        Write-Note 'Процессов коллектора не осталось, а окно MetaTrader 5 он не закрывает —'
+        Write-Note 'терминал открывали вы, и он остаётся как есть.'
         Write-Note 'На карточках счетов сразу не изменится ничего, а минут через пять'
         Write-Note 'там появится «коллектор не на связи». Это правда, а не поломка:'
         Write-Note 'вы его и остановили. Данные не теряются — следующий запуск'
@@ -271,7 +253,6 @@ function Stop-Collector {
         Write-Note 'После остановки это ожидаемо. Данные не теряются: следующий запуск'
         Write-Note 'заберёт своё окно целиком.'
     }
-    Show-Terminals
 }
 
 function Show-Status {
@@ -288,10 +269,15 @@ function Show-Status {
     }
 
     $running = @(Get-CollectorProcess)
-    $managers = @($running | Where-Object { $_.CommandLine -like '*collector.main*' })
-    Write-Step "Процессов коллектора: $($running.Count) (менеджеров: $($managers.Count), счетов: $($running.Count - $managers.Count))."
-    if ($managers.Count -gt 1) {
-        Write-Warn 'менеджеров больше одного — коллектор запущен дважды. Остановите всё (stop-collector.bat) и запустите заново.'
+    Write-Step "Процессов коллектора: $($running.Count) (должен быть один)."
+    if ($running.Count -gt 1) {
+        Write-Warn 'процессов больше одного — коллектор запущен дважды, и оба борются за один канал к терминалу. Остановите всё (stop-collector.bat) и запустите заново.'
+    }
+    $terminals = @(Get-CimInstance Win32_Process -Filter "Name = 'terminal64.exe'")
+    if ($terminals.Count -eq 0) {
+        Write-Warn 'MetaTrader 5 не запущен. Коллектор синхронизирует тот счёт, который открыт в терминале: откройте терминал и войдите в счёт.'
+    } else {
+        Write-Step "Терминалов MetaTrader 5 открыто: $($terminals.Count)."
     }
 
     if (Test-Path -LiteralPath $RunLog) {
@@ -334,19 +320,19 @@ function Install-Task {
         exit 1
     }
 
-    # LOG_DIR и MT5_PORTABLE_ROOT в профиле пользователя — путь с кириллицей у первого
-    # же пользователя (X-43) и папка, которую чистят «мастера очистки диска».
+    # LOG_DIR и STATE_DIR в профиле пользователя — путь с кириллицей у первого же
+    # пользователя (X-43) и папка, которую чистят «мастера очистки диска».
     $values = Read-CollectorEnv
-    foreach ($key in @('MT5_PORTABLE_ROOT', 'LOG_DIR')) {
+    foreach ($key in @('STATE_DIR', 'LOG_DIR')) {
         $value = $values[$key]
         if (-not $value) { continue }
         if ($value.StartsWith($env:USERPROFILE, 'OrdinalIgnoreCase')) {
             Write-Warn "$key указывает внутрь профиля пользователя: $value"
-            Write-Note 'Надёжнее короткий путь вида C:\td-terminals.'
+            Write-Note 'Надёжнее оставить относительный путь: он считается от папки установки.'
         }
         if (-not (Test-AsciiPath $value)) {
             Write-Warn "$key содержит буквы вне латиницы: $value"
-            Write-Note 'Терминал MetaTrader 5 — нативная программа, такие пути читает не всегда.'
+            Write-Note 'Python и терминал MetaTrader 5 — нативные программы, такие пути читают не всегда.'
         }
     }
 

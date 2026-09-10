@@ -15,8 +15,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from collector import logging_setup
 
 TOKEN = "collector-token-0123456789"
@@ -53,18 +51,9 @@ def test_nothing_to_scrub_leaves_the_event_alone() -> None:
     assert logging_setup.scrub_event(original, []) == original
 
 
-def test_log_file_is_per_account() -> None:
-    """S1-09 поднимет процесс на счёт, а RotatingFileHandler между процессами не дружит."""
-    name = logging_setup.account_log_name("0192f1d4-2c6a-7c3f-9d1e-2b6a8f4c1d55")
-    assert name == "account-0192f1d4-2c6a-7c3f-9d1e-2b6a8f4c1d55.log"
-
-
-@pytest.mark.parametrize("account_id", ["../../etc/passwd", "a\\b", ""])
-def test_log_name_never_leaves_the_folder(account_id: str) -> None:
-    name = logging_setup.account_log_name(account_id)
-    assert "/" not in name
-    assert "\\" not in name
-    assert ".." not in name
+def test_there_is_one_log_file_and_the_spec_names_it() -> None:
+    """С `X-66` процесс один — файлы на счёт больше не с кем делить (SPEC.md 8.2 п.3)."""
+    assert logging_setup.LOG_NAME == "collector.log"
 
 
 def test_setup_writes_a_scrubbed_line_to_the_file(tmp_path: Path) -> None:

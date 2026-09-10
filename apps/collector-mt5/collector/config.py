@@ -4,6 +4,12 @@
 жёстче, чем нужно самому коллектору, ровно по одной причине: ошибку в `collector.env`
 человек допустит один раз и увидит её на своей машине, а не у нас. Пусть она называется
 словами при старте, а не превращается в `400` от API через минуту работы.
+
+⚠️ `extra="ignore"` здесь работает как совместимость с уже собранными `collector.env`.
+`X-66` убрал три поля — `MT5_TERMINAL_EXE`, `MT5_PORTABLE_ROOT` и `MAX_ACCOUNTS`: терминал
+коллектор больше не запускает и копий не делает, а счёт синхронизируется тот, который
+открыт, то есть ровно один. Файл первого пользователя эти строки содержит, и падать из-за
+них коллектор не имеет права — они просто перестают что-либо значить.
 """
 
 from __future__ import annotations
@@ -49,17 +55,18 @@ class CollectorSettings(BaseSettings):
     api_url: str = Field(description="Базовый адрес TradeDesk без /api/v1")
     collector_token: SecretStr = Field(description="COLLECTOR_TOKEN, тот же, что в .env api")
     collector_id: str = Field(description="Имя этой установки коллектора")
-    mt5_terminal_exe: Path = Field(description="Путь к terminal64.exe")
-    mt5_portable_root: Path = Field(description="Куда копируются портабельные экземпляры")
     sync_interval_seconds: int = Field(default=60, ge=5, le=3600)
     heartbeat_interval_seconds: int = Field(default=60, ge=5, le=3600)
     first_sync_days: int = Field(default=3650, ge=1, le=7300)
-    max_accounts: int = Field(default=3, ge=1, le=10)
     log_level: LogLevel = "INFO"
     # Сверх SPEC.md 8.1, со значением по умолчанию: под Task Scheduler (S1-10) рабочей
     # папкой процесса легко оказывается системный каталог, куда писать нельзя. Поле
     # необязательное — `collector.env` без него работает ровно как в спеке.
     log_dir: Path = Field(default=Path("logs"), description="Папка для файлов лога")
+    # Единственное, что коллектор помнит между запусками, — смещение часов брокера
+    # (`state.py`). До `X-66` файл лежал рядом с портабельной копией терминала, в
+    # `MT5_PORTABLE_ROOT`; копий больше нет, а место для кэша нужно.
+    state_dir: Path = Field(default=Path("state"), description="Папка для файла состояния")
 
     @field_validator("api_url")
     @classmethod

@@ -39,10 +39,6 @@ OFFSET_STEP_MINUTES: Final = 15
 # часы на час; скачок больше означает, что котировка протухла и по ней считать нельзя.
 MAX_OFFSET_JUMP_MINUTES: Final = 60
 
-# Ретрай подключения к терминалу: удвоение до потолка в 15 минут (SPEC.md 8.2).
-FIRST_RETRY_DELAY_SECONDS: Final = 5.0
-MAX_RETRY_DELAY_SECONDS: Final = 900.0
-
 WindowReason = Literal["first", "catch_up", "incremental"]
 SendReason = Literal["first", "new_deals", "open_positions_changed", "keepalive"]
 # Чем кончилась попытка определить смещение часов брокера на этом тике. Перечень
@@ -296,10 +292,3 @@ def decide_send(
     if now - last_sent_at >= keepalive:
         return SendDecision(send=True, reason="keepalive")
     return SendDecision(send=False, reason=None)
-
-
-def retry_delay_seconds(attempt: int) -> float:
-    """Задержка перед попыткой №`attempt` подключиться к терминалу: удвоение до 15 минут."""
-    if attempt < 1:
-        raise ValueError("попытки нумеруются с единицы")
-    return min(FIRST_RETRY_DELAY_SECONDS * 2 ** (attempt - 1), MAX_RETRY_DELAY_SECONDS)

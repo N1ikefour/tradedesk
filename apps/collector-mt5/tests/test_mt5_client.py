@@ -1,20 +1,13 @@
-"""То немногое в `mt5_client.py`, что проверяемо без Windows.
+"""Обёртка над `MetaTrader5`: то немногое в ней, что вообще можно проверить без Windows.
 
-Модуль целиком запустить негде: `MetaTrader5` под macOS не существует. Проверяется здесь
-то, что от библиотеки не зависит: подготовка портабельной папки (обычная работа с
-файловой системой) и три решения, вынесенные из методов терминала в чистые функции —
-выбор свежайшего тика, чтение `None` от `positions_get()` и рост истории.
-
-Не выполняется в этом наборе ни разу и остаётся списком «требует Windows»: `connect`,
-`history_deals`, `positions_get`, `server_time` и всё, что внутри них зовёт библиотеку.
-Цикл ожидания истории проверен на подставном модуле — то есть проверена его логика, а не
-поведение настоящего `history_deals_total`.
+Проверяются решения, вынесенные из непроверяемого слоя в чистые функции, и **форма вызова
+`initialize`** — та самая, из-за которой коллектор не забрал ни одной сделки на первом
+прогоне (`X-66`). Сам вызов библиотеки здесь не выполняется ни разу и выполниться не может.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -22,96 +15,93 @@ import pytest
 from collector import messages, mt5_client
 from collector.mt5_client import TerminalError
 
-ACCOUNT = "0192f1d4-2c6a-7c3f-9d1e-2b6a8f4c1d55"
+# --------------------------------------------------------------------------------------
+# Подключение: чем именно коллектор зовёт библиотеку
+# --------------------------------------------------------------------------------------
 
 
-def _installed_terminal(root: Path) -> Path:
-    """Похожая на правду установка MT5: бинарник, настройки, кэши, скрипты."""
-    home = root / "MetaTrader 5"
-    (home / "MQL5" / "Experts").mkdir(parents=True)
-    (home / "config").mkdir()
-    (home / "Bases" / "E-Global-Real").mkdir(parents=True)
-    (home / "Logs").mkdir()
-    exe = home / "terminal64.exe"
-    exe.write_text("binary", encoding="utf-8")
-    (home / "config" / "accounts.dat").write_text("saved credentials", encoding="utf-8")
-    (home / "Bases" / "E-Global-Real" / "ticks.dat").write_text("x" * 1000, encoding="utf-8")
-    (home / "MQL5" / "Experts" / "robot.ex5").write_text("robot", encoding="utf-8")
-    return exe
+class _InitModule:
+    """Ровно те вызовы, которые делает `connect`, и запись их аргументов."""
+
+    def __init__(self, *, ok: bool = True, error: tuple[int, str] = (1, "Success")) -> None:
+        self.ok = ok
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+        self.shutdowns = 0
+
+    def initialize(self, *args: Any, **kwargs: Any) -> bool:
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return self.ok
+
+    def last_error(self) -> tuple[int, str]:
+        return self.error
+
+    def shutdown(self) -> None:
+        self.shutdowns += 1
 
 
-def test_portable_copy_lands_where_the_spec_says(tmp_path: Path) -> None:
-    """SPEC.md 8.1: `MT5_PORTABLE_ROOT\\<account_id>`, по папке на счёт."""
-    exe = _installed_terminal(tmp_path)
-    root = tmp_path / "td-terminals"
-    target = mt5_client.prepare_portable_dir(exe, root, ACCOUNT)
-    assert target == root / ACCOUNT / "terminal64.exe"
-    assert target.exists()
+def _terminal(monkeypatch: Any, module: _InitModule) -> mt5_client.Mt5Terminal:
+    """Терминал с подменённой библиотекой: настоящей на macOS не существует."""
+    monkeypatch.setattr(mt5_client, "import_mt5", lambda: module)
+    return mt5_client.Mt5Terminal(sleep=lambda _seconds: None)
 
 
-def test_saved_credentials_of_the_source_terminal_are_not_copied(tmp_path: Path) -> None:
-    """`config` несёт учётные данные исходной установки — им не место в папке счёта."""
-    exe = _installed_terminal(tmp_path)
-    root = tmp_path / "td-terminals"
-    mt5_client.prepare_portable_dir(exe, root, ACCOUNT)
-    assert not (root / ACCOUNT / "config").exists()
+def test_connect_passes_neither_a_path_nor_credentials(monkeypatch: Any) -> None:
+    """Главный вывод `X-66`, и он проверяется формой вызова, а не комментарием.
+
+    `initialize(path=…, portable=True, login=…, password=…, server=…)` возвращал
+    `(-10005, 'IPC timeout')` **всегда** — десятки попыток, четыре прогона, оба счёта. Тот
+    же терминал в тот же момент отвечал `True` на `initialize()` без аргументов. Вернётся
+    сюда `path` или `password` — коллектор снова перестанет забирать сделки, и заметить это
+    можно будет только на Windows.
+    """
+    module = _InitModule()
+    _terminal(monkeypatch, module).connect()
+    assert len(module.calls) == 1
+    call = module.calls[0]
+    assert call["args"] == ()
+    assert call["kwargs"] == {"timeout": mt5_client.INITIALIZE_TIMEOUT_MS}
 
 
-def test_quote_caches_are_not_copied(tmp_path: Path) -> None:
-    """`Bases` у живого терминала весит гигабайты, а строится заново сам."""
-    exe = _installed_terminal(tmp_path)
-    root = tmp_path / "td-terminals"
-    mt5_client.prepare_portable_dir(exe, root, ACCOUNT)
-    assert not (root / ACCOUNT / "Bases").exists()
-    assert not (root / ACCOUNT / "Logs").exists()
+def test_a_refused_connection_carries_the_numeric_code_for_the_log(monkeypatch: Any) -> None:
+    """X-67: человеку — текст, в файл лога — код и описание от библиотеки."""
+    module = _InitModule(ok=False, error=(-10005, "IPC timeout"))
+    with pytest.raises(TerminalError) as raised:
+        _terminal(monkeypatch, module).connect()
+    assert raised.value.code == -10005
+    assert raised.value.description == "IPC timeout"
+    assert raised.value.message == messages.TERMINAL_NOT_OPEN
+    assert "-10005" not in raised.value.message
 
 
-def test_what_the_terminal_needs_is_copied(tmp_path: Path) -> None:
-    exe = _installed_terminal(tmp_path)
-    root = tmp_path / "td-terminals"
-    mt5_client.prepare_portable_dir(exe, root, ACCOUNT)
-    assert (root / ACCOUNT / "MQL5" / "Experts" / "robot.ex5").exists()
+def test_closing_releases_the_link_and_leaves_the_window_alone(monkeypatch: Any) -> None:
+    """`shutdown()` рвёт только наш канал: терминал открыл человек, и закрывать его нельзя."""
+    module = _InitModule()
+    terminal = _terminal(monkeypatch, module)
+    terminal.connect()
+    terminal.close()
+    assert module.shutdowns == 1
+    assert terminal._mt5 is None
 
 
-def test_an_existing_copy_is_left_alone(tmp_path: Path) -> None:
-    """Второй запуск не имеет права затирать настройки и кэш истории этого счёта."""
-    exe = _installed_terminal(tmp_path)
-    root = tmp_path / "td-terminals"
-    mt5_client.prepare_portable_dir(exe, root, ACCOUNT)
-    marker = root / ACCOUNT / "origin.txt"
-    marker.write_text("настройки счёта", encoding="utf-8")
-
-    mt5_client.prepare_portable_dir(exe, root, ACCOUNT)
-    assert marker.read_text(encoding="utf-8") == "настройки счёта"
+def test_using_a_closed_terminal_says_so_in_words() -> None:
+    terminal = mt5_client.Mt5Terminal()
+    with pytest.raises(TerminalError) as raised:
+        terminal.account_info()
+    assert raised.value.message == messages.TERMINAL_LOST
 
 
-def test_two_accounts_get_two_terminals(tmp_path: Path) -> None:
-    """Один терминал = один счёт (SPEC.md 8.2): библиотека держит одно соединение."""
-    exe = _installed_terminal(tmp_path)
-    root = tmp_path / "td-terminals"
-    first = mt5_client.prepare_portable_dir(exe, root, ACCOUNT)
-    second = mt5_client.prepare_portable_dir(exe, root, "0192f1d4-2c6a-7c3f-9d1e-2b6a8f4c1d99")
-    assert first != second
-    assert first.exists()
-    assert second.exists()
+def test_no_trading_call_exists_in_the_module() -> None:
+    """Права коллектора кончаются на чтении (`CLAUDE.md` §5), и это не только про пароль.
 
-
-def test_missing_terminal_says_which_setting_to_check(tmp_path: Path) -> None:
-    with pytest.raises(TerminalError) as error:
-        mt5_client.prepare_portable_dir(tmp_path / "nope.exe", tmp_path / "out", ACCOUNT)
-    assert "MT5_TERMINAL_EXE" in error.value.message
-    assert "nope.exe" in error.value.message
-
-
-@pytest.mark.parametrize("name", ["config", "Config", "BASES", "logs", "Tester"])
-def test_skip_list_ignores_case(name: str) -> None:
-    """Windows не различает регистр в именах папок — список не должен зависеть от него."""
-    assert mt5_client.skips_portable_entry(name)
-
-
-@pytest.mark.parametrize("name", ["MQL5", "terminal64.exe", "Profiles"])
-def test_skip_list_keeps_what_matters(name: str) -> None:
-    assert not mt5_client.skips_portable_entry(name)
+    Пароля у коллектора больше нет вовсе (`T-07`), но библиотека торгует не паролем, а
+    вызовом: единственная защита — что таких вызовов в файле нет.
+    """
+    source = mt5_client.__file__
+    with open(source, encoding="utf-8") as handle:
+        text = handle.read()
+    for forbidden in ("order_send", "order_check", "order_calc"):
+        assert forbidden not in text, forbidden
 
 
 # --------------------------------------------------------------------------------------
@@ -195,13 +185,7 @@ class _TerminalWithModule(mt5_client.Mt5Terminal):
     """Терминал без терминала: подменён только модуль библиотеки."""
 
     def __init__(self, module: _FakeModule) -> None:
-        super().__init__(
-            credentials=mt5_client.Credentials(login=1, server="S", password="x" * 12),
-            terminal_exe=Path("terminal64.exe"),
-            portable_root=Path("root"),
-            account_id=ACCOUNT,
-            sleep=lambda _seconds: None,
-        )
+        super().__init__(sleep=lambda _seconds: None)
         self._fake = module
 
     def _module(self) -> Any:

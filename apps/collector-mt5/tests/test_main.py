@@ -1,759 +1,546 @@
-"""Менеджер процессов на подделках — `SPEC.md` §8.2, пункт 1.
+"""Коллектор целиком на подделках — SPEC.md 8.2, пункт 1.
 
-Настоящих процессов здесь два вида, и разделены они намеренно.
+Здесь проверяется то, что появилось в `X-66`: подключение к **уже открытому** терминалу,
+опознание счёта, который в нём открыт, и heartbeat за все счета сразу. Терминала на машине
+разработки нет, поэтому проверяются решения, а не библиотека.
 
-Пул проверяется на подделках: настоящий процесс — это секунды на запуск, невозможность
-задать код выхода и невозможность вообще запустить `worker.py` на macOS. Проверяется
-поэтому реакция менеджера, а не `multiprocessing`.
-
-`spawn` проверяется настоящим процессом — там, где важен именно он: дочерний процесс не
-наследует от родителя **ничего**, и реестр секретов скраба логов (`CLAUDE.md` §5) в нём
-приходится поднимать заново. Это тот случай, где инвариант разваливается тихо, поэтому
-он измеряется, а не предполагается.
+Главное свойство, ради которого написана половина файла: **счёт, которого нет в терминале,
+не синхронизируется, и человек об этом читает словами.** Ошибка здесь не падает — она
+кладёт сделки в чужой журнал.
 """
 
 from __future__ import annotations
 
-import multiprocessing
-import multiprocessing.queues
-from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any
 
 import pytest
 
-from collector import logging_setup, messages, pool
-from collector import main as manager_module
-from collector.api_client import ApiError, Assignment, HeartbeatAccount
+from collector import identity, messages, state
+from collector import main as main_module
+from collector.api_client import ApiError
 from collector.config import CollectorSettings
-from collector.main import EXIT_FAILURE, Child, Manager
-from collector.worker import (
-    EXIT_ACCOUNT,
-    EXIT_CONFIG,
-    EXIT_PLATFORM,
-    STATE_ERROR,
-    STATE_RUNNING,
-    STATE_STOPPED,
+from collector.main import Collector, build_parser
+from collector.mt5_client import TerminalError
+from tests.conftest import (
+    ACCOUNT_ID,
+    LOGIN,
+    OTHER_ACCOUNT_ID,
+    SERVER,
+    FakeAccountInfo,
+    FakeApi,
+    FakeTerminal,
+    assignment_for,
+    deal,
 )
-from tests.conftest import COLLECTOR_ID, TOKEN
 
-A, B, C, D = "acc-a", "acc-b", "acc-c", "acc-d"
-
-# Смерть, о которой процесс счёта рассказать не успел: убит системой, OOM, `taskkill /F`.
-# Только о такой менеджеру и есть что сказать — код `EXIT_ACCOUNT` означает обратное.
-CRASH = -9
-
-CHILD_ACCOUNT = "0192f1d4-2c6a-7c3f-9d1e-2b6a8f4c1d55"
-CHILD_PASSWORD = "investor-password-42"
+OTHER_LOGIN = 7654321
 
 
-# --------------------------------------------------------------------------------------
-# Подделки
-# --------------------------------------------------------------------------------------
-
-
-@dataclass
-class FakeChild:
-    """Дочерний процесс, который делает ровно то, что ему сказали в тесте."""
-
-    account_id: str
-    alive: bool = True
-    exitcode: int | None = None
-    pid: int | None = 4242
-    terminated: int = 0
-    killed: int = 0
-    # Процесс, зависший в нативном вызове терминала: `terminate` его не разбудит.
-    ignores_terminate: bool = False
-
-    def is_alive(self) -> bool:
-        return self.alive
-
-    def join(self, timeout: float | None = None) -> None:
-        return None
-
-    def terminate(self) -> None:
-        self.terminated += 1
-        if not self.ignores_terminate:
-            self.alive = False
-            self.exitcode = -15
-
-    def kill(self) -> None:
-        self.killed += 1
-        self.alive = False
-        self.exitcode = -9
-
-    def die(self, code: int) -> None:
-        """Процесс умер сам: упал, съел память, убит системой."""
-        self.alive = False
-        self.exitcode = code
-
-
-@dataclass
-class FakeSpawn:
-    """Фабрика процессов. Помнит всех, кого когда-либо поднимали."""
-
-    children: list[FakeChild] = field(default_factory=list)
-    fail: Exception | None = None
-    stubborn: bool = False
-
-    def __call__(self, account_id: str) -> Child:
-        if self.fail is not None:
-            raise self.fail
-        child = FakeChild(account_id=account_id, ignores_terminate=self.stubborn)
-        self.children.append(child)
-        return child
-
-    def kill_all(self, code: int = EXIT_ACCOUNT) -> None:
-        for child in self.children:
-            child.die(code)
-
-    def of(self, account_id: str) -> list[FakeChild]:
-        return [child for child in self.children if child.account_id == account_id]
-
-
-@dataclass
-class FakeManagerApi:
-    """API без сети: список счетов и журнал того, что менеджер о них сказал."""
-
-    accounts: list[str] = field(default_factory=list)
-    assignments_error: ApiError | None = None
-    # Не `ApiError`: так проверяется падение самого менеджера, а не недоступность API.
-    assignments_crash: Exception | None = None
-    # Что случается в мире ПОСЛЕ `_reap` и ДО `_report` этого же тика.
-    on_assignments: Callable[[], None] | None = None
-    heartbeat_error: ApiError | None = None
-    heartbeats: list[list[HeartbeatAccount]] = field(default_factory=list)
-    asked: int = 0
-
-    def assignments(self, collector_id: str) -> list[Assignment]:
-        self.asked += 1
-        if self.on_assignments is not None:
-            self.on_assignments()
-        if self.assignments_crash is not None:
-            raise self.assignments_crash
-        if self.assignments_error is not None:
-            raise self.assignments_error
-        return [
-            Assignment(
-                account_id=account_id,
-                server="E-Global-Real",
-                login=1234567,
-                password="investor-secret",
-                sync_requested_at=None,
-                last_sync_at=None,
-                status="pending",
-            )
-            for account_id in self.accounts
-        ]
-
-    def heartbeat(self, collector_id: str, accounts: Iterable[HeartbeatAccount]) -> None:
-        if self.heartbeat_error is not None:
-            raise self.heartbeat_error
-        self.heartbeats.append(list(accounts))
-
-    def report(self, index: int = -1) -> dict[str, HeartbeatAccount]:
-        """Один отчёт по счетам. `-1` — прощальный (`stopped`), `-2` — последний рабочий."""
-        return {account.account_id: account for account in self.heartbeats[index]}
-
-
-class Clock:
-    """Монотонные часы, которыми управляет тест."""
+class _Recorder:
+    """Подставной логгер: проверяется не формат строки, а сам факт, что она есть."""
 
     def __init__(self) -> None:
-        self.value = 0.0
+        self.events: list[tuple[str, dict[str, Any]]] = []
 
-    def __call__(self) -> float:
-        return self.value
+    def _record(self, event: str, **fields: Any) -> None:
+        self.events.append((event, fields))
+
+    debug = info = warning = error = exception = _record
+
+    def find(self, event: str) -> dict[str, Any]:
+        return next(fields for name, fields in self.events if name == event)
+
+    def count(self, event: str) -> int:
+        return sum(1 for name, _ in self.events if name == event)
+
+    def has(self, event: str) -> bool:
+        return self.count(event) > 0
 
 
-def _manager(
+def _collector(
     settings: CollectorSettings,
-    api: FakeManagerApi,
-    spawn: FakeSpawn,
+    api: FakeApi,
+    terminal: FakeTerminal | None = None,
     *,
-    between_ticks: Callable[[], None] | None = None,
-    max_restarts: int = pool.MAX_RESTARTS,
     stop_flag: Path | None = None,
-) -> tuple[Manager, Clock]:
-    """Менеджер с подделками. `between_ticks` — что случилось в мире, пока он спал.
+    known_offset: int | None = None,
+) -> tuple[Collector, list[float]]:
+    """Коллектор с подделками и список того, сколько он спал.
 
-    Ожидание двигает часы: иначе паузы перед перезапуском не проходили бы никогда, и тест
-    проверял бы не политику перезапуска, а её отсутствие. Обратный вызов приходится на
-    каждый кусок сна, поэтому обязан быть идемпотентным.
+    `known_offset` — смещение часов брокера, уже подтверждённое прошлым запуском: так
+    выглядит счёт, который хоть раз синхронизировался, и только на нём виден весь путь до
+    батча. Без него первый тик уходит на сверку часов (`sync.resolve_offset`).
     """
-    clock = Clock()
+    if known_offset is not None:
+        for item in api.items:
+            state.write_state(
+                state.state_path(settings.state_dir, item.account_id),
+                state.WorkerState(server_utc_offset_minutes=known_offset),
+            )
+    slept: list[float] = []
 
     def sleep(seconds: float) -> None:
-        clock.value += seconds
-        if between_ticks is not None:
-            between_ticks()
+        slept.append(seconds)
 
-    manager = Manager(
+    def monotonic() -> float:
+        # Часы идут ровно на столько, сколько коллектор спал: так тесты видят настоящие
+        # интервалы, а не «прошло ноль секунд между тиками».
+        return sum(slept)
+
+    return Collector(
         settings=settings,
         api=api,
-        spawn=spawn,
+        terminal_factory=lambda: terminal,  # type: ignore[return-value,arg-type]
         sleep=sleep,
-        monotonic=clock,
-        max_restarts=max_restarts,
+        monotonic=monotonic,
         stop_flag=stop_flag,
-    )
-    return manager, clock
+    ), slept
+
+
+def _ready(**overrides: Any) -> FakeTerminal:
+    kwargs: dict[str, Any] = {"tick_time": None, "deals": [deal()]}
+    kwargs.update(overrides)
+    return FakeTerminal(**kwargs)
 
 
 # --------------------------------------------------------------------------------------
-# Пул: кого подняли, кого погасили
+# Один открытый счёт — обычный день
 # --------------------------------------------------------------------------------------
 
 
-def test_two_accounts_run_at_once(settings: CollectorSettings) -> None:
-    """DoD `S1-09`: два счёта одновременно — два процесса, по одному на счёт."""
-    api = FakeManagerApi(accounts=[A, B])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn)
-
-    manager.run(max_ticks=1)
-
-    assert [child.account_id for child in spawn.children] == [A, B]
-
-
-def test_pausing_an_account_stops_its_process_only(settings: CollectorSettings) -> None:
-    """DoD `S1-09`: пауза одного счёта останавливает его процесс, второй продолжает.
-
-    Пауза и архив приходят одинаково — счёт просто исчезает из assignments (`SPEC.md` §5.6).
-    """
-    api = FakeManagerApi(accounts=[A, B])
-    spawn = FakeSpawn()
-
-    def pause_b() -> None:
-        api.accounts = [A]
-
-    manager, _ = _manager(settings, api, spawn, between_ticks=pause_b)
-
-    manager.run(max_ticks=2)
-
-    paused = spawn.of(B)[0]
-    assert paused.terminated == 1
-    assert not paused.alive
-    assert spawn.of(A)[0].terminated == 1  # погашен только на выходе из цикла
-    assert len(spawn.of(A)) == 1
-
-
-def test_a_process_is_started_once_and_left_alone(settings: CollectorSettings) -> None:
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn)
-
-    manager.run(max_ticks=3)
-
-    assert len(spawn.children) == 1
-
-
-def test_api_silence_does_not_touch_the_pool(settings: CollectorSettings) -> None:
-    """Одна неудачная минута не имеет права снять все терминалы."""
-    api = FakeManagerApi(accounts=[A, B])
-    spawn = FakeSpawn()
-
-    def blind() -> None:
-        api.assignments_error = ApiError("TradeDesk не отвечает")
-
-    manager, _ = _manager(settings, api, spawn, between_ticks=blind)
-
-    manager.run(max_ticks=3)
-
-    assert len(spawn.children) == 2
-    assert all(child.terminated == 1 for child in spawn.children)  # только на выходе
-
-
-# --------------------------------------------------------------------------------------
-# Лимит
-# --------------------------------------------------------------------------------------
-
-
-def test_account_over_the_limit_is_visible_to_the_human(settings: CollectorSettings) -> None:
-    """⚠️ `SPEC.md` §12 (`S1-09`): счёт сверх `MAX_ACCOUNTS` уходит в `needs_attention`.
-
-    Первому пользователю нужно четыре счёта, а значение по умолчанию — три. Молча
-    выпавший из пула счёт не синхронизировался бы никогда, и причину не узнал бы никто.
-    """
-    api = FakeManagerApi(accounts=[A, B, C, D])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn)
-
-    manager.run(max_ticks=1)
-
-    assert len(spawn.children) == settings.max_accounts
-    extra = api.report(0)[D]
-    assert extra.state == STATE_ERROR
-    assert extra.message is not None
-    assert f"MAX_ACCOUNTS={settings.max_accounts}" in extra.message
-    assert "collector.env" in extra.message
-
-
-def test_the_same_account_stays_the_one_over_the_limit(settings: CollectorSettings) -> None:
-    """Причина не имеет права каждую минуту переезжать на другой счёт."""
-    api = FakeManagerApi(accounts=[A, B, C, D])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn)
-
-    manager.run(max_ticks=3)
-
-    for reported in api.heartbeats[:-1]:  # последний отчёт — прощальный
-        over = [item.account_id for item in reported if item.state == STATE_ERROR]
-        assert over == [D]
-
-
-def test_a_freed_slot_goes_to_the_waiting_account(settings: CollectorSettings) -> None:
-    api = FakeManagerApi(accounts=[A, B, C, D])
-    spawn = FakeSpawn()
-
-    def pause_b() -> None:
-        api.accounts = [A, C, D]
-
-    manager, _ = _manager(settings, api, spawn, between_ticks=pause_b)
-
-    manager.run(max_ticks=2)
-
-    assert spawn.of(D)
-    assert api.report(-2)[D].state == STATE_RUNNING
-
-
-# --------------------------------------------------------------------------------------
-# Смерть дочернего процесса
-# --------------------------------------------------------------------------------------
-
-
-def test_dead_child_is_restarted_and_the_human_hears_about_it(
-    settings: CollectorSettings,
-) -> None:
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn, between_ticks=lambda: spawn.children[0].die(-9))
-
-    manager.run(max_ticks=3)
-
-    assert len(spawn.of(A)) == 2
-    told = [
-        item.message
-        for reported in api.heartbeats
-        for item in reported
-        if item.state == STATE_ERROR
-    ]
-    assert told and told[0] is not None
-    assert "запускает его заново" in told[0]
-    assert "-9" in told[0]
-
-
-def test_a_restart_is_not_immediate(settings: CollectorSettings) -> None:
-    """Упавший процесс не поднимается в тот же тик: пауза растёт с каждым падением."""
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn, between_ticks=lambda: spawn.children[0].die(-9))
-
-    manager.run(max_ticks=2)
-
-    assert len(spawn.children) == 1
-    assert api.report(-2)[A].state == STATE_ERROR
-
-
-def test_restarts_run_out_and_the_message_says_so(settings: CollectorSettings) -> None:
-    """Перезапуски не бесконечны: кончились — человек получает текст, а не тишину.
-
-    Смерть здесь молчаливая (убит системой): о процессе, ушедшем с кодом 4, менеджеру
-    говорить нечего — см. `test_the_reason_named_by_the_worker_survives_the_manager`.
-    """
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, _ = _manager(
-        settings, api, spawn, between_ticks=lambda: spawn.kill_all(CRASH), max_restarts=2
-    )
-
-    manager.run(max_ticks=7)
-
-    assert len(spawn.children) == 1 + 2
-    final = api.report(-2)[A]
-    assert final.state == STATE_ERROR
-    assert final.message is not None
-    assert "больше не поднимает" in final.message
-    assert "попыток: 3" in final.message
-
-
-def test_configuration_error_in_the_child_is_never_retried(
-    settings: CollectorSettings,
-) -> None:
-    """Код 2 значит «тот же `collector.env` не заработает» — перезапуск только скроет причину."""
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn, between_ticks=lambda: spawn.kill_all(EXIT_CONFIG))
-
-    manager.run(max_ticks=4)
-
-    assert len(spawn.children) == 1
-    final = api.report(-2)[A]
-    assert final.message is not None
-    assert "Перезапуск не поможет" in final.message
-
-
-def test_platform_refusal_in_the_child_is_never_retried(settings: CollectorSettings) -> None:
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn, between_ticks=lambda: spawn.kill_all(EXIT_PLATFORM))
-
-    manager.run(max_ticks=4)
-
-    assert len(spawn.children) == 1
-
-
-def test_a_process_that_cannot_be_started_is_not_a_crash(settings: CollectorSettings) -> None:
-    """Не хватило памяти на ещё один терминал — менеджер остаётся жив и говорит об этом.
-
-    Текст здесь свой, а не «пришлите файл лога счёта»: процесса не было, значит и файла
-    `account-<id>.log` не существует — человек искал бы то, чего нет.
-    """
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn(fail=OSError("cannot allocate memory"))
-    manager, _ = _manager(settings, api, spawn)
-
-    assert manager.run(max_ticks=1) == 0
-    reported = api.report(0)[A]
-    assert reported.state == STATE_ERROR
-    assert reported.message is not None
-    assert "не смог запустить процесс" in reported.message
-    assert "памяти" in reported.message
-    assert "LOG_DIR" not in reported.message
-
-
-# --------------------------------------------------------------------------------------
-# Чья причина попадёт на карточку счёта
-# --------------------------------------------------------------------------------------
-
-
-def test_the_reason_named_by_the_worker_survives_the_manager(
-    settings: CollectorSettings,
-) -> None:
-    """⚠️ Менеджер не имеет права перекрыть причину, которую процесс счёта уже назвал.
-
-    Код 4 — это «я сказал человеку, почему ухожу»: `worker.py` перед каждым таким выходом
-    шлёт heartbeat `state=error` с точным текстом («Счёт не в USD: валюта счёта EUR…»).
-    Общее «пришлите разработчику файл лога» на его месте — обмен диагноза на просьбу
-    собирать логи, ровно тот отказ, против которого написан `messages.py`.
-
-    Менеджер при этом не молчит совсем: `state=running` двигает `last_heartbeat_at`, и
-    через пять минут `check_collectors` не заменит причину на «коллектор не на связи».
-    """
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn, between_ticks=lambda: spawn.kill_all(EXIT_ACCOUNT))
-
-    manager.run(max_ticks=2)
-
-    said = [item for reported in api.heartbeats[:-1] for item in reported]
-    assert said
-    assert all(item.state == STATE_RUNNING for item in said)
-    assert all(item.message is None for item in said)
-
-
-def test_the_reason_survives_the_restart_budget_running_out(
-    settings: CollectorSettings,
-) -> None:
-    """Попытки кончились, а причина осталась верной: счёт как был в евро, так и остался.
-
-    Здесь менеджеру тем более нечего добавить: он уже ничего не делает, а на карточке
-    стоит текст, который объясняет и почему процесс уходит, и что чинить.
-    """
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, _ = _manager(
-        settings,
-        api,
-        spawn,
-        between_ticks=lambda: spawn.kill_all(EXIT_ACCOUNT),
-        max_restarts=2,
-    )
-
-    manager.run(max_ticks=6)
-
-    assert len(spawn.children) == 1 + 2  # перезапуски всё-таки кончились
-    final = api.report(-2)[A]
-    assert final == HeartbeatAccount(account_id=A, state=STATE_RUNNING)
-
-
-def test_a_silent_death_still_reaches_the_human(settings: CollectorSettings) -> None:
-    """Обратная сторона: процесс, убитый системой, ничего сказать не успел.
-
-    Тут сообщение менеджера — единственное, что есть, и молчать нельзя.
-    """
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn, between_ticks=lambda: spawn.kill_all(CRASH))
-
-    manager.run(max_ticks=2)
-
-    told = api.report(-2)[A]
-    assert told.state == STATE_ERROR
-    assert told.message is not None
-    assert "запускает его заново" in told.message
-
-
-def test_a_death_in_the_window_between_reap_and_report_is_not_news_yet(
-    settings: CollectorSettings,
-) -> None:
-    """Процесс умер после `_reap` — менеджер об этом ещё не знает и говорит от последнего `_reap`.
-
-    Иначе отчёт собирался бы из двух источников сразу: живость свежая, а причина — от
-    прошлой смерти, и человек получал бы «процесс завершился (код -9)» про процесс, который
-    менеджер только что поднял. Смерть разбирается следующим тиком, целиком.
-
-    Ребёнок здесь умирает внутри запроса assignments, то есть ровно в этом окне. Пятого
-    тика хватает, чтобы к моменту второй такой смерти у счёта уже была история падений:
-    без неё подмена незаметна.
-    """
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn)
-    api.on_assignments = lambda: spawn.kill_all(CRASH)
-
-    manager.run(max_ticks=5)
-
-    assert len(spawn.children) == 2  # первый умер, второй поднят после паузы
-    assert api.report(4)[A] == HeartbeatAccount(account_id=A, state=STATE_RUNNING)
-    assert all(
-        "неизвестен" not in (item.message or "") for reported in api.heartbeats for item in reported
-    )
-
-
-def test_a_frozen_pool_does_not_promise_a_restart(settings: CollectorSettings) -> None:
-    """Список счетов не пришёл — перезапусков не будет, и обещать их нельзя.
-
-    Перезапуск живёт в `_apply`, а `_apply` пропускается, пока API молчит (решение, а не
-    случайность: поднимать процесс без связи значит сжечь все попытки за пять минут).
-    Пока это так, человек читает «жду связи», а не «запускаю заново».
-    """
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-
-    def die_and_go_silent() -> None:
-        spawn.kill_all(CRASH)
-        api.assignments_error = ApiError("TradeDesk не отвечает")
-
-    manager, _ = _manager(settings, api, spawn, between_ticks=die_and_go_silent)
-
-    manager.run(max_ticks=3)
-
-    assert len(spawn.children) == 1  # перезапуска действительно не было
-    told = api.report(-2)[A]
-    assert told.state == STATE_ERROR
-    assert told.message is not None
-    assert "не перезапускает" in told.message
-    assert "запускает его заново" not in told.message
-
-
-def test_every_member_status_ends_in_a_decision(settings: CollectorSettings) -> None:
-    """Новое состояние в `pool.MemberStatus` обязано получить текст или явное молчание.
-
-    Без этой сверки забытое значение уронило бы отчёт `KeyError` — то есть менеджер
-    перестал бы говорить обо **всех** счетах разом, а не только о новом состоянии.
-    """
-    assert set(get_args(pool.MemberStatus)) == set(manager_module.HEALTH_REPORTS)
-    silent = {name for name, text in manager_module.HEALTH_REPORTS.items() if text is None}
-    assert silent == {"running", "explained"}
-
-
-# --------------------------------------------------------------------------------------
-# Что менеджер говорит серверу
-# --------------------------------------------------------------------------------------
-
-
-def test_a_live_process_is_reported_without_a_message(settings: CollectorSettings) -> None:
-    """`state=running` от менеджера не имеет права переписать причину, которую поставил счёт.
-
-    Сообщение уезжает в `trading_accounts.status_message` и видно на экране; отсутствие
-    сообщения его не трогает (`accounts.service.apply_heartbeat`).
-    """
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn)
-
-    manager.run(max_ticks=1)
-
-    assert api.report(0)[A] == HeartbeatAccount(account_id=A, state=STATE_RUNNING)
-
-
-def test_heartbeat_failure_does_not_stop_the_pool(settings: CollectorSettings) -> None:
-    api = FakeManagerApi(accounts=[A], heartbeat_error=ApiError("TradeDesk не отвечает"))
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn)
-
-    assert manager.run(max_ticks=2) == 0
-    assert len(spawn.children) == 1
-
-
-def test_shutdown_stops_children_and_says_the_collector_stopped(
-    settings: CollectorSettings,
-) -> None:
-    api = FakeManagerApi(accounts=[A, B])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn)
-
-    manager.run(max_ticks=1)
-
-    assert all(child.terminated == 1 for child in spawn.children)
-    farewell = api.heartbeats[-1]
-    assert {item.state for item in farewell} == {STATE_STOPPED}
-    assert {item.account_id for item in farewell} == {A, B}
-
-
-def test_the_manager_crash_reaches_the_account_card(settings: CollectorSettings) -> None:
-    """Единственный случай, когда о счёте рассказать буквально некому, — смерть менеджера.
-
-    Его собственный текст уходит в `print` (консоли под Task Scheduler нет) и в файл лога,
-    то есть на экран не попадает ничего: на карточке останется прежнее состояние, а через
-    пять минут — «коллектор не на связи», симптом вместо причины. Прощальный heartbeat
-    `state=error` — единственный канал, в котором причина доедет до карточки.
-    """
-    api = FakeManagerApi(accounts=[A, B])
-    spawn = FakeSpawn()
-
-    def break_the_manager() -> None:
-        api.assignments_crash = RuntimeError("boom")
-
-    manager, _ = _manager(settings, api, spawn, between_ticks=break_the_manager)
-
-    with pytest.raises(RuntimeError):
-        manager.run(max_ticks=3)
-
-    farewell = api.report(-1)
-    assert {item.state for item in farewell.values()} == {STATE_ERROR}
-    assert set(farewell) == {A, B}
-    said = farewell[A].message
+def test_the_open_account_is_the_one_that_syncs(settings: CollectorSettings) -> None:
+    """Смещения нет (котировки нет), но путь до счёта пройден и heartbeat ушёл."""
+    api = FakeApi(items=[assignment_for()])
+    collector, _ = _collector(settings, api, _ready())
+    assert collector.run(max_ticks=1) == main_module.EXIT_OK
+
+    said = api.said(ACCOUNT_ID)
     assert said is not None
-    assert "аварийно остановился" in said
-    assert "RuntimeError" in said
-    assert all(child.terminated == 1 for child in spawn.children)
+    assert said.state == "stopped"  # прощальный heartbeat `_shutdown`
+    running = api.beats[0][0]
+    assert running.account_id == ACCOUNT_ID
 
 
-def test_a_normal_stop_is_not_reported_as_a_failure(settings: CollectorSettings) -> None:
-    """Остановку попросил человек: `stopped` статуса не меняет (`accounts.service`)."""
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn)
-
-    manager.run(max_ticks=1)
-
-    assert api.report(-1)[A].state == STATE_STOPPED
-
-
-def test_a_stubborn_child_is_killed(settings: CollectorSettings) -> None:
-    """Терминал завис в нативном вызове — `terminate` его не разбудит."""
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn(stubborn=True)
-    manager, _ = _manager(settings, api, spawn)
-
-    manager.run(max_ticks=1)
-
-    assert spawn.children[0].terminated == 1
-    assert spawn.children[0].killed == 1
-    assert not spawn.children[0].alive
-
-
-def test_stop_breaks_the_loop(settings: CollectorSettings) -> None:
-    """Сигнал доходит до цикла, не дожидаясь конца минутной паузы."""
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    clock = Clock()
-
-    def stopping_sleep(seconds: float) -> None:
-        clock.value += seconds
-        manager.stop()
-
-    manager = Manager(
-        settings=settings, api=api, spawn=spawn, sleep=stopping_sleep, monotonic=clock
-    )
-
-    manager.run(max_ticks=0)
-
-    assert api.asked == 1
-    assert clock.value == manager_module.NAP_SLICE_SECONDS
-
-
-def test_the_stop_flag_takes_the_manager_through_a_normal_shutdown(
-    settings: CollectorSettings, tmp_path: Path
+def test_a_second_account_waits_without_being_painted_as_broken(
+    settings: CollectorSettings,
 ) -> None:
-    """`stop-collector.bat` просит менеджер выйти файлом, а не убивает его.
+    """Ждущий счёт получает `running` без сообщения — это штатное состояние новой схемы.
 
-    Разница не на карточках счетов — там оба исхода одинаковы, — а в процессах: свой
-    выход доходит до `_shutdown`, где менеджер гасит процессы счетов сам и шлёт за них
-    `state=stopped`. `TerminateProcess` не доходит никуда, и дети переживают родителя
-    (`X-57`, допущение 39).
+    `state=error` — единственный способ написать текст на карточку, и он же красит её в
+    «требует внимания». Три карточки из четырёх, вечно требующие внимания, сделали бы этот
+    статус нечитаемым; чем счёт занят на самом деле, видно по `last_sync_at`.
     """
-    flag = tmp_path / manager_module.STOP_FLAG_NAME
-    api = FakeManagerApi(accounts=[A, B])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn, between_ticks=lambda: flag.touch(), stop_flag=flag)
+    api = FakeApi(
+        items=[
+            assignment_for(),
+            assignment_for(OTHER_ACCOUNT_ID, login=OTHER_LOGIN, server=SERVER),
+        ]
+    )
+    _collector(settings, api, _ready(tick_time=None))[0].run(max_ticks=1)
 
-    # Потолок тиков — страховка от зависшего теста, а не то, что проверяется: остановить
-    # цикл на первом же обязан файл, и это видно по числу заданных вопросов.
-    assert manager.run(max_ticks=5) == 0
-
-    assert api.asked == 1
-    assert all(child.terminated == 1 for child in spawn.children)
-    farewell = api.report(-1)
-    assert {item.state for item in farewell.values()} == {STATE_STOPPED}
-    assert set(farewell) == {A, B}
+    waiting = api.beats[0][1]
+    assert waiting.account_id == OTHER_ACCOUNT_ID
+    assert waiting.state == "running"
+    assert waiting.message is None
 
 
-def test_the_stop_flag_is_taken_away_once_it_is_heard(
+def test_the_terminal_account_is_logged_once_not_every_tick(
+    settings: CollectorSettings, monkeypatch: Any
+) -> None:
+    recorder = _Recorder()
+    monkeypatch.setattr(main_module, "log", recorder)
+    api = FakeApi(items=[assignment_for()])
+    _collector(settings, api, _ready())[0].run(max_ticks=3)
+
+    assert recorder.count("collector.terminal_account") == 1
+    assert recorder.find("collector.terminal_account")["login"] == LOGIN
+
+
+# --------------------------------------------------------------------------------------
+# Сторож счёта — `X-66`, самое важное в задаче
+# --------------------------------------------------------------------------------------
+
+
+def test_an_unknown_account_in_the_terminal_stops_everything_with_words(
+    settings: CollectorSettings,
+) -> None:
+    """Терминал открыт, коллектор жив, а сделок не будет: об этом обязан быть текст.
+
+    Без него человек видит два работающих окна и ждёт синхронизации, которой нет.
+    """
+    api = FakeApi(items=[assignment_for()])
+    terminal = _ready(info=FakeAccountInfo(login=999111, server="Someone-Else"))
+    _collector(settings, api, terminal)[0].run(max_ticks=1)
+
+    said = api.beats[0][0]
+    assert said.state == "error"
+    assert "999111" in str(said.message)
+    assert "Someone-Else" in str(said.message)
+    assert api.batches == []
+
+
+def test_a_login_match_on_another_server_refuses_and_names_both(
+    settings: CollectorSettings, monkeypatch: Any
+) -> None:
+    """Номера демо-счетов у брокеров пересекаются: сервер обязателен, но причина адресная."""
+    recorder = _Recorder()
+    monkeypatch.setattr(main_module, "log", recorder)
+    api = FakeApi(
+        items=[
+            assignment_for(),
+            assignment_for(OTHER_ACCOUNT_ID, login=OTHER_LOGIN, server=SERVER),
+        ]
+    )
+    terminal = _ready(info=FakeAccountInfo(login=LOGIN, server="Other-Broker-Demo"))
+    _collector(settings, api, terminal)[0].run(max_ticks=1)
+
+    guilty, innocent = api.beats[0]
+    assert guilty.account_id == ACCOUNT_ID
+    assert guilty.state == "error"
+    assert "Other-Broker-Demo" in str(guilty.message)
+    assert SERVER in str(guilty.message)
+    assert innocent.state == "running"
+    assert innocent.message is None
+    assert api.batches == []
+    assert recorder.find("collector.server_mismatch")["expected_server"] == SERVER
+
+
+def test_the_server_name_is_compared_without_case(settings: CollectorSettings) -> None:
+    """Имя сервера человек списывает глазами, и регистр не должен стоить ему синка."""
+    api = FakeApi(items=[assignment_for(server="e-global-real")])
+    terminal = _ready(info=FakeAccountInfo(server="E-Global-Real"), tick_time=1_788_357_791)
+    _collector(settings, api, terminal, known_offset=120)[0].run(max_ticks=1)
+
+    said = api.beats[0][0]
+    assert said.state == "running"
+    assert said.terminal_login == LOGIN
+    assert len(api.batches) == 1
+
+
+# --------------------------------------------------------------------------------------
+# Терминал не открыт
+# --------------------------------------------------------------------------------------
+
+
+def test_a_closed_terminal_tells_every_account_to_open_it(
+    settings: CollectorSettings, monkeypatch: Any
+) -> None:
+    recorder = _Recorder()
+    monkeypatch.setattr(main_module, "log", recorder)
+    api = FakeApi(items=[assignment_for(), assignment_for(OTHER_ACCOUNT_ID, login=OTHER_LOGIN)])
+    terminal = _ready(
+        connect_errors=[
+            TerminalError(messages.TERMINAL_NOT_OPEN, code=-10005, description="IPC timeout")
+        ]
+    )
+    _collector(settings, api, terminal)[0].run(max_ticks=1)
+
+    for said in api.beats[0]:
+        assert said.state == "error"
+        assert said.message == messages.TERMINAL_NOT_OPEN
+    fields = recorder.find("collector.connect_failed")
+    assert fields["mt5_code"] == -10005
+    assert fields["mt5_description"] == "IPC timeout"
+
+
+def test_the_retry_is_the_next_tick_and_nothing_slower(settings: CollectorSettings) -> None:
+    """Отказ означает «человек ещё не открыл терминал», и ждать четверть часа после того,
+    как он его открыл, — худший из возможных ответов (до `X-66` было именно так)."""
+    api = FakeApi(items=[assignment_for()])
+    terminal = _ready(
+        connect_errors=[TerminalError(messages.TERMINAL_NOT_OPEN, code=-10005)],
+    )
+    collector, slept = _collector(settings, api, terminal)
+    collector.run(max_ticks=2)
+
+    assert terminal.connected == 2
+    # Пауза между тиками — обычный интервал heartbeat, без всякого удвоения.
+    assert sum(slept) == pytest.approx(float(settings.heartbeat_interval_seconds))
+
+
+def test_a_terminal_lost_mid_work_is_reconnected_next_tick(
+    settings: CollectorSettings, monkeypatch: Any
+) -> None:
+    recorder = _Recorder()
+    monkeypatch.setattr(main_module, "log", recorder)
+    api = FakeApi(items=[assignment_for()])
+    terminal = _ready(
+        info_errors=[TerminalError(messages.TERMINAL_LOST, code=-10004, description="IPC")]
+    )
+    collector, _ = _collector(settings, api, terminal)
+    collector.run(max_ticks=2)
+
+    assert api.beats[0][0].message == messages.TERMINAL_LOST
+    assert terminal.closed >= 1
+    assert terminal.connected == 2
+    assert recorder.find("collector.terminal_lost")["mt5_code"] == -10004
+
+
+# --------------------------------------------------------------------------------------
+# Задания
+# --------------------------------------------------------------------------------------
+
+
+def test_no_accounts_at_all_says_so_in_the_log_only(
+    settings: CollectorSettings, monkeypatch: Any
+) -> None:
+    """Отправить heartbeat не за кого, и единственный канал — файл лога."""
+    recorder = _Recorder()
+    monkeypatch.setattr(main_module, "log", recorder)
+    api = FakeApi(items=[])
+    _collector(settings, api, _ready())[0].run(max_ticks=1)
+
+    assert api.heartbeats == []
+    assert recorder.find("collector.no_assignments")["reason"] == messages.NO_ASSIGNMENTS
+
+
+def test_api_silence_keeps_the_accounts_it_already_knows(
+    settings: CollectorSettings, monkeypatch: Any
+) -> None:
+    """Одна неудачная минута не имеет права снять счета с наблюдения."""
+    recorder = _Recorder()
+    monkeypatch.setattr(main_module, "log", recorder)
+    api = FakeApi(items=[assignment_for()])
+    collector, _ = _collector(settings, api, _ready())
+    collector.run(max_ticks=1)
+
+    api.assignments_error = ApiError("нет связи", code="", status=0)
+    collector._watched = (assignment_for(),)
+    collector._tick()
+
+    assert recorder.find("collector.assignments_unavailable")["reason"] == "нет связи"
+    assert collector._watched
+
+
+def test_a_paused_account_is_forgotten(settings: CollectorSettings, monkeypatch: Any) -> None:
+    """Возвращённый из паузы счёт обязан взять `last_sync_at` с сервера, а не из головы."""
+    recorder = _Recorder()
+    monkeypatch.setattr(main_module, "log", recorder)
+    api = FakeApi(items=[assignment_for(), assignment_for(OTHER_ACCOUNT_ID, login=OTHER_LOGIN)])
+    collector, _ = _collector(settings, api, _ready())
+    collector._tick()
+    assert set(collector._workers) == {ACCOUNT_ID}
+
+    api.items = [assignment_for(OTHER_ACCOUNT_ID, login=OTHER_LOGIN)]
+    collector._tick()
+    assert collector._workers == {}
+    assert recorder.find("collector.account_released")["account_id"] == ACCOUNT_ID
+
+
+# --------------------------------------------------------------------------------------
+# Heartbeat и остановка
+# --------------------------------------------------------------------------------------
+
+
+def test_heartbeat_failure_does_not_stop_the_loop(
+    settings: CollectorSettings, monkeypatch: Any
+) -> None:
+    recorder = _Recorder()
+    monkeypatch.setattr(main_module, "log", recorder)
+    api = FakeApi(
+        items=[assignment_for()],
+        heartbeat_error=ApiError("нет связи", code="", status=503),
+    )
+    assert _collector(settings, api, _ready())[0].run(max_ticks=2) == main_module.EXIT_OK
+    assert recorder.find("collector.heartbeat_failed")["status"] == 503
+
+
+def test_a_normal_stop_releases_the_terminal_and_says_stopped(
+    settings: CollectorSettings,
+) -> None:
+    """`state=stopped` статуса счёта не меняет: коллектор остановил человек."""
+    api = FakeApi(items=[assignment_for()])
+    terminal = _ready()
+    _collector(settings, api, terminal)[0].run(max_ticks=1)
+
+    assert terminal.closed >= 1
+    last = api.beats[-1][0]
+    assert last.state == "stopped"
+    assert last.message == messages.STOPPED
+
+
+def test_a_crash_reaches_the_account_card(settings: CollectorSettings) -> None:
+    """Единственный случай, когда о счёте рассказать буквально некому, кроме heartbeat."""
+    api = FakeApi(items=[assignment_for()])
+    collector, _ = _collector(settings, api, _ready())
+
+    def explode() -> None:
+        raise RuntimeError("boom")
+
+    collector._reports = explode  # type: ignore[assignment,method-assign]
+    with pytest.raises(RuntimeError):
+        collector.run(max_ticks=1)
+
+    last = api.beats[-1][0]
+    assert last.state == "error"
+    assert "RuntimeError" in str(last.message)
+
+
+def test_the_stop_flag_takes_the_collector_through_a_normal_shutdown(
     settings: CollectorSettings, tmp_path: Path
 ) -> None:
-    """Оставленный файл остановил бы и следующий запуск — через секунду и молча."""
-    flag = tmp_path / manager_module.STOP_FLAG_NAME
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn, between_ticks=lambda: flag.touch(), stop_flag=flag)
+    """Сигнал чужому процессу на Windows не доставить — просьба приходит файлом."""
+    flag = tmp_path / main_module.STOP_FLAG_NAME
+    api = FakeApi(items=[assignment_for()])
+    collector, _ = _collector(settings, api, _ready(), stop_flag=flag)
 
-    manager.run(max_ticks=5)
+    def sleep(_seconds: float) -> None:
+        flag.write_text("stop", encoding="utf-8")
 
+    collector.sleep = sleep
+    assert collector.run(max_ticks=0) == main_module.EXIT_OK
     assert not flag.exists()
+    assert api.beats[-1][0].state == "stopped"
 
 
 def test_a_flag_left_from_the_last_time_does_not_stop_the_new_run(
     settings: CollectorSettings, tmp_path: Path
 ) -> None:
-    """Файл мог пережить прошлую остановку — например, менеджер сняли жёстко после него."""
-    flag = tmp_path / manager_module.STOP_FLAG_NAME
-    flag.touch()
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn, stop_flag=flag)
-
-    manager.run(max_ticks=2)
-
-    assert api.asked == 2
+    flag = tmp_path / main_module.STOP_FLAG_NAME
+    flag.write_text("stop", encoding="utf-8")
+    api = FakeApi(items=[assignment_for()])
+    collector, _ = _collector(settings, api, _ready(), stop_flag=flag)
+    assert collector.run(max_ticks=1) == main_module.EXIT_OK
+    # Тик состоялся: heartbeat тика плюс прощальный. Прочитанная чужая просьба дала бы
+    # выход до первого тика, а значит и ни одного heartbeat.
+    assert len(api.beats) == 2
 
 
-def test_without_a_flag_path_the_manager_does_not_look_for_one(
+def test_without_a_flag_path_the_collector_does_not_look_for_one(
     settings: CollectorSettings,
 ) -> None:
-    """Менеджер, запущенный не нашими скриптами, не обязан ничего знать про файл."""
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, _ = _manager(settings, api, spawn)
-
-    manager.run(max_ticks=2)
-
-    assert api.asked == 2
+    api = FakeApi(items=[assignment_for()])
+    collector, _ = _collector(settings, api, _ready(), stop_flag=None)
+    assert not collector._stop_requested()
+    assert collector.run(max_ticks=1) == main_module.EXIT_OK
 
 
-def test_the_pause_between_ticks_is_the_heartbeat_interval(
+def test_the_pause_between_ticks_is_the_heartbeat_interval(settings: CollectorSettings) -> None:
+    api = FakeApi(items=[assignment_for()])
+    collector, slept = _collector(settings, api, _ready())
+    collector.run(max_ticks=2)
+    assert sum(slept) == pytest.approx(float(settings.heartbeat_interval_seconds))
+
+
+def test_both_intervals_of_the_env_file_still_mean_something(
     settings: CollectorSettings,
 ) -> None:
-    api = FakeManagerApi(accounts=[A])
-    spawn = FakeSpawn()
-    manager, clock = _manager(settings, api, spawn)
+    """Цикл один, а интервала в `collector.env` два — и оба обязаны на что-то влиять.
 
-    manager.run(max_ticks=2)
+    Взять один и забыть второй значило бы оставить в файле, который человек правит руками,
+    поле-обманку. Поэтому тик идёт по меньшему из двух, а терминал спрашивается не чаще,
+    чем велит `SYNC_INTERVAL_SECONDS`: heartbeat при этом уходит каждый тик, иначе
+    `check_collectors` через пять минут молчания увёл бы счёт в «не на связи» (`SPEC.md` §10).
+    """
+    rare = settings.model_copy(
+        update={"sync_interval_seconds": 300, "heartbeat_interval_seconds": 60}
+    )
+    api = FakeApi(
+        items=[
+            assignment_for(),
+            assignment_for(OTHER_ACCOUNT_ID, login=OTHER_LOGIN, server=SERVER),
+        ]
+    )
+    terminal = _ready(tick_time=1_788_357_791)
+    collector, slept = _collector(rare, api, terminal, known_offset=120)
+    collector.run(max_ticks=5)
 
-    assert clock.value == float(settings.heartbeat_interval_seconds)
+    assert slept == [1.0] * 240  # четыре паузы по 60 с, порезанные на секунды
+    # Пять тиков — пять heartbeat'ов плюс прощальный, а терминал спрошен один раз.
+    assert len(api.beats) == 6
+    assert len(api.batches) == 1
+    assert len(terminal.history_calls) == 1
+    # Тики без синка молчат: причину на карточке ставит только сам синк.
+    assert [beat[0].message for beat in api.beats[1:5]] == [None] * 4
+
+
+def test_a_tick_without_a_sync_still_reports_every_account(
+    settings: CollectorSettings,
+) -> None:
+    """Тик без синка обязан отметиться **за все** счета, а не только за открытый.
+
+    Иначе ждущий счёт молчит `SYNC_INTERVAL_SECONDS`, и `check_collectors` через пять минут
+    молчания уводит его в «коллектор не на связи» (`SPEC.md` §10) — то есть в поломку,
+    которой нет. Ради этого в `collector.env` и живут два интервала, а не один.
+    """
+    rare = settings.model_copy(
+        update={"sync_interval_seconds": 300, "heartbeat_interval_seconds": 60}
+    )
+    api = FakeApi(
+        items=[
+            assignment_for(),
+            assignment_for(OTHER_ACCOUNT_ID, login=OTHER_LOGIN, server=SERVER),
+        ]
+    )
+    collector, _ = _collector(rare, api, _ready(tick_time=1_788_357_791), known_offset=120)
+    collector.run(max_ticks=3)
+
+    for beat in api.beats:
+        assert {item.account_id for item in beat} == {ACCOUNT_ID, OTHER_ACCOUNT_ID}
+    # Открытый счёт назван и на тиках без синка: сервер по нему сверяет, куда смотрит терминал.
+    quiet = {item.account_id: item for item in api.beats[1]}
+    assert quiet[ACCOUNT_ID].terminal_login == LOGIN
+    assert quiet[OTHER_ACCOUNT_ID].terminal_login is None
+
+
+def test_two_cards_for_one_open_account_stop_everything(
+    settings: CollectorSettings, monkeypatch: Any
+) -> None:
+    """Два подошедших счёта — отказ, а не «побеждает первый в ответе сервера».
+
+    Уникальность в БД сравнивает имя сервера посимвольно, а коллектор — без регистра, так
+    что «E-Global-Real» и «e-global-real» с одним логином заводятся оба. Взять первый
+    значило бы, что журнал, в который лягут сделки, выбирает порядок выдачи assignments.
+    """
+    recorder = _Recorder()
+    monkeypatch.setattr(main_module, "log", recorder)
+    api = FakeApi(
+        items=[
+            assignment_for(server=SERVER),
+            assignment_for(OTHER_ACCOUNT_ID, server=SERVER.lower()),
+        ]
+    )
+    collector, _ = _collector(settings, api, _ready(), known_offset=120)
+    collector.run(max_ticks=1)
+
+    assert api.batches == []
+    for said in api.beats[0]:
+        assert said.state == "error"
+        assert str(LOGIN) in str(said.message)
+    assert recorder.find("collector.ambiguous_account")["open_login"] == LOGIN
+
+
+def test_a_non_numeric_login_refuses_instead_of_crashing(settings: CollectorSettings) -> None:
+    """Библиотека обещает число, и обещание непроверяемое: терминала на macOS нет.
+
+    Краш процесса здесь стоил бы краш-петли под Планировщиком без единой строки на карточке,
+    хотя соседний непереводимый `margin_mode` давно превращается в текст.
+    """
+    api = FakeApi(items=[assignment_for()])
+    terminal = _ready(info=FakeAccountInfo(login="293272"))  # type: ignore[arg-type]
+    collector, _ = _collector(settings, api, terminal, known_offset=120)
+    assert collector.run(max_ticks=1) == main_module.EXIT_OK
+
+    assert api.batches == []
+    assert api.beats[0][0].message == messages.ACCOUNT_UNREADABLE
+
+
+def test_the_history_is_given_time_to_load_after_connecting(
+    settings: CollectorSettings,
+) -> None:
+    """`SPEC.md` §8.3: после подключения ждать, пока история не перестанет расти.
+
+    Без этого первый батч после каждого переподключения уезжает неполным — не потеря
+    (вставка идемпотентна), но журнал счёта неполон до следующего тика.
+    """
+    api = FakeApi(items=[assignment_for()])
+    terminal = _ready()
+    collector, _ = _collector(settings, api, terminal)
+    collector.run(max_ticks=3)
+
+    # Один раз на подключение, а не на тик: ждать по 30 с каждую минуту незачем.
+    assert terminal.waited == 1
 
 
 # --------------------------------------------------------------------------------------
@@ -761,202 +548,36 @@ def test_the_pause_between_ticks_is_the_heartbeat_interval(
 # --------------------------------------------------------------------------------------
 
 
-def test_the_manager_refuses_to_run_outside_windows() -> None:
-    """`SPEC.md` §8.3: на macOS коллектор не запускается и говорит об этом словами."""
-    assert manager_module.main(["--once"]) == EXIT_PLATFORM
+def test_the_collector_refuses_to_run_outside_windows(monkeypatch: Any) -> None:
+    monkeypatch.setattr(main_module, "platform_refusal", lambda: "не Windows")
+    assert main_module.main([]) == main_module.EXIT_PLATFORM
 
 
 def test_parser_takes_an_env_file_and_a_single_tick() -> None:
-    args = manager_module.build_parser().parse_args(["--once", "--env-file", "c:/x/collector.env"])
-    assert args.once
-    assert args.env_file == Path("c:/x/collector.env")
+    args = build_parser().parse_args(["--env-file", "x.env", "--once"])
+    assert args.env_file == Path("x.env")
+    assert args.once is True
 
 
-def test_manager_crash_message_names_the_log_file() -> None:
-    assert "collector.log" in messages.MANAGER_CRASHED
-    assert EXIT_FAILURE == 1
+def test_a_bad_env_file_exits_with_the_documented_code(tmp_path: Path, monkeypatch: Any) -> None:
+    """Код 2 — тот, что `run-collector.bat` и Планировщик переводят в «ошибка в collector.env»."""
+    monkeypatch.setattr(main_module, "platform_refusal", lambda: None)
+    env = tmp_path / "collector.env"
+    env.write_text("API_URL=localhost:8000\nCOLLECTOR_TOKEN=x\nCOLLECTOR_ID=a\n", encoding="utf-8")
+    assert main_module.main(["--env-file", str(env)]) == main_module.EXIT_CONFIG
 
 
-# --------------------------------------------------------------------------------------
-# Настоящий `spawn`: скраб пароля в дочернем процессе
-# --------------------------------------------------------------------------------------
+def test_every_match_status_ends_in_a_decision() -> None:
+    """Перечень статусов закрытый, и каждый обязан превращаться в действие коллектора.
 
-
-class _StubAccountInfo:
-    """Счёт не в USD: единственный способ дать процессу счёта закончиться самому.
-
-    Валюта проверяется на первом же тике, и `worker` выходит с `EXIT_ACCOUNT`
-    (`SPEC.md` §8.2). Пароль к этому моменту уже получен — значит, проверяемое состояние
-    скраба сложилось целиком.
+    Новый статус, забытый в `_reports`, означал бы счёт, о котором коллектор промолчал не
+    по решению, а по недосмотру.
     """
+    from typing import get_args
 
-    currency = "EUR"
-    margin_mode = 2
-    balance = 10_000.0
-    equity = 10_000.0
-
-
-class _StubTerminal:
-    """Терминал, которого на macOS не существует. Ни одного решения внутри."""
-
-    def __init__(self, **_kwargs: Any) -> None:
-        return None
-
-    def connect(self) -> None:
-        return None
-
-    def wait_for_history(self) -> None:
-        return None
-
-    def account_info(self) -> _StubAccountInfo:
-        return _StubAccountInfo()
-
-    def history_deals(self, start: Any, end: Any) -> list[Any]:
-        return []
-
-    def open_positions(self) -> list[Any]:
-        return []
-
-    def server_time(self) -> int | None:
-        return None
-
-    def close(self) -> None:
-        return None
-
-
-class _StubApiClient:
-    """API дочернего процесса. Отдаёт задание с паролем — точку входа секрета в процесс."""
-
-    def __init__(self, settings: Any) -> None:
-        self._settings = settings
-
-    def __enter__(self) -> _StubApiClient:
-        return self
-
-    def __exit__(self, *_exc: Any) -> None:
-        return None
-
-    def assignments(self, collector_id: str) -> list[Assignment]:
-        return [
-            Assignment(
-                account_id=CHILD_ACCOUNT,
-                server="E-Global-Real",
-                login=1234567,
-                password=CHILD_PASSWORD,
-                sync_requested_at=None,
-                last_sync_at=None,
-                status="pending",
-            )
-        ]
-
-    def send_deals(self, batch: dict[str, Any]) -> Any:  # pragma: no cover — счёт не в USD
-        raise AssertionError("батч не должен уехать: счёт не в USD")
-
-    def heartbeat(self, collector_id: str, accounts: Iterable[HeartbeatAccount]) -> None:
-        return None
-
-
-def _no_refusal(system: str | None = None) -> str | None:
-    """Подмена `platform_refusal`: на macOS её отказ не даёт ребёнку дойти до старта."""
-    return None
-
-
-def _child_probe(
-    env_file: str,
-    queue: multiprocessing.queues.Queue[tuple[str, tuple[str, ...]]],
-) -> None:
-    """Выполняется в НАСТОЯЩЕМ дочернем процессе, поднятом через `spawn`.
-
-    Терминал и HTTP подменяются здесь, а не в родителе, и это не обход проверки: при
-    `spawn` родительские подмены до ребёнка не доезжают вовсе — ровно то свойство,
-    которое тест и измеряет.
-    """
-    from collector import logging_setup as child_logging
-    from collector import main as child_main
-    from collector import worker as child_worker
-
-    queue.put(("inherited", child_logging.known_secrets()))
-    child_worker.platform_refusal = _no_refusal
-    child_worker.ApiClient = _StubApiClient  # type: ignore[misc,assignment]
-    child_worker.Mt5Terminal = _StubTerminal  # type: ignore[misc,assignment]
-    code = 0
-    try:
-        child_main.run_account(CHILD_ACCOUNT, env_file)
-    except SystemExit as stop:
-        code = int(stop.code or 0)
-    queue.put(("exit", (str(code),)))
-    queue.put(("after", child_logging.known_secrets()))
-
-
-def _write_env(tmp_path: Path) -> Path:
-    env_file = tmp_path / "collector.env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "API_URL=http://localhost:8000",
-                f"COLLECTOR_TOKEN={TOKEN}",
-                f"COLLECTOR_ID={COLLECTOR_ID}",
-                f"MT5_TERMINAL_EXE={tmp_path / 'terminal64.exe'}",
-                f"MT5_PORTABLE_ROOT={tmp_path / 'td-terminals'}",
-                f"LOG_DIR={tmp_path / 'logs'}",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return env_file
-
-
-def test_spawned_child_builds_its_own_password_scrub(tmp_path: Path) -> None:
-    """`CLAUDE.md` §5 в дочернем процессе: пароль попадает в скраб, и не по наследству.
-
-    Проверяются оба утверждения сразу, потому что порознь каждое ничего не значит.
-
-    1. Ребёнок стартует с **пустым** реестром секретов, хотя родитель свой заполнил, —
-       так `spawn` и устроен, а на Windows другого способа завести процесс нет.
-    2. После своего старта (`run_account` → `worker.main`) в реестре ребёнка лежат оба
-       секрета: токен из `collector.env` и пароль счёта из assignments.
-
-    Не «мы полагаем, что ребёнок настроит скраб сам», а измерено настоящим процессом.
-    """
-    context = multiprocessing.get_context(manager_module.SPAWN)
-    assert context.get_start_method() == "spawn"
-
-    logging_setup.register_secret("parent-only-secret-value")
-    queue: multiprocessing.queues.Queue[tuple[str, tuple[str, ...]]] = context.Queue()
-    process = context.Process(target=_child_probe, args=(str(_write_env(tmp_path)), queue))
-    process.start()
-    try:
-        seen = dict(queue.get(timeout=60) for _ in range(3))
-    finally:
-        process.join(60)
-        if process.is_alive():  # pragma: no cover — ребёнок не должен зависать
-            process.kill()
-            process.join(10)
-
-    assert seen["inherited"] == ()
-    assert seen["exit"] == (str(EXIT_ACCOUNT),)
-    assert TOKEN in seen["after"]
-    assert CHILD_PASSWORD in seen["after"]
-    assert "parent-only-secret-value" not in seen["after"]
-
-
-def test_the_child_gets_the_account_and_the_env_file_and_nothing_else(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Пароль через границу процессов не передаётся: ребёнок берёт его сам.
-
-    Аргументы дочернего процесса уезжают в pickle-буфер спавна и видны в списке процессов
-    Windows — пароля в них быть не должно (`CLAUDE.md` §5).
-    """
-    seen: list[Sequence[str]] = []
-
-    def fake_main(argv: Sequence[str] | None = None) -> int:
-        seen.append(list(argv or []))
-        return EXIT_ACCOUNT
-
-    monkeypatch.setattr(manager_module.worker, "main", fake_main)
-    with pytest.raises(SystemExit) as stop:
-        manager_module.run_account(CHILD_ACCOUNT, "C:\\td\\collector.env")
-
-    assert stop.value.code == EXIT_ACCOUNT
-    assert seen == [["--account-id", CHILD_ACCOUNT, "--env-file", "C:\\td\\collector.env"]]
+    assert set(get_args(identity.MatchStatus)) == {
+        "match",
+        "server_mismatch",
+        "ambiguous",
+        "unknown_account",
+    }

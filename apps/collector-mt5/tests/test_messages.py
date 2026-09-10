@@ -52,66 +52,59 @@ def test_fit_keeps_short_text_as_is() -> None:
     assert messages.fit("  два   пробела  ") == "два пробела"
 
 
-def test_wrong_investor_password_says_so_in_words() -> None:
-    """S1-10 DoD: неверный пароль виден в UI как «Неверный пароль инвестора»."""
-    text = messages.describe_mt5_failure(
-        messages.RES_E_AUTH_FAILED,
-        "Terminal: Authorization failed",
-        stage="connect",
-        server="E-Global-Real",
-        login=1234567,
-    )
-    assert text.startswith("Неверный пароль инвестора")
-    assert "E-Global-Real" in text
-    assert "1234567" in text
+def test_a_closed_terminal_tells_the_human_to_open_it() -> None:
+    """Главный отказ новой схемы (`X-66`): терминал открывает человек, а не коллектор.
 
-
-def test_unknown_server_is_told_apart_when_the_terminal_says_so() -> None:
-    """Единственная ветка, отличающая имя сервера от пароля, — по тексту терминала.
-
-    ⚠️ Сам текст не наблюдался: терминала на машине разработки нет. Тест фиксирует
-    поведение ветки, а не факт, что брокер отвечает именно так.
+    Все коды семейства «канал не работает» на шаге подключения означают для человека одно
+    и то же действие, и различать их внутри семейства нечем: `-10005` наблюдался и на
+    заведомо живом, доступном терминале.
     """
+    for code in sorted(messages.LINK_FAILURES):
+        text = messages.describe_mt5_failure(code, "IPC timeout", stage="connect")
+        assert text == messages.TERMINAL_NOT_OPEN, code
+        assert "пароль" not in text.casefold()
+
+
+def test_the_same_link_failure_mid_work_promises_a_reconnect() -> None:
+    """Посреди работы человеку делать нечего: коллектор переподключится сам."""
+    for stage in ("history", "positions", "account_info"):
+        text = messages.describe_mt5_failure(-10004, "IPC failed", stage=stage)
+        assert text == messages.TERMINAL_LOST, stage
+
+
+def test_no_message_asks_for_an_investor_password_any_more() -> None:
+    """T-07: пароля в интерфейсе нет, и просить его — отправить человека искать несуществующее."""
+    for name, template in _text_constants():
+        assert "пароль инвестора" not in template.casefold(), name
+
+
+def test_a_failed_authorization_sends_the_human_back_into_the_terminal() -> None:
+    """Коллектор паролей не передаёт, поэтому −6 может значить только «вход не выполнен»."""
     text = messages.describe_mt5_failure(
-        messages.RES_E_AUTH_FAILED,
-        "Terminal: server not found",
-        stage="connect",
-        server="Nonexistent-Server",
+        messages.RES_E_AUTH_FAILED, "Terminal: Authorization failed", stage="connect"
     )
-    assert text.startswith("Сервер брокера")
-    assert "Nonexistent-Server" in text
+    assert text == messages.NOT_AUTHORIZED
+    assert "MetaTrader 5" in text
 
 
-def test_terminal_that_does_not_start_names_the_path() -> None:
+def test_the_numeric_code_is_not_pushed_onto_the_account_card() -> None:
+    """X-67: код нужен в файле лога, а на карточке человеку нужен смысл."""
     text = messages.describe_mt5_failure(
-        messages.RES_E_INTERNAL_FAIL_INIT,
-        "IPC initialize failed",
-        stage="connect",
-        terminal_path="C:\\td-terminals\\acc\\terminal64.exe",
+        messages.RES_E_AUTO_TRADING_DISABLED, "Auto trading disabled", stage="connect"
     )
-    assert "не запускается" in text
-    assert "C:\\td-terminals\\acc\\terminal64.exe" in text
-
-
-def test_timeout_is_not_confused_with_a_wrong_password() -> None:
-    text = messages.describe_mt5_failure(
-        messages.RES_E_INTERNAL_FAIL_TIMEOUT, "IPC timeout", stage="connect"
-    )
-    assert "не ответил вовремя" in text
-    assert "пароль" not in text.casefold()
+    assert "-8" not in text
+    assert "автотрейдинг" in text.casefold()
 
 
 @pytest.mark.parametrize(
     ("stage", "expected"),
-    [("history", "историю сделок"), ("account_info", "не нашёл счёт")],
+    [("history", "историю сделок"), ("account_info", "не найдено")],
 )
 def test_the_same_code_means_different_things_on_different_steps(
     stage: messages.Stage, expected: str
 ) -> None:
-    """-4 при запросе истории и -4 при входе — разные события, и текст обязан различаться."""
-    text = messages.describe_mt5_failure(
-        messages.RES_E_NOT_FOUND, "not found", stage=stage, server="S", login=1
-    )
+    """-4 при запросе истории и -4 на других шагах — разные события, и текст различается."""
+    text = messages.describe_mt5_failure(messages.RES_E_NOT_FOUND, "not found", stage=stage)
     assert expected in text
 
 

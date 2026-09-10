@@ -80,19 +80,32 @@ def test_assignments_are_read_from_the_items_envelope(settings: CollectorSetting
     assert items[0].last_sync_at == datetime(2026, 9, 2, 14, 3, 11, tzinfo=UTC)
 
 
-def test_assignment_never_prints_its_password(settings: CollectorSettings) -> None:
-    """`repr=False`: объект лежит в кадрах стека, а кадры печатаются при любом падении.
+def test_the_password_is_not_read_at_all(settings: CollectorSettings) -> None:
+    """T-07: коллектор в терминал не входит, и пароль ему больше не нужен.
 
-    Асимметрия с api намеренная и та же — `AssignmentResponse` там защищён так же.
+    API его пока ещё отдаёт, и это ровно тот случай, который надо проверить: незнакомое
+    поле ответа обязано быть **не прочитано**, а не прочитано и спрятано. Значение, не
+    попавшее ни в одну переменную, не может попасть ни в лог, ни в кадр стека, ни в текст
+    ошибки, — и защищать его отдельным `repr=False` больше не нужно.
     """
     with _client(settings, lambda _r: httpx.Response(200, json=ASSIGNMENT_BODY)) as api:
         assignment = api.assignments(COLLECTOR_ID)[0]
+    assert not hasattr(assignment, "password")
     assert "investor-secret" not in repr(assignment)
-    assert assignment.password == "investor-secret"
+
+
+def test_an_assignment_without_a_password_field_still_works(settings: CollectorSettings) -> None:
+    """T-07 доделывается параллельно: коллектор обязан работать и до, и после."""
+    body = json.loads(json.dumps(ASSIGNMENT_BODY))
+    del body["items"][0]["password"]
+    with _client(settings, lambda _r: httpx.Response(200, json=body)) as api:
+        assignment = api.assignments(COLLECTOR_ID)[0]
+    assert assignment.login == 1234567
+    assert assignment.server == "E-Global-Real"
 
 
 def test_broken_assignment_error_does_not_leak_the_payload(settings: CollectorSettings) -> None:
-    """В теле лежит пароль, поэтому текст исключения не имеет права его цитировать."""
+    """Пока API отдаёт пароль, текст исключения не имеет права цитировать тело задания."""
     body = {"items": [{"account_id": ACCOUNT_ID, "password": "investor-secret"}]}
     with (
         _client(settings, lambda _r: httpx.Response(200, json=body)) as api,
@@ -125,14 +138,39 @@ def test_a_time_without_a_zone_is_refused_instead_of_being_guessed(
         api.assignments(COLLECTOR_ID)
 
 
-def test_the_password_enters_the_log_scrub_the_moment_it_arrives(
+def test_the_password_never_becomes_a_secret_the_collector_holds(
     settings: CollectorSettings,
 ) -> None:
-    """Единственная точка входа пароля в процесс — она же точка включения защиты."""
-    assert "investor-secret" not in logging_setup.known_secrets()
+    """Раньше пароль вносился в скраб логов, потому что жил в процессе. Теперь не живёт.
+
+    Реестр скраба остаётся пустым от пароля не потому, что о нём забыли, а потому, что
+    коллектор его не читает: скрывать нечего.
+    """
     with _client(settings, lambda _r: httpx.Response(200, json=ASSIGNMENT_BODY)) as api:
         api.assignments(COLLECTOR_ID)
-    assert "investor-secret" in logging_setup.known_secrets()
+    assert "investor-secret" not in logging_setup.known_secrets()
+
+
+# --------------------------------------------------------------------------------------
+# Прокси — X-68
+# --------------------------------------------------------------------------------------
+
+
+def test_the_client_ignores_the_system_proxy(settings: CollectorSettings, monkeypatch: Any) -> None:
+    """X-68: VPN на машине трейдера прописывает себя системным прокси Windows.
+
+    Коллектор ходит только на адрес своей установки TradeDesk, и запрос на
+    `http://localhost:8000` через туннель возвращался у первого пользователя `502 Bad
+    Gateway` — симптом, уводящий к «сервер сломался». Снять `trust_env=False` — и тест
+    покраснеет: httpx подберёт прокси из окружения при создании клиента.
+    """
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:12345")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:12345")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:12345")
+    with ApiClient(settings) as api:
+        client = api._client
+        assert client.trust_env is False
+        assert client._mounts == {}
 
 
 # --------------------------------------------------------------------------------------

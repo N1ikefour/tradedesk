@@ -365,24 +365,6 @@ def test_chunk_size_must_be_positive() -> None:
         sync.chunk([FakeDeal()], size=0)
 
 
-# --------------------------------------------------------------------------------------
-# Ретрай подключения
-# --------------------------------------------------------------------------------------
-
-
-def test_retry_delay_doubles_up_to_fifteen_minutes() -> None:
-    """SPEC.md 8.2: экспоненциальная задержка с потолком 15 минут."""
-    delays = [sync.retry_delay_seconds(attempt) for attempt in range(1, 12)]
-    assert delays[:4] == [5.0, 10.0, 20.0, 40.0]
-    assert delays[-1] == sync.MAX_RETRY_DELAY_SECONDS
-    assert max(delays) == 900.0
-
-
-def test_attempts_are_numbered_from_one() -> None:
-    with pytest.raises(ValueError, match="единицы"):
-        sync.retry_delay_seconds(0)
-
-
 def test_naive_bounds_carry_no_timezone() -> None:
     """MetaTrader5 принимает `datetime` без зоны и молча игнорирует её, если она есть."""
     window = sync.Window(

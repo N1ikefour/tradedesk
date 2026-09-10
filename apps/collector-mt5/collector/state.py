@@ -6,9 +6,13 @@ assignments, дубли снимает ингест. Смещение — иск
 записи на диск перезапуск коллектора в субботу означал бы, что до понедельника он не
 может отправить ни одного батча: смещение обязательно в каждом.
 
-Файл кладётся рядом с портабельной копией терминала — в путь из `MT5_PORTABLE_ROOT`,
-который спека держит вне профиля пользователя (`C:\\td-terminals`). Секретов в нём нет и
-быть не может: пароль счёта живёт только в памяти процесса (`CLAUDE.md` §5).
+Файл — на счёт, и лежит он в `STATE_DIR` рядом с логами. До `X-66` его местом была папка
+портабельной копии терминала (`MT5_PORTABLE_ROOT\\<account_id>`); копий больше нет —
+терминал открывает человек, — а смещение у каждого брокера своё, поэтому один общий файл
+на все счета сложил бы разные смещения в одно значение.
+
+Секретов в файле нет и быть не может: пароль счёта коллектору больше не нужен вовсе
+(`T-07`), а токен установки сюда не попадает ни при какой ошибке.
 """
 
 from __future__ import annotations
@@ -18,14 +22,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-STATE_FILENAME: Final = "collector-state.json"
-
 OFFSET_KEY: Final = "server_utc_offset_minutes"
 
 
 @dataclass(frozen=True)
 class WorkerState:
-    """Что процесс счёта знает о брокере на момент старта."""
+    """Что коллектор знает о брокере этого счёта на момент старта."""
 
     server_utc_offset_minutes: int | None = None
 
@@ -57,8 +59,14 @@ def dump_state(state: WorkerState) -> str:
     return json.dumps({OFFSET_KEY: state.server_utc_offset_minutes}, ensure_ascii=False)
 
 
-def state_path(portable_dir: Path) -> Path:
-    return portable_dir / STATE_FILENAME
+def state_file_name(account_id: str) -> str:
+    """Имя файла состояния счёта. Идентификатор — UUID, посторонних символов в нём нет."""
+    safe = "".join(char for char in account_id if char.isalnum() or char in "-_")
+    return f"offset-{safe or 'unknown'}.json"
+
+
+def state_path(state_dir: Path, account_id: str) -> Path:
+    return state_dir / state_file_name(account_id)
 
 
 def read_state(path: Path) -> WorkerState:
