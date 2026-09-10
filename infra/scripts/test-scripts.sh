@@ -683,11 +683,6 @@ echo ""
 echo "-- .bat: поиск bash (X-63) -----------------------------------------"
 
 FINDER="$ROOT/infra/scripts/find-bash.bat"
-if [ -f "$FINDER" ]; then
-  ok "find-bash.bat на месте"
-else
-  bad "find-bash.bat пропал — все шесть обёрток остались без bash"
-fi
 
 # rem-строки не считаются: в самом find-bash.bat `where bash` назван — там объяснено,
 # почему им нельзя пользоваться. Ищется исполняемая строка.
@@ -717,42 +712,97 @@ for bat_file in "$ROOT"/infra/scripts/*.bat; do
   fi
 done
 
-# setlocal в find-bash.bat стёр бы TD_BASH на выходе, и вызывающий получил бы пустоту.
-if bat_code "$FINDER" | grep -qiE '^[[:space:]]*setlocal'; then
-  bad "find-bash.bat делает setlocal — TD_BASH не доживёт до вызывающего"
+# Дальше — свойства самого find-bash.bat, и все они под одним `if`, а не подряд. Часть
+# устроена «этого в файле быть не должно» (setlocal, BOM), а grep по пропавшему файлу
+# молчит ровно так же, как по файлу без setlocal, — то есть пропажа печатала бы «ok».
+# Раздел упал бы всё равно, семью другими проверками, но отчёт врал бы про причину, а
+# отчёт здесь и есть результат: запустить .bat на macOS нечем.
+if [ ! -f "$FINDER" ]; then
+  bad "find-bash.bat пропал — все шесть обёрток остались без bash"
 else
-  ok "find-bash.bat не делает setlocal — TD_BASH доходит до вызывающего"
-fi
+  ok "find-bash.bat на месте"
 
-# Те самые три места из измерения плюс вывод из git.exe для установки в чужую папку.
-for probe in \
-  '%ProgramFiles%\Git\bin\bash.exe' \
-  '%ProgramFiles(x86)%\Git\bin\bash.exe' \
-  '%LOCALAPPDATA%\Programs\Git\bin\bash.exe'; do
-  if grep -qF "if exist \"$probe\"" "$FINDER"; then
-    ok "find-bash.bat проверяет $probe"
+  # setlocal в find-bash.bat стёр бы TD_BASH на выходе, и вызывающий получил бы пустоту.
+  if bat_code "$FINDER" | grep -qiE '^[[:space:]]*setlocal'; then
+    bad "find-bash.bat делает setlocal — TD_BASH не доживёт до вызывающего"
   else
-    bad "find-bash.bat не проверяет $probe"
+    ok "find-bash.bat не делает setlocal — TD_BASH доходит до вызывающего"
   fi
-done
-if grep -qF '%%~$PATH:I' "$FINDER"; then
-  ok "find-bash.bat выводит путь из git.exe — Git в нестандартной папке тоже находится"
-else
-  bad "find-bash.bat не пробует вывести bash из git.exe"
-fi
 
-# Отказ обязан называть, где искали: «поставь Git» — неверный совет тому, у кого Git стоит.
-if grep -qF 'Искали здесь:' "$FINDER"; then
-  ok "отказ называет, где искали"
-else
-  bad "отказ не называет мест поиска — человек с установленным Git прочтёт «поставь Git»"
-fi
-# Именно в напечатанном тексте, а не где-нибудь в файле: TD_BASH там встречается и в самом
-# поиске, и этого хватило бы, чтобы сторож промолчал о выкинутой подсказке.
-if grep -iE '^[[:space:]]*echo([[:space:]]|$)' "$FINDER" | grep -qF 'TD_BASH'; then
-  ok "отказ называет способ задать путь вручную"
-else
-  bad "отказ не оставляет выхода для Git в нестандартной папке"
+  # Те самые три места из измерения плюс вывод из git.exe для установки в чужую папку.
+  for probe in \
+    '%ProgramFiles%\Git\bin\bash.exe' \
+    '%ProgramFiles(x86)%\Git\bin\bash.exe' \
+    '%LOCALAPPDATA%\Programs\Git\bin\bash.exe'; do
+    if grep -qF "if exist \"$probe\"" "$FINDER"; then
+      ok "find-bash.bat проверяет $probe"
+    else
+      bad "find-bash.bat не проверяет $probe"
+    fi
+  done
+  if grep -qF '%%~$PATH:I' "$FINDER"; then
+    ok "find-bash.bat выводит путь из git.exe — Git в нестандартной папке тоже находится"
+  else
+    bad "find-bash.bat не пробует вывести bash из git.exe"
+  fi
+
+  # Отказ обязан называть, где искали: «поставь Git» — неверный совет тому, у кого Git стоит.
+  if grep -qF 'Искали здесь:' "$FINDER"; then
+    ok "отказ называет, где искали"
+  else
+    bad "отказ не называет мест поиска — человек с установленным Git прочтёт «поставь Git»"
+  fi
+  # Именно в напечатанном тексте, а не где-нибудь в файле: TD_BASH там встречается и в самом
+  # поиске, и этого хватило бы, чтобы сторож промолчал о выкинутой подсказке.
+  if grep -iE '^[[:space:]]*echo([[:space:]]|$)' "$FINDER" | grep -qF 'TD_BASH'; then
+    ok "отказ называет способ задать путь вручную"
+  else
+    bad "отказ не оставляет выхода для Git в нестандартной папке"
+  fi
+  # Имя вызвавшего .bat приезжает аргументом, и его подставляют в строку «запустите снова».
+  # При двойном щелчке по самому find-bash.bat аргумента нет, и без замены человек читал бы
+  # путь с пустым хвостом — ...\infra\scripts\ и ничего дальше.
+  if grep -qF 'if not defined TD_CALLER set "TD_CALLER=' "$FINDER"; then
+    ok "find-bash.bat называет файл и когда его запустили без аргумента"
+  else
+    bad "find-bash.bat напечатает путь с пустым хвостом при двойном щелчке по нему самому"
+  fi
+
+  ## --------------------------------------------------------------------------
+  ## Кодировка отказа (X-55 в части этого файла).
+  ##
+  ## Двенадцать строк русского текста ниже печатает сам cmd, а не bash, и консоль
+  ## русской Windows читает их в CP866: без `chcp 65001` человек видит кракозябры
+  ## вместо единственного экрана отказа всей установки — вместе со списком мест поиска
+  ## и подсказкой про TD_BASH. Рецепт взят у apps/collector-mt5/*.bat (S1-10) и
+  ## проверяется тем же способом, байтами: запустить .bat на macOS нечем.
+  ##
+  ## ⚠️ Остальные шесть infra/scripts/*.bat здесь намеренно не проверяются. Своего
+  ## русского текста они не печатают вовсе — весь их вывод идёт через bash, — и
+  ## кодировка для них остаётся открытым X-55, а не находкой этого раздела.
+  ## --------------------------------------------------------------------------
+
+  # BOM cmd.exe не распознаёт: он печатает его мусором перед первой командой, то есть
+  # ровно на том экране, ради читаемости которого всё это и делается.
+  if [ "$(head -c 3 "$FINDER" | od -An -tx1 | tr -d ' \n')" = "efbbbf" ]; then
+    bad "find-bash.bat начинается с BOM — cmd.exe напечатает его мусором перед первой строкой"
+  else
+    ok "find-bash.bat без BOM"
+  fi
+
+  # CRLF. cmd.exe разбирает .bat построчно и на файлах с одними LF спотыкается о goto и
+  # блоки в скобках; здесь в скобках стоит подстановка имени вызвавшего файла. Git на
+  # macOS хранит байты как есть, .gitattributes в проекте нет — значит единственная
+  # защита это проверка. Литеральный CR, а не '\r' в шаблоне: разбор escape в регулярке
+  # у awk и grep разных систем не одинаков, а байт одинаков везде.
+  FINDER_CR="$(printf '\r')"
+  same "у find-bash.bat переводы строк CRLF" \
+    "$(grep -cv "$FINDER_CR\$" "$FINDER" || true)" "0"
+
+  # chcp обязан стоять до первой русской буквы, иначе она уже не прочтётся.
+  same "find-bash.bat переключает консоль в UTF-8 первой же командой" \
+    "$(sed -n '1,2p' "$FINDER" | tr -d "$FINDER_CR")" \
+    "$(printf '@echo off\nchcp 65001 >nul')"
 fi
 
 ## ----------------------------------------------------------------------------
@@ -780,9 +830,17 @@ STUB
 chmod +x "$STUB_WIN/uname"
 
 as_windows() {
-  # $1 — что позвать. OS=Windows_NT добавлен не для проверки, а чтобы подделка была
-  # похожа на настоящий Git Bash целиком.
-  PATH="$STUB_WIN:$PATH" OS="Windows_NT" sh -c ". \"$ROOT/infra/scripts/common.sh\"; $1"
+  # $1 — что позвать. Подставлен ровно один признак — `uname`, и это не упрощение
+  # подделки, а предмет проверки: он единственный, на который td_is_windows смотрит.
+  PATH="$STUB_WIN:$PATH" sh -c ". \"$ROOT/infra/scripts/common.sh\"; $1"
+}
+
+as_os_only() {
+  # То же самое, но настоящим uname и с OS=Windows_NT — переменной, которую cmd.exe
+  # выставляет всем и которая напрашивается вторым признаком. Она им не является, и
+  # ниже это закреплено: иначе один случайно унаследованный OS переписал бы ВСЕ
+  # подсказки установки на macOS, а признак-дублёр молча прикрывал бы поломку первого.
+  OS="Windows_NT" sh -c ". \"$ROOT/infra/scripts/common.sh\"; $1"
 }
 
 same "на macOS действие называется make up" "$(td_cmd up)" "make up"
@@ -806,6 +864,14 @@ same "на Windows путь скрипта — .bat" \
 same "обратные слэши не съедаются печатью" \
   "$(as_windows 'td_say "$(td_script restore)"')" 'infra\scripts\restore.bat'
 
+# Признак ровно один. Ветка `uname` закреплена сверху — без неё все шесть строк выше
+# отвечают make-командами; ветка «OS» закреплена здесь — с ней все шесть строк ниже
+# отвечают .bat-файлами. Пара сторожей ломается по отдельности, чего одна не умела:
+# подделка, выставлявшая оба признака разом, пропускала потерю любого из них.
+same "OS=Windows_NT сам по себе Windows не делает" "$(as_os_only 'td_cmd up')" "make up"
+same "OS=Windows_NT не переписывает путь скрипта" \
+  "$(as_os_only 'td_script backup')" "infra/scripts/backup.sh"
+
 # Ни один скрипт установки не имеет права называть команду в открытую: имя выбирает
 # td_cmd, и только он. common.sh исключён — он и есть то единственное место.
 # Скрипты разработчика (make-release, ci-target, тесты) сюда не входят: их читает не
@@ -825,6 +891,22 @@ for sh_file in init-env.sh start.sh stop.sh backup.sh restore.sh update.sh commo
     bad "$sh_file советует git pull — дистрибуция архивом (ADR-0005)"
   else
     ok "$sh_file не советует git pull"
+  fi
+done
+
+# Той же породы, что и `make`: скрипт называет документ, и человек по этому названию
+# идёт. Читают его двое — тестировщик с распакованным архивом и разработчик с клоном, —
+# и годятся только документы, написанные для них: SETUP.md и README.md. `CLAUDE.md` в
+# архив попадает (он не в списке исключений make-release.sh), но это манифест для
+# ассистентов: отсылка к его §4 отправляет человека читать правила ролей и DoD вместо
+# установки. Найдено ревью X-63 в отказе update.sh «в папке нет VERSION».
+for sh_file in init-env.sh start.sh stop.sh backup.sh restore.sh update.sh common.sh; do
+  SAID_DOCS="$(grep -vE '^[[:space:]]*#' "$ROOT/infra/scripts/$sh_file" |
+    grep -oE '[A-Za-z0-9_./-]+\.md' | sort -u | grep -vxE 'SETUP\.md|README\.md' || true)"
+  if [ -n "$SAID_DOCS" ]; then
+    bad "$sh_file отсылает к документу не для установки: $(printf '%s' "$SAID_DOCS" | tr '\n' ' ')"
+  else
+    ok "$sh_file отсылает только к SETUP.md и README.md"
   fi
 done
 
