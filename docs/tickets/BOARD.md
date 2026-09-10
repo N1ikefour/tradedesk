@@ -161,3 +161,4 @@ Updated: 2026-09-09
 | X-60 | Шапка на планшете: пункты навигации не помещаются | frontend | Todo | — |
 | X-61 | `start.bat` закрывает окно вместе с адресами и ошибкой | infra | **Done** | [PR #38](https://github.com/N1ikefour/tradedesk/pull/38) |
 | X-62 | Экран «Счета» говорит про коллектор неправду | frontend | **Done** | [PR #39](https://github.com/N1ikefour/tradedesk/pull/39) |
+| X-63 | `bash` не попадает в PATH при установке Git по умолчанию | infra | Todo | — |
