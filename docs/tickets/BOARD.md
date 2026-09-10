@@ -163,3 +163,4 @@ Updated: 2026-09-09
 | X-62 | Экран «Счета» говорит про коллектор неправду | frontend | **Done** | [PR #39](https://github.com/N1ikefour/tradedesk/pull/39) |
 | X-63 | `bash` не попадает в PATH при установке Git по умолчанию | infra | Todo | — |
 | X-64 | Скрипты советят Windows-пользователю `make`, которого нет | infra | Todo | — |
+| X-65 | WSL2 в инструкции — одна строка, на деле четыре шага и VPN | infra | Todo | — |
