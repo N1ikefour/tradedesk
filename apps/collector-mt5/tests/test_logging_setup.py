@@ -1,14 +1,12 @@
-"""Скраб лога. Инвариант: пароля счёта и сервисного токена в логах нет (CLAUDE.md §5).
+"""Скраб лога. Инвариант: сервисного токена в логах нет (CLAUDE.md §5).
 
-Тесты нарочно кладут секрет туда, куда его никто не собирался класть, — под безобидным
-именем поля и внутри чужого текста. Защита по имени поля такое пропустила бы, а
-настоящая утечка выглядит именно так: пароль внутри текста исключения от чужой
-библиотеки.
+Секрет у коллектора сегодня один — `COLLECTOR_TOKEN`: пароля счёта он не читает вовсе
+(`T-07`). Тесты нарочно кладут секрет туда, куда его никто не собирался класть, — под
+безобидным именем поля и внутри чужого текста. Защита по имени поля такое пропустила бы, а
+настоящая утечка выглядит именно так: секрет внутри текста исключения от чужой библиотеки.
 
-Здесь проверяется **механизм**: скраб, реестр, файл. Что пароль счёта в этот реестр
-действительно попадает — вопрос проводки, и он проверяется в `test_worker.py`, где
-подключение падает с паролем внутри текста ошибки. Разделение намеренное: тест, который
-кладёт пароль в скраб руками, доказывает только то, что скраб умеет резать строки.
+Проверяется здесь **механизм**: скраб, реестр, файл. Реестр остаётся живым не про запас, а
+потому, что «секрет один» — состояние сегодняшнего дня, а не свойство конструкции.
 """
 
 from __future__ import annotations
@@ -18,12 +16,14 @@ from pathlib import Path
 from collector import logging_setup
 
 TOKEN = "collector-token-0123456789"
-PASSWORD = "investor-secret-pass"
+# Секрет, о котором процесс узнаёт уже после подъёма логов. Своего такого у коллектора
+# сейчас нет — им был пароль счёта из assignments, — но проверяется здесь механизм.
+LATE_SECRET = "late-learned-secret-value"
 
 
 def test_secret_under_an_innocent_field_name_is_still_cut() -> None:
-    event = logging_setup.scrub_event({"note": f"вошли с {PASSWORD}"}, [PASSWORD])
-    assert PASSWORD not in event["note"]
+    event = logging_setup.scrub_event({"note": f"ключ {LATE_SECRET}"}, [LATE_SECRET])
+    assert LATE_SECRET not in event["note"]
     assert logging_setup.SECRET_PLACEHOLDER in event["note"]
 
 
@@ -59,10 +59,8 @@ def test_there_is_one_log_file_and_the_spec_names_it() -> None:
 def test_setup_writes_a_scrubbed_line_to_the_file(tmp_path: Path) -> None:
     """Сквозная проверка: не «функция вернула словарь», а что в файле секрета нет.
 
-    Секрет здесь только один — токен из `collector.env`, ровно то, что знает `main()` в
-    момент подъёма логов. Пароль счёта в этот вызов не передаётся, потому что в бою его
-    тогда ещё нет; что он попадает в скраб позже, проверяет `test_worker.py` на настоящей
-    проводке — здесь такая проверка была бы самообманом.
+    Токен из `collector.env` — ровно то, что знает `main()` в момент подъёма логов, и
+    единственное, что коллектор обязан прятать сегодня.
     """
     log_file = tmp_path / "logs" / "account-test.log"
     logging_setup.setup_logging(log_file=log_file, level="INFO", secrets=(TOKEN,))
@@ -76,14 +74,15 @@ def test_setup_writes_a_scrubbed_line_to_the_file(tmp_path: Path) -> None:
 def test_a_secret_learned_after_startup_is_scrubbed_too(tmp_path: Path) -> None:
     """Реестр живой: скраб читает его на каждом событии, а не запоминает при старте.
 
-    Без этого пароль счёта не попал бы в скраб никогда — он приходит из assignments уже
-    после того, как логи подняты.
+    Секрет, узнанный после первой строки лога, обязан попадать под скраб без переделки
+    проводки. Таким был пароль счёта из assignments, пока `T-07` не убрал его вовсе, — а
+    свойство скраба пережило свой повод намеренно: следующий секрет придёт так же.
     """
     log_file = tmp_path / "logs" / "account-test.log"
     logging_setup.setup_logging(log_file=log_file, level="INFO", secrets=(TOKEN,))
-    logging_setup.register_secret(PASSWORD)
-    logging_setup.get_logger("test").info("collector.probe", note=f"вошли с {PASSWORD}")
-    assert PASSWORD not in log_file.read_text(encoding="utf-8")
+    logging_setup.register_secret(LATE_SECRET)
+    logging_setup.get_logger("test").info("collector.probe", note=f"ключ {LATE_SECRET}")
+    assert LATE_SECRET not in log_file.read_text(encoding="utf-8")
 
 
 def test_a_short_value_is_not_taken_into_the_registry() -> None:

@@ -77,6 +77,16 @@ class FakeAccountInfo:
     equity: float = 10_012.5
 
 
+def garbled_account_info(login: Any = "1234567") -> FakeAccountInfo:
+    """`account_info()`, нарушивший собственное обещание: номер счёта пришёл не числом.
+
+    Библиотека объявляет `login` целым (`payload.RawAccountInfo`), и проверить это обещание
+    на машине разработки нечем. Ложь проходит мимо типов через `Any` — ровно так же, как
+    прошла бы мимо них ложь настоящего терминала: аннотация ничего не проверяет в рантайме.
+    """
+    return FakeAccountInfo(login=login)
+
+
 @dataclass
 class FakeTerminal:
     """Терминал, который делает ровно то, что ему сказали в тесте."""
@@ -88,6 +98,12 @@ class FakeTerminal:
     # `X-66`: человек переключил счёт, пока терминал отдавал историю.
     info_after: FakeAccountInfo | None = None
     switch_after: int = 1
+    # Второй способ переключить счёт: не «после N вызовов `account_info()`», а **внутри**
+    # `history_deals()`. Разница в том, что закрепляется: со `switch_after` подделка
+    # переключается сама по себе, и сторож увидел бы чужой счёт, где бы он ни стоял. Здесь
+    # переключение — следствие чтения истории, поэтому сторож, переставленный до неё,
+    # спросит терминал слишком рано, получит прежний счёт и отправит чужой батч.
+    switch_during_history: bool = False
     tick_time: int | None = None
     # Живой рынок обновляет котировку между опросами, и на этом стоит подтверждение
     # смещения (`sync.resolve_offset`). `tick_step=0` — застывшая котировка: рынок
@@ -102,6 +118,7 @@ class FakeTerminal:
     ticks_asked: int = 0
     info_calls: int = 0
     waited: int = 0
+    switched_in_history: bool = field(default=False, init=False)
 
     def connect(self) -> None:
         self.connected += 1
@@ -115,14 +132,22 @@ class FakeTerminal:
         if self.info_errors:
             raise self.info_errors.pop(0)
         self.info_calls += 1
-        if self.info_after is not None and self.info_calls > self.switch_after:
+        if self.info_after is not None and self._already_switched():
             return self.info_after
         return self.info
+
+    def _already_switched(self) -> bool:
+        if self.switch_during_history:
+            return self.switched_in_history
+        return self.info_calls > self.switch_after
 
     def history_deals(self, start: datetime, end: datetime) -> Sequence[FakeDeal]:
         if self.history_errors:
             raise self.history_errors.pop(0)
         self.history_calls.append((start, end))
+        # Щелчок по другому счёту приходится ровно на чтение истории: до этой строки
+        # `account_info()` отвечает прежним счётом, после — новым.
+        self.switched_in_history = self.switched_in_history or self.switch_during_history
         return list(self.deals)
 
     def open_positions(self) -> Sequence[FakePosition]:

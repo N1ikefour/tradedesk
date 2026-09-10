@@ -8,15 +8,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from collector import messages, state
+from collector import messages, payload, state
 from collector import worker as worker_module
-from collector.api_client import ApiError, Assignment
+from collector.api_client import ApiError, Assignment, IngestResult
 from collector.config import CollectorSettings
 from collector.mt5_client import TerminalError
 from collector.worker import STATE_ERROR, STATE_RUNNING, AccountWorker, Report
@@ -30,12 +31,15 @@ from tests.conftest import (
     FakeTerminal,
     assignment_for,
     deal,
+    garbled_account_info,
     moment,
 )
 
 NOW = moment()
 # Тик от того же брокера, что в выгрузке 7 сентября 2026: смещение +120 минут.
 BROKER_TICK = int((NOW + timedelta(minutes=120)).timestamp())
+# Счёт, на который человек переключается посреди работы коллектора.
+OTHER_LOGIN = 999111
 
 
 class _Recorder:
@@ -54,6 +58,19 @@ class _Recorder:
 
     def has(self, event: str) -> bool:
         return any(name == event for name, _ in self.events)
+
+
+@dataclass
+class _ApiThatSwitchesTheTerminal(FakeApi):
+    """API, на ответе которого человек успевает переключить счёт в терминале."""
+
+    terminal: FakeTerminal | None = None
+
+    def send_deals(self, batch: dict[str, Any]) -> IngestResult:
+        result = super().send_deals(batch)
+        if self.terminal is not None:
+            self.terminal.info = FakeAccountInfo(login=OTHER_LOGIN, balance=55_555.0)
+        return result
 
 
 def _worker(
@@ -216,12 +233,76 @@ def test_the_same_account_after_the_read_sends_the_batch(settings: CollectorSett
     assert len(api.batches) == 1
 
 
+def test_an_unreadable_second_answer_is_a_refusal_too(
+    settings: CollectorSettings, monkeypatch: Any
+) -> None:
+    """Fail-closed: нечитаемый ответ — это «не доказано», а не «тот же счёт».
+
+    Отказаться от батча из-за непонятного ответа стоит одного пропущенного окна: следующий
+    тик заберёт его заново. Принять непонятный ответ за свой счёт стоит чужих сделок в
+    журнале, и вынуть их обратно нечем (`identity.py`, `deals` append-only).
+    """
+    recorder = _Recorder()
+    monkeypatch.setattr(worker_module, "log", recorder)
+    api = FakeApi()
+    terminal = _terminal(deals=[deal()], info_after=garbled_account_info(), switch_after=0)
+    report = _tick(_worker(settings, api), terminal)
+
+    assert api.batches == []
+    assert report.state == STATE_ERROR
+    assert report.message == messages.ACCOUNT_SWITCHED
+    assert recorder.find("collector.account_switched_mid_read")["open_login"] is None
+
+
 def test_the_guard_asks_the_terminal_a_second_time(settings: CollectorSettings) -> None:
     """Сверка обязана быть вторым **запросом**, а не повторным чтением того же снимка."""
     api = FakeApi()
     terminal = _terminal(deals=[deal()])
     _tick(_worker(settings, api), terminal)
     assert terminal.info_calls == 1  # первый снимок пришёл снаружи, этот — сторожа
+
+
+def test_the_guard_stands_after_the_read_not_before_it(settings: CollectorSettings) -> None:
+    """Смысл сторожа — его место: он отвечает, чей счёт **ответил**, а не чей мы спросили.
+
+    Здесь счёт переключается внутри `history_deals()`, то есть ровно в том промежутке, ради
+    которого сторож и написан. Сторож, переставленный до чтения истории, спросил бы терминал
+    до щелчка, получил бы прежний счёт — и отправил бы чужие сделки в наш журнал.
+    """
+    api = FakeApi()
+    terminal = _terminal(
+        deals=[deal()],
+        info_after=FakeAccountInfo(login=OTHER_LOGIN, server=SERVER),
+        switch_during_history=True,
+    )
+    report = _tick(_worker(settings, api), terminal)
+
+    assert terminal.switched_in_history  # подделка переключилась именно на чтении истории
+    assert api.batches == []
+    assert report.state == STATE_ERROR
+    assert report.message == messages.ACCOUNT_SWITCHED
+
+
+def test_a_switch_while_a_long_window_is_leaving_does_not_split_it(
+    settings: CollectorSettings,
+) -> None:
+    """Окно — одно решение: доказали счёт один раз, и все чанки едут с тем же снимком.
+
+    Переключение счёта посреди отправки безопасно по построению — `_send` в терминал не
+    ходит вовсе, — но «по построению» держится ровно до первой правки. Окно, половина
+    которого подписана одним снимком счёта, а половина другим, хуже отказа: отказ повторится
+    следующим тиком, а разъехавшееся окно уже в журнале.
+    """
+    deals = [deal(ticket=number, at=100 + number) for number in range(1, 10_002)]
+    terminal = _terminal(deals=deals)
+    api = _ApiThatSwitchesTheTerminal(terminal=terminal)
+    report = _tick(_worker(settings, api), terminal)
+
+    assert report.state == STATE_RUNNING
+    assert terminal.info.login == OTHER_LOGIN  # счёт сменился, пока окно ещё уезжало
+    assert [len(batch["deals"]) for batch in api.batches] == [5000, 5000, 1]
+    balances = {batch["account_info"]["balance"] for batch in api.batches}
+    assert balances == {payload.decimal_text(FakeAccountInfo().balance)}
 
 
 # --------------------------------------------------------------------------------------

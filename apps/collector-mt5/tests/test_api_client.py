@@ -83,10 +83,11 @@ def test_assignments_are_read_from_the_items_envelope(settings: CollectorSetting
 def test_the_password_is_not_read_at_all(settings: CollectorSettings) -> None:
     """T-07: коллектор в терминал не входит, и пароль ему больше не нужен.
 
-    API его пока ещё отдаёт, и это ровно тот случай, который надо проверить: незнакомое
-    поле ответа обязано быть **не прочитано**, а не прочитано и спрятано. Значение, не
-    попавшее ни в одну переменную, не может попасть ни в лог, ни в кадр стека, ни в текст
-    ошибки, — и защищать его отдельным `repr=False` больше не нужно.
+    Ответ в фикстуре — от сервера, который пароль ещё отдаёт. Такой сервер существует: на
+    Windows коллектор обновляют руками (`run-collector.bat`), и установка, где он новее
+    сервера, — обычное дело. Незнакомое поле обязано быть **не прочитано**, а не прочитано
+    и спрятано: значение, не попавшее ни в одну переменную, не попадёт ни в лог, ни в кадр
+    стека, ни в текст ошибки, — и защищать его отдельным `repr=False` не нужно.
     """
     with _client(settings, lambda _r: httpx.Response(200, json=ASSIGNMENT_BODY)) as api:
         assignment = api.assignments(COLLECTOR_ID)[0]
@@ -95,7 +96,7 @@ def test_the_password_is_not_read_at_all(settings: CollectorSettings) -> None:
 
 
 def test_an_assignment_without_a_password_field_still_works(settings: CollectorSettings) -> None:
-    """T-07 доделывается параллельно: коллектор обязан работать и до, и после."""
+    """Так отвечает сегодняшний сервер (`T-07`): поля `password` в ответе нет вовсе."""
     body = json.loads(json.dumps(ASSIGNMENT_BODY))
     del body["items"][0]["password"]
     with _client(settings, lambda _r: httpx.Response(200, json=body)) as api:
@@ -105,7 +106,7 @@ def test_an_assignment_without_a_password_field_still_works(settings: CollectorS
 
 
 def test_broken_assignment_error_does_not_leak_the_payload(settings: CollectorSettings) -> None:
-    """Пока API отдаёт пароль, текст исключения не имеет права цитировать тело задания."""
+    """Текст исключения не цитирует тело задания, чем бы сервер его ни наполнил."""
     body = {"items": [{"account_id": ACCOUNT_ID, "password": "investor-secret"}]}
     with (
         _client(settings, lambda _r: httpx.Response(200, json=body)) as api,
