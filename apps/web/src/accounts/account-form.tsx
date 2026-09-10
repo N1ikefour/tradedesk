@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 
 import { messageForError } from '@/api/error-message';
-import { ApiRequestError, ERROR_CODE } from '@/api/errors';
+import { ApiRequestError } from '@/api/errors';
 import {
   useCreateAccount,
   useUpdateAccount,
@@ -31,7 +31,6 @@ type Values = {
   color: AccountColor;
   server: string;
   login: string;
-  password: string;
 };
 
 function initialValues(account: Account | null): Values {
@@ -44,7 +43,6 @@ function initialValues(account: Account | null): Values {
       color: ACCOUNT_COLORS[0],
       server: '',
       login: '',
-      password: '',
     };
   }
   return {
@@ -56,8 +54,6 @@ function initialValues(account: Account | null): Values {
     isDemo: account.is_demo,
     server: account.server ?? '',
     login: account.login === null ? '' : String(account.login),
-    // Пароль с сервера не приходит и приходить не должен: поле всегда начинается пустым.
-    password: '',
   };
 }
 
@@ -67,13 +63,13 @@ function isPaletteColor(color: string): color is AccountColor {
 
 const DIGITS = /^\d+$/;
 
-type FieldErrors = Partial<Record<'label' | 'server' | 'login' | 'password', string>>;
+type FieldErrors = Partial<Record<'label' | 'server' | 'login', string>>;
 
 /**
  * Проверки до отправки. Сервер валидирует то же самое ещё раз (CLAUDE.md, граница API) —
  * здесь они затем, чтобы человек не ждал ответа ради забытого поля.
  */
-function validate(values: Values, isCreate: boolean): FieldErrors {
+function validate(values: Values): FieldErrors {
   const errors: FieldErrors = {};
   if (values.label.trim() === '') {
     errors.label = t.accounts.formLabelRequired;
@@ -84,10 +80,6 @@ function validate(values: Values, isCreate: boolean): FieldErrors {
     }
     if (!DIGITS.test(values.login.trim())) {
       errors.login = t.accounts.formLoginRequired;
-    }
-    // При правке пустое поле значит «оставить сохранённый», при создании — что пароля нет.
-    if (isCreate && values.password === '') {
-      errors.password = t.accounts.formPasswordRequired;
     }
   }
   return errors;
@@ -108,7 +100,6 @@ function buildCreate(values: Values): AccountCreate {
       ? {
           server: values.server.trim(),
           login: Number(values.login.trim()),
-          password: values.password,
         }
       : {}),
   };
@@ -116,8 +107,8 @@ function buildCreate(values: Values): AccountCreate {
 
 /**
  * Тело PATCH — только изменённые поля. Отсутствие поля значит «не трогать», и это здесь
- * важнее, чем в настройках: присланные `server`, `login` или `password` возвращают счёт
- * в `pending`, то есть переименование счёта останавливало бы работающий синк.
+ * важнее, чем в настройках: изменённые `server` или `login` возвращают счёт в `pending`,
+ * то есть переименование счёта останавливало бы работающий синк.
  */
 function buildPatch(account: Account, values: Values): AccountUpdate {
   const patch: AccountUpdate = {};
@@ -144,17 +135,17 @@ function buildPatch(account: Account, values: Values): AccountUpdate {
     if (login !== account.login) {
       patch.login = login;
     }
-    if (values.password !== '') {
-      patch.password = values.password;
-    }
   }
   return patch;
 }
 
 /**
- * Форма счёта: создание (в модальном окне списка) и правка (на странице счёта). Одна
- * форма на оба случая — иначе подсказка про инвесторский пароль, которая и есть главное
- * содержимое этого экрана, существовала бы в двух расходящихся копиях.
+ * Форма счёта: создание (в модальном окне списка) и правка (на странице счёта). Одна форма
+ * на оба случая: набор полей у них совпадает целиком, а разошедшиеся копии одной формы —
+ * это два разных ответа на вопрос «что нужно, чтобы завести счёт».
+ *
+ * Пароля счёта здесь нет с `T-07` (ADR-0006): в терминал MT5 входит человек, коллектор
+ * подключается к открытому, и приложению пароль не нужен ни для чего.
  */
 export function AccountForm({
   account,
@@ -178,8 +169,8 @@ export function AccountForm({
   const update = useUpdateAccount(editing?.id ?? '');
   const mutation = isCreate ? create : update;
 
-  // Второй путь к тому же телу запроса: если запрос упал, `onSuccess` не выполнится, а
-  // пароль останется в кэше мутаций до сборщика мусора — пять минут после ухода формы с
+  // Второй путь к тому же телу запроса: если запрос упал, `onSuccess` не выполнится, и
+  // тело останется в кэше мутаций до сборщика мусора — пять минут после ухода формы с
   // экрана. Стираем на её уходе. `forget` стабилен, так что это именно размонтирование, и
   // текст ошибки до него доживает.
   const { forget } = mutation;
@@ -196,15 +187,14 @@ export function AccountForm({
 
   const failure = mutation.error instanceof ApiRequestError ? mutation.error : null;
 
-  // Один и тот же промах — пароль у счёта не-MT5 — приходит двумя кодами: `400
-  // validation_error` при создании и `422 not_mt5_account` при правке (ревью S1-06).
-  // Оба ведут к одному полю, поэтому оба и разбираются здесь.
-  const notMt5 = failure?.code === ERROR_CODE.notMt5Account;
+  // Промах «поля MT5 у счёта не-MT5» приходит двумя кодами: `400 validation_error` при
+  // создании и `422 not_mt5_account` при правке (ревью S1-06). Форма таких тел не
+  // отправляет — поля MT5 она у другой платформы не показывает и не шлёт, — поэтому код
+  // разбирается общим текстом ошибки (`messageForError`), а не привязкой к полю.
   const serverErrors: FieldErrors = {
     label: failure?.fieldError('label') ?? undefined,
     server: failure?.fieldError('server') ?? undefined,
     login: failure?.fieldError('login') ?? undefined,
-    password: failure?.fieldError('password') ?? (notMt5 ? t.errors.notMt5Account : undefined),
   };
   const errorFor = (name: keyof FieldErrors) => localErrors[name] ?? serverErrors[name] ?? null;
 
@@ -217,7 +207,7 @@ export function AccountForm({
     if (mutation.isPending) {
       return;
     }
-    const found = validate(values, isCreate);
+    const found = validate(values);
     if (Object.keys(found).length > 0) {
       setLocalErrors(found);
       return;
@@ -226,12 +216,10 @@ export function AccountForm({
       return;
     }
     const onSuccess = (saved: Account) => {
-      // Пароль стирается из состояния сразу после успеха: форма правки остаётся на
-      // экране, и введённое значение иначе продолжало бы жить в DOM.
-      setValues((previous) => ({ ...previous, password: '' }));
       setSaved(true);
-      // Вторая копия пароля — тело мутации. Форма правки со страницы счёта не уходит,
-      // и размонтирование её не стирает: `variables` жили бы всю сессию.
+      // Тело запроса живёт в кэше мутаций до сборщика мусора, а форма правки со страницы
+      // счёта не уходит: `variables` лежали бы там всю сессию. Секрета в теле больше нет
+      // (`T-07`), но на `forget` стоит и признак «сохранено» — см. `saved`.
       mutation.forget();
       onDone?.(saved);
     };
@@ -340,7 +328,17 @@ export function AccountForm({
             )}
           </Field>
 
-          <Field id={`${idPrefix}-login`} label={t.accounts.loginLabel} error={errorFor('login')}>
+          <Field
+            id={`${idPrefix}-login`}
+            label={t.accounts.loginLabel}
+            error={errorFor('login')}
+            hint={
+              <>
+                <p>{t.accounts.loginHint}</p>
+                {isCreate ? null : <p>{t.accounts.formIdentityResetsStatus}</p>}
+              </>
+            }
+          >
             {(props) => (
               <Input
                 {...props}
@@ -349,34 +347,6 @@ export function AccountForm({
                 placeholder={t.accounts.loginPlaceholder}
                 maxLength={20}
                 onChange={(event) => change({ login: event.target.value })}
-              />
-            )}
-          </Field>
-
-          <Field
-            id={`${idPrefix}-password`}
-            label={t.accounts.passwordLabel}
-            error={errorFor('password')}
-            hint={
-              <>
-                <p className="text-sm text-foreground">{t.accounts.passwordWhy}</p>
-                <p>{t.accounts.passwordWhere}</p>
-                <p>{t.accounts.passwordNeverMain}</p>
-                {isCreate ? null : <p>{t.accounts.passwordEditHint}</p>}
-                {isCreate ? null : <p>{t.accounts.passwordResetsStatus}</p>}
-              </>
-            }
-          >
-            {(props) => (
-              <Input
-                {...props}
-                type="password"
-                value={values.password}
-                // Не `current-password`: менеджер паролей иначе подставляет сюда пароль
-                // от сайта, а нужен другой — инвесторский, от терминала.
-                autoComplete="new-password"
-                maxLength={200}
-                onChange={(event) => change({ password: event.target.value })}
               />
             )}
           </Field>

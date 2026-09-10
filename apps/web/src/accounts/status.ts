@@ -49,7 +49,11 @@ export function describeStatus(account: Account, now: Date): StatusView {
       return {
         tone: 'neutral',
         label: t.accounts.statusPending,
-        detail: t.accounts.statusPendingHint,
+        // Счёт «вручную» коллектор не забирает вовсе, и звать открыть его в терминале —
+        // придумать человеку действие, которое ничего не изменит (`T-07`).
+        detail: usesCollector(account)
+          ? t.accounts.statusPendingHint
+          : t.accounts.statusPendingHintManual,
       };
   }
 }

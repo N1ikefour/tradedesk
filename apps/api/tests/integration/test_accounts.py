@@ -53,13 +53,15 @@ SPEC_SYNC_RUNS_LIMIT = 50
 # Значение, которого нет больше нигде: по нему тело ответа обыскивается на утечку.
 INVESTOR_PASSWORD = "s3cret-investor-pw-9f2a1c"
 
+# Тело формы после `T-07`: пароля в нём нет, и это единственный путь в интерфейсе. Там,
+# где проверяется сам пароль, он передаётся явным `password=INVESTOR_PASSWORD` — так же,
+# как это делает клиент, написанный до этого решения.
 MT5_BODY: dict[str, Any] = {
     "label": "Демо FTMO",
     "platform": "mt5",
     "is_demo": True,
     "server": "FTMO-Demo",
     "login": 5001234,
-    "password": INVESTOR_PASSWORD,
 }
 
 _CODE_RE = re.compile(r"\b\d{6}\b")
@@ -277,17 +279,29 @@ async def seed_history(account_id: str) -> UUID:
 
 
 async def test_password_never_appears_in_any_accounts_response(client: AsyncClient) -> None:
-    """Ключевой инвариант S1-06: `CLAUDE.md` §5 — пароль не покидает `/internal/...`.
+    """Ключевой инвариант S1-06: `CLAUDE.md` §5 — пароль не покидает сервер.
 
     Проверяется **значение**, а не имя поля: утечка под безобидным именем (`hint`,
     `investor`, `note`) прошла бы мимо любой проверки схемы. Обходятся все успешные
     ответы домена, включая заголовки.
+
+    Счёт заводится с паролем намеренно, хотя форма его больше не спрашивает (`T-07`):
+    без сохранённого пароля искать в ответах было бы нечего, и тест перестал бы
+    что-либо доказывать.
     """
-    created = await create_account(client)
+    created = await create_account(client, password=INVESTOR_PASSWORD)
     account_id = created["id"]
 
     responses = [
-        await client.post(ACCOUNTS, json={**MT5_BODY, "label": "Второй", "login": 5001235}),
+        await client.post(
+            ACCOUNTS,
+            json={
+                **MT5_BODY,
+                "label": "Второй",
+                "login": 5001235,
+                "password": INVESTOR_PASSWORD,
+            },
+        ),
         await client.get(ACCOUNTS),
         await client.get(f"{ACCOUNTS}?include_archived=true"),
         await client.patch(f"{ACCOUNTS}/{account_id}", json={"password": INVESTOR_PASSWORD}),
@@ -315,8 +329,12 @@ async def test_password_never_appears_in_any_accounts_response(client: AsyncClie
 
 
 async def test_password_is_stored_encrypted_and_not_in_plain_text(client: AsyncClient) -> None:
-    """Второй конец того же инварианта: в БД лежит шифротекст, а не пароль."""
-    created = await create_account(client)
+    """Второй конец того же инварианта: в БД лежит шифротекст, а не пароль.
+
+    Механизм шифрования `T-07` не трогает (ADR-0003, ADR-0006): у первого пользователя
+    сохранённые пароли уже есть, и они обязаны пережить обновление ровно такими.
+    """
+    created = await create_account(client, password=INVESTOR_PASSWORD)
 
     ciphertext = await scalar(
         "select ciphertext from account_credentials where account_id = :id", id=created["id"]
@@ -340,7 +358,8 @@ async def test_create_returns_pending_account_with_defaults(client: AsyncClient)
     assert created["color"] == ACCOUNT_COLORS[0]
     assert created["last_sync_at"] is None
     assert created["created_at"].endswith("Z")
-    assert await credentials_rows(created["id"]) == 1
+    # `T-07`: пароля в теле нет, и строки credentials у нового счёта не появляется.
+    assert await credentials_rows(created["id"]) == 0
 
 
 async def test_colors_are_handed_out_from_the_palette(client: AsyncClient) -> None:
@@ -496,12 +515,18 @@ async def test_resending_the_same_server_and_login_keeps_the_connection(
     assert response.json()["status"] == "connected"
 
 
-async def test_new_password_recreates_credentials_and_resets_status(client: AsyncClient) -> None:
-    created = await create_account(client)
+async def test_new_password_recreates_credentials_without_resetting_status(
+    client: AsyncClient,
+) -> None:
+    """`T-07`: пароль перезаписывается, но состояние счёта не трогает.
+
+    Раньше присланный пароль возвращал счёт в `pending` — коллектор входил в терминал
+    заново. Входа нет, обещать его нечем, и синкающийся счёт не должен уходить в
+    «ожидает коллектор» от правки, которая ни на что не влияет.
+    """
+    created = await create_account(client, password=INVESTOR_PASSWORD)
     await execute(
-        "update trading_accounts set status = 'needs_attention', "
-        "status_message = 'Неверный пароль' where id = :id",
-        id=created["id"],
+        "update trading_accounts set status = 'connected' where id = :id", id=created["id"]
     )
     before = await scalar(
         "select ciphertext from account_credentials where account_id = :id", id=created["id"]
@@ -510,8 +535,7 @@ async def test_new_password_recreates_credentials_and_resets_status(client: Asyn
     response = await client.patch(f"{ACCOUNTS}/{created['id']}", json={"password": "другой-пароль"})
 
     assert response.status_code == 200
-    assert response.json()["status"] == "pending"
-    assert response.json()["status_message"] is None
+    assert response.json()["status"] == "connected"
     after = await scalar(
         "select ciphertext from account_credentials where account_id = :id", id=created["id"]
     )
@@ -621,8 +645,11 @@ async def test_archive_deletes_credentials_from_the_table(client: AsyncClient) -
     """DoD S1-06. Проверяется строка в БД, а не отсутствие поля в ответе.
 
     Ответ пароля не содержит никогда — по нему нельзя отличить «стёрли» от «не показываем».
+
+    Счёт заводится с паролем: у счёта без него стирать нечего, и проверка прошла бы,
+    ничего не проверив.
     """
-    created = await create_account(client)
+    created = await create_account(client, password=INVESTOR_PASSWORD)
     assert await credentials_rows(created["id"]) == 1
 
     response = await client.post(f"{ACCOUNTS}/{created['id']}/archive")
@@ -883,8 +910,13 @@ async def test_sync_runs_are_capped_at_fifty(client: AsyncClient) -> None:
 # --- валидация на границе ----------------------------------------------------
 
 
-async def test_mt5_without_password_is_400(client: AsyncClient) -> None:
-    body = {key: value for key, value in MT5_BODY.items() if key != "password"}
+async def test_mt5_without_server_is_400(client: AsyncClient) -> None:
+    """Пароль перестал быть обязательным (`T-07`), сервер и логин — нет.
+
+    Без них счёт нечем сопоставить с тем, что открыто в терминале: `GET assignments`
+    отдаёт коллектору именно пару сервер+логин (SPEC.md 5.6).
+    """
+    body = {key: value for key, value in MT5_BODY.items() if key != "server"}
 
     response = await client.post(ACCOUNTS, json=body)
 
@@ -902,8 +934,10 @@ async def test_rejected_create_writes_nothing(client: AsyncClient) -> None:
 
 
 async def test_validation_error_does_not_echo_the_password(client: AsyncClient) -> None:
-    """Присланное значение не возвращается: во входе есть секрет (S0-04)."""
-    response = await client.post(ACCOUNTS, json={**MT5_BODY, "login": -1})
+    """Присланное значение не возвращается: пока поле объявлено, во входе есть секрет."""
+    response = await client.post(
+        ACCOUNTS, json={**MT5_BODY, "login": -1, "password": INVESTOR_PASSWORD}
+    )
 
     assert response.status_code == 400
     assert INVESTOR_PASSWORD not in response.text

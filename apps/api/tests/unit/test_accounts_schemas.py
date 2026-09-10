@@ -22,13 +22,16 @@ from app.domains.accounts.schemas import (
     AccountUpdateRequest,
 )
 
+# Пароля здесь нет намеренно: с `T-07` счёт заводится без него, и образец тела запроса
+# обязан быть тем, что на самом деле шлёт форма.
 MT5: dict[str, Any] = {
     "label": "Демо FTMO",
     "platform": "mt5",
     "server": "FTMO-Demo",
     "login": 5001234,
-    "password": "investor-pass",
 }
+
+LEGACY_PASSWORD = "investor-pass"
 
 
 def create(**overrides: Any) -> AccountCreateRequest:
@@ -68,18 +71,39 @@ def account(**overrides: Any) -> models.TradingAccount:
 # --- связка «платформа → поля» -----------------------------------------------
 
 
-def test_mt5_requires_server_login_and_password() -> None:
-    for missing in ("server", "login", "password"):
+def test_mt5_requires_server_and_login() -> None:
+    for missing in ("server", "login"):
         with pytest.raises(ValidationError) as raised:
             create(**{missing: None})
         assert "MT5" in str(raised.value), missing
+
+
+def test_mt5_account_is_created_without_a_password() -> None:
+    """`T-07`: в терминал входит человек — единственный путь в интерфейсе идёт без пароля.
+
+    Обратная сторона `test_mt5_requires_server_and_login`: без этой проверки вернуть
+    пароль в обязательные можно было бы, не тронув ни одного теста.
+    """
+    request = create()
+
+    assert request.password is None
+    assert request.platform == "mt5"
+
+
+def test_password_is_still_accepted_from_an_older_client() -> None:
+    """Поле осталось входом (SPEC.md 11.4: сначала перестать требовать, удалить потом).
+
+    Клиент, который его ещё шлёт, обязан получить `201`, а не `400 validation_error`.
+    """
+    assert create(password=LEGACY_PASSWORD).password is not None
 
 
 @pytest.mark.parametrize("platform", ["manual", "csv"])
 @pytest.mark.parametrize("extra", ["server", "login", "password"])
 def test_non_mt5_rejects_mt5_fields(platform: str, extra: str) -> None:
     """Пароль у ручного счёта некуда девать: коллектор в него не ходит."""
-    body = {"label": "Ручной", "platform": platform, extra: MT5[extra]}
+    value: Any = LEGACY_PASSWORD if extra == "password" else MT5[extra]
+    body: dict[str, Any] = {"label": "Ручной", "platform": platform, extra: value}
 
     with pytest.raises(ValidationError):
         AccountCreateRequest(**body)
@@ -165,10 +189,10 @@ def test_password_spaces_are_significant() -> None:
 
 def test_password_is_not_printed_by_repr() -> None:
     """`repr` модели уезжает и в traceback, и в лог: SecretStr закрывает этот путь."""
-    request = create(password="investor-pass")
+    request = create(password=LEGACY_PASSWORD)
 
-    assert "investor-pass" not in repr(request)
-    assert "investor-pass" not in str(request.password)
+    assert LEGACY_PASSWORD not in repr(request)
+    assert LEGACY_PASSWORD not in str(request.password)
 
 
 # --- частичная правка --------------------------------------------------------
@@ -190,9 +214,13 @@ def test_patch_rejects_null_where_there_is_nothing_to_clear(field: str) -> None:
 # --- сброс статуса при правке ------------------------------------------------
 
 
-def test_password_always_resets_the_connection() -> None:
-    """Пароль набирают заново только потому, что старый не подошёл."""
-    assert service._resets_connection(account(), {"password": "x"}) is True
+def test_password_no_longer_resets_the_connection() -> None:
+    """`T-07`: перезахода коллектора в терминал не существует — обещать его нечем.
+
+    Счёт, синкающийся прямо сейчас, не должен уходить в «ожидает коллектор» от правки,
+    которая ни на что не влияет.
+    """
+    assert service._resets_connection(account(), {"password": "x"}) is False
 
 
 def test_unchanged_server_and_login_do_not_reset_the_connection() -> None:

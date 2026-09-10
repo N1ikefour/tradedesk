@@ -14,7 +14,6 @@ import {
   type RouteTable,
 } from '@/test/fetch-mock';
 import { renderApp, TEST_USER } from '@/test/render';
-import { findSecret } from '@/test/secret-probe';
 
 const SESSION = 'GET /api/v1/auth/me';
 const LIST = 'GET /api/v1/accounts';
@@ -109,7 +108,7 @@ describe('список счетов', () => {
           id: '3',
           label: 'Сломанный',
           status: 'needs_attention',
-          status_message: 'Неверный пароль инвестора',
+          status_message: 'Коллектор не на связи',
         }),
         account({ id: '4', label: 'Пауза', status: 'paused' }),
         account({ id: '5', label: 'Архив', status: 'archived' }),
@@ -118,12 +117,26 @@ describe('список счетов', () => {
     await openAccounts();
 
     expect(await screen.findByText(t.accounts.statusPending)).toBeInTheDocument();
+    // `T-07`: у счёта MT5 в ожидании сказано, что синк начнётся с открытием счёта в терминале.
+    expect(screen.getByText(t.accounts.statusPendingHint)).toBeInTheDocument();
     expect(screen.getByText(t.accounts.statusConnected)).toBeInTheDocument();
     expect(screen.getByText(t.accounts.statusConnectedHint('2 минуты назад'))).toBeInTheDocument();
     expect(screen.getByText(t.accounts.statusNeedsAttention)).toBeInTheDocument();
-    expect(screen.getByText('Неверный пароль инвестора')).toBeInTheDocument();
+    expect(screen.getByText('Коллектор не на связи')).toBeInTheDocument();
     expect(screen.getByText(t.accounts.statusPaused)).toBeInTheDocument();
     expect(screen.getByText(t.accounts.statusArchived)).toBeInTheDocument();
+  });
+
+  /**
+   * У счёта «вручную» коллектора нет, и звать открыть его в терминале — придумать человеку
+   * действие, которое ничего не изменит (`T-07`).
+   */
+  it('счёту «вручную» в ожидании не советует открывать терминал', async () => {
+    installFetchMock(withAccounts([account({ platform: 'manual', server: null, login: null })]));
+    await openAccounts();
+
+    expect(await screen.findByText(t.accounts.statusPendingHintManual)).toBeInTheDocument();
+    expect(screen.queryByText(t.accounts.statusPendingHint)).not.toBeInTheDocument();
   });
 
   /**
@@ -329,8 +342,8 @@ describe('пауза и возобновление', () => {
 });
 
 /**
- * Архивирование необратимо и удаляет пароль с сервера (SPEC.md 5.2): его исходы стоят
- * тестов не меньше удаления, хоть журнал и остаётся на месте.
+ * Архивирование необратимо (SPEC.md 5.2): его исходы стоят тестов не меньше удаления,
+ * хоть журнал и остаётся на месте.
  */
 describe('архивирование счёта', () => {
   const ARCHIVE = `POST ${ACCOUNT_PATH}/archive`;
@@ -488,8 +501,6 @@ describe('удаление счёта', () => {
 });
 
 describe('добавление счёта', () => {
-  const PASSWORD = 'investor-secret-9134';
-
   async function fillCreateForm(
     createRoute: MockRoute = () =>
       jsonResponse(201, account({ label: 'Новый', status: 'pending' })),
@@ -503,11 +514,15 @@ describe('добавление счёта', () => {
     await user.type(within(dialog).getByLabelText(t.accounts.labelLabel), 'Новый');
     await user.type(within(dialog).getByLabelText(t.accounts.serverLabel), 'FTMO-Demo');
     await user.type(within(dialog).getByLabelText(t.accounts.loginLabel), '5001234');
-    await user.type(within(dialog).getByLabelText(t.accounts.passwordLabel), PASSWORD);
     return { calls, client };
   }
 
-  it('объясняет, почему нужен именно инвесторский пароль', async () => {
+  /**
+   * Acceptance `T-07`: поля пароля в форме нет, и вместо него сказано, чем коллектор
+   * попадёт в счёт. Проверяется и отсутствие поля, и наличие объяснения: без второго
+   * человек читает форму как неполную и идёт искать, где ввести пароль.
+   */
+  it('пароля не спрашивает и объясняет, почему он не нужен', async () => {
     const user = userEvent.setup();
     installFetchMock(withAccounts([]));
     await openAccounts();
@@ -515,22 +530,19 @@ describe('добавление счёта', () => {
     await user.click(screen.getByRole('button', { name: t.accounts.add }));
     const dialog = await screen.findByRole('dialog');
 
-    expect(within(dialog).getByText(t.accounts.passwordWhy)).toBeInTheDocument();
-    expect(within(dialog).getByText(t.accounts.passwordWhere)).toBeInTheDocument();
-    expect(within(dialog).getByText(t.accounts.passwordNeverMain)).toBeInTheDocument();
+    expect(within(dialog).getByText(t.accounts.loginHint)).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText(/пароль/i)).not.toBeInTheDocument();
+    expect(dialog.querySelector('input[type="password"]')).toBeNull();
   });
 
   /**
-   * Acceptance тикета: пароль не должен пережить сохранение. Проверяется по всем местам
-   * сразу (`findSecret`), а не по разметке: значение поля живёт в свойстве `value`, а тело
-   * запроса — в кэше мутаций, и «нет в `innerHTML`» не говорит ни о том, ни о другом.
+   * Тело запроса переживает сам запрос: `variables` лежат в кэше мутаций до сборщика мусора
+   * (пять минут после размонтирования). Секрета в нём с `T-07` больше нет, но стирание
+   * осталось, и на нём же держится признак «сохранено» — проверяется оба раза именно кэш.
    */
-  it('после сохранения пароля нет ни в поле, ни в разметке, ни в кэше мутаций', async () => {
+  it('после сохранения тело запроса не остаётся в кэше мутаций', async () => {
     const user = userEvent.setup();
     const { calls, client } = await fillCreateForm();
-
-    // До отправки пароль в поле есть — иначе проверка после отправки ничего не значит.
-    expect(findSecret(PASSWORD, client)).toContain('значение поля account-create-password');
 
     await user.click(screen.getByRole('button', { name: t.accounts.create }));
 
@@ -540,17 +552,15 @@ describe('добавление счёта', () => {
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
-    expect(findSecret(PASSWORD, client)).toEqual([]);
-    // Мутация стирается целиком, а не ждёт сборщика мусора пять минут.
     expect(client.getMutationCache().getAll()).toHaveLength(0);
   });
 
   /**
    * Второй путь к тому же телу запроса. Отказ сервера до `onSuccess` не доходит, поэтому
-   * пароль остаётся в кэше мутаций — и остался бы там на пять минут `gcTime`, если человек
+   * тело остаётся в кэше мутаций — и осталось бы там на пять минут `gcTime`, если человек
    * просто закрыл окно, не повторив попытку.
    */
-  it('после отказа и закрытия формы пароля нет в кэше мутаций', async () => {
+  it('после отказа и закрытия формы тело запроса не остаётся в кэше мутаций', async () => {
     const user = userEvent.setup();
     const { calls, client } = await fillCreateForm(() =>
       errorResponse(409, 'account_already_exists', 'уже есть'),
@@ -566,7 +576,7 @@ describe('добавление счёта', () => {
     expect(await screen.findByText(new RegExp(t.accounts.createFailed))).toBeInTheDocument();
     expect(screen.getByText(new RegExp(t.errors.accountAlreadyExists))).toBeInTheDocument();
     // И тело запроса на этот момент ещё в кэше — иначе проверка после закрытия пуста.
-    expect(findSecret(PASSWORD, client)).toContain('кэш мутаций');
+    expect(client.getMutationCache().getAll()).toHaveLength(1);
 
     const dialog = screen.getByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: t.common.cancel }));
@@ -574,11 +584,10 @@ describe('добавление счёта', () => {
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
-    expect(findSecret(PASSWORD, client)).toEqual([]);
     expect(client.getMutationCache().getAll()).toHaveLength(0);
   });
 
-  it('пароль уходит в теле запроса и не попадает в адрес', async () => {
+  it('тело создания состоит ровно из того, что есть в форме, и пароля в нём нет', async () => {
     const user = userEvent.setup();
     const { calls } = await fillCreateForm();
 
@@ -593,9 +602,10 @@ describe('добавление счёта', () => {
       platform: 'mt5',
       server: 'FTMO-Demo',
       login: 5_001_234,
-      password: PASSWORD,
     });
-    expect(window.location.search).not.toContain(PASSWORD);
+    // `T-07`: единственный путь в интерфейсе идёт без пароля. Проверяется отсутствие ключа,
+    // а не пустое значение: пустой `password` сервер отверг бы валидацией.
+    expect(created?.body).not.toHaveProperty('password');
   });
 
   it('незаполненные поля MT5 останавливают отправку', async () => {
@@ -610,7 +620,6 @@ describe('добавление счёта', () => {
     expect(await screen.findByText(t.accounts.formLabelRequired)).toBeInTheDocument();
     expect(screen.getByText(t.accounts.formServerRequired)).toBeInTheDocument();
     expect(screen.getByText(t.accounts.formLoginRequired)).toBeInTheDocument();
-    expect(screen.getByText(t.accounts.formPasswordRequired)).toBeInTheDocument();
     expect(callsTo(calls, CREATE)).toHaveLength(0);
   });
 
@@ -623,7 +632,7 @@ describe('добавление счёта', () => {
     const dialog = await screen.findByRole('dialog');
     await user.selectOptions(within(dialog).getByLabelText(t.accounts.platformLabel), 'manual');
 
-    expect(within(dialog).queryByLabelText(t.accounts.passwordLabel)).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText(t.accounts.loginLabel)).not.toBeInTheDocument();
     expect(within(dialog).queryByLabelText(t.accounts.serverLabel)).not.toBeInTheDocument();
   });
 
@@ -641,7 +650,6 @@ describe('добавление счёта', () => {
     await user.type(within(dialog).getByLabelText(t.accounts.labelLabel), 'Новый');
     await user.type(within(dialog).getByLabelText(t.accounts.serverLabel), 'FTMO-Demo');
     await user.type(within(dialog).getByLabelText(t.accounts.loginLabel), '5001234');
-    await user.type(within(dialog).getByLabelText(t.accounts.passwordLabel), 'x');
     await user.click(within(dialog).getByRole('button', { name: t.accounts.create }));
 
     expect(await screen.findByText(new RegExp(t.accounts.createFailed))).toBeInTheDocument();

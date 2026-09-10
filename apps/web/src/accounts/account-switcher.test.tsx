@@ -24,7 +24,6 @@ import {
   type RouteTable,
 } from '@/test/fetch-mock';
 import { renderApp, TEST_USER } from '@/test/render';
-import { findSecret } from '@/test/secret-probe';
 
 const SESSION = 'GET /api/v1/auth/me';
 const ACCOUNTS = 'GET /api/v1/accounts';
@@ -355,8 +354,6 @@ describe('предупреждение «демо и реал вместе»', (
 });
 
 describe('заведение счёта из шапки', () => {
-  const PASSWORD = 'investor-secret-4471';
-
   const created = account({
     id: CREATED_ID,
     label: 'Демо: пятый',
@@ -377,11 +374,10 @@ describe('заведение счёта из шапки', () => {
     await user.type(within(dialog).getByLabelText(t.accounts.labelLabel), 'Демо: пятый');
     await user.type(within(dialog).getByLabelText(t.accounts.serverLabel), 'Broker-Demo');
     await user.type(within(dialog).getByLabelText(t.accounts.loginLabel), '5001234');
-    await user.type(within(dialog).getByLabelText(t.accounts.passwordLabel), PASSWORD);
     return calls;
   }
 
-  it('кнопка в списке открывает ту же форму с объяснением про инвесторский пароль', async () => {
+  it('кнопка в списке открывает ту же форму — и она тоже не спрашивает пароль', async () => {
     const user = userEvent.setup();
     await openCalendar(ALL_DEMO);
 
@@ -389,8 +385,10 @@ describe('заведение счёта из шапки', () => {
     await user.click(within(list).getByRole('button', { name: t.accountSwitcher.add }));
 
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText(t.accounts.passwordWhy)).toBeInTheDocument();
-    expect(within(dialog).getByText(t.accounts.passwordNeverMain)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText(t.accounts.serverLabel)).toBeInTheDocument();
+    // `T-07`: форма одна на два экрана, и второй вход в неё обязан быть таким же.
+    expect(within(dialog).getByText(t.accounts.loginHint)).toBeInTheDocument();
+    expect(dialog.querySelector('input[type="password"]')).toBeNull();
     // Список закрывается за собой: иначе он остаётся под окном и всплывает после него.
     expect(list).not.toBeInTheDocument();
   });
@@ -465,12 +463,11 @@ describe('заведение счёта из шапки', () => {
   });
 
   /**
-   * Название говорит ровно о том, что тест держит. Поля к этому моменту уже нет: форма
-   * уходит с экрана вместе с успехом, и «пароль стёрт из поля» здесь проверять не на чем.
-   * Явное стирание состояния держит форма правки, которая на экране остаётся, — там оно
-   * и закреплено (`routes/account-page.test.tsx`).
+   * Тело запроса не остаётся в кэше мутаций: окно после успеха с экрана не уходит, а
+   * `variables` жили бы там до сборщика мусора. Секрета в теле с `T-07` больше нет — здесь
+   * проверяется сам механизм, потому что на нём же держится признак «сохранено».
    */
-  it('после создания пароля нет ни в разметке, ни в кэше мутаций', async () => {
+  it('после создания тело запроса не остаётся в кэше мутаций', async () => {
     const user = userEvent.setup();
     installFetchMock(routes(ALL_DEMO, { [CREATE]: () => jsonResponse(201, created) }));
     const { client } = renderApp(['/calendar']);
@@ -482,15 +479,10 @@ describe('заведение счёта из шапки', () => {
     await user.type(within(dialog).getByLabelText(t.accounts.labelLabel), 'Демо: пятый');
     await user.type(within(dialog).getByLabelText(t.accounts.serverLabel), 'Broker-Demo');
     await user.type(within(dialog).getByLabelText(t.accounts.loginLabel), '5001234');
-    await user.type(within(dialog).getByLabelText(t.accounts.passwordLabel), PASSWORD);
-
-    // До отправки пароль в поле есть — иначе проверка после отправки ничего не значит.
-    expect(findSecret(PASSWORD, client)).toContain('значение поля account-create-password');
 
     await user.click(screen.getByRole('button', { name: t.accounts.create }));
     await screen.findByText(t.accountSwitcher.createdLead('Демо: пятый'));
 
-    expect(findSecret(PASSWORD, client)).toEqual([]);
     expect(client.getMutationCache().getAll()).toHaveLength(0);
   });
 
@@ -552,8 +544,9 @@ describe('заведение счёта из шапки', () => {
     await user.selectOptions(within(dialog).getByLabelText(t.accounts.platformLabel), 'manual');
     await user.type(within(dialog).getByLabelText(t.accounts.labelLabel), 'Ручной');
 
-    // Полей MT5 у такого счёта нет вовсе — пароль спрашивать не за чем.
-    expect(within(dialog).queryByLabelText(t.accounts.passwordLabel)).not.toBeInTheDocument();
+    // Полей MT5 у такого счёта нет вовсе — коллектор в него не ходит.
+    expect(within(dialog).queryByLabelText(t.accounts.serverLabel)).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText(t.accounts.loginLabel)).not.toBeInTheDocument();
 
     await user.click(within(dialog).getByRole('button', { name: t.accounts.create }));
 
