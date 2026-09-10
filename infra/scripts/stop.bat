@@ -3,15 +3,16 @@ rem TradeDesk — остановка локального окружения н�
 rem См. комментарий в start.bat: логика в stop.sh, здесь только вызов и пауза.
 setlocal
 
-where bash >nul 2>nul
+rem Где взять bash и почему это не `where bash` — в find-bash.bat (X-63).
+rem Он же печатает отказ, если bash не нашёлся, — один текст на все обёртки.
+call "%~dp0find-bash.bat" "%~nx0"
 if errorlevel 1 goto :nobash
 
-bash "%~dp0stop.sh"
+"%TD_BASH%" "%~dp0stop.sh"
 set RC=%errorlevel%
 goto :done
 
 :nobash
-echo Не найден bash. Поставь Git for Windows — https://git-scm.com/download/win
 set RC=1
 
 :done

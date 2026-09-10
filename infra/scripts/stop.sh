@@ -8,8 +8,13 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+# Отсюда берутся td_cmd и печать через printf (X-64): в вывод попадает имя команды той
+# платформы, на которой человек стоит, а `echo` съел бы обратные слэши `infra\scripts\…`.
+TD_ROOT="$ROOT"
+. "$ROOT/infra/scripts/common.sh"
+
 if ! docker info >/dev/null 2>&1; then
-  echo "Docker не отвечает — гасить нечего." >&2
+  td_warn "Docker не отвечает — гасить нечего."
   exit 1
 fi
 
@@ -18,5 +23,5 @@ fi
 # ограничивает область: чужие контейнеры на машине не затрагиваются.
 docker compose --profile local --profile prod down --remove-orphans
 
-echo ""
-echo "Остановлено. Данные в volume td_pgdata сохранены — следующий make up поднимет их же."
+td_say ""
+td_say "Остановлено. Данные в volume td_pgdata сохранены — следующий $(td_cmd up) поднимет их же."

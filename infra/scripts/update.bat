@@ -3,15 +3,16 @@ rem TradeDesk — обновление до свежего релиза на Win
 rem См. комментарий в backup.bat: логика в update.sh, здесь только вызов и пауза.
 setlocal
 
-where bash >nul 2>nul
+rem Где взять bash и почему это не `where bash` — в find-bash.bat (X-63).
+rem Он же печатает отказ, если bash не нашёлся, — один текст на все обёртки.
+call "%~dp0find-bash.bat" "%~nx0"
 if errorlevel 1 goto :nobash
 
-bash "%~dp0update.sh" %*
+"%TD_BASH%" "%~dp0update.sh" %*
 set RC=%errorlevel%
 goto :done
 
 :nobash
-echo Не найден bash. Поставь Git for Windows — https://git-scm.com/download/win
 set RC=1
 
 :done

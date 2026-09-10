@@ -61,7 +61,7 @@ fixture() {
     apps/web/package-lock.json apps/web/nginx.conf apps/web/Dockerfile \
     packages/shared-schemas/ingest-deals.schema.json infra/caddy/Caddyfile \
     infra/scripts/init.bat infra/scripts/start.bat infra/scripts/stop.bat \
-    infra/scripts/common.sh \
+    infra/scripts/common.sh infra/scripts/find-bash.bat \
     apps/collector-mt5/collector.env.example apps/collector-mt5/run-collector.bat \
     apps/collector-mt5/install-service.ps1 apps/collector-mt5/install-service.bat \
     apps/collector-mt5/stop-collector.bat apps/collector-mt5/status-collector.bat \

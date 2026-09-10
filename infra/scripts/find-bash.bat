@@ -1,0 +1,64 @@
+@echo off
+rem TradeDesk — поиск bash.exe из Git for Windows (X-63).
+rem
+rem Файл не для двойного щелчка: сам он ничего не запускает. Его зовут через `call`
+rem остальные шесть .bat, и он отдаёт найденный путь в переменной TD_BASH. Код возврата 1
+rem означает «не нашли»; сообщение об этом печатает он же — иначе шесть обёрток держали бы
+rem шесть копий одного текста, а расходятся такие копии молча.
+rem
+rem ⚠️ setlocal здесь НЕТ намеренно: он стёр бы TD_BASH на выходе, и вызывающий .bat
+rem получил бы пустоту.
+rem
+rem ⚠️ `where bash` не используется вовсе, и это не упущение. Измерено на живой Windows 10
+rem 22H2 (сборка 19045.6332) 10 сентября 2026, на первом прогоне установки:
+rem   * установщик Git с параметрами по умолчанию кладёт в PATH только Git\cmd, где лежит
+rem     git.exe. bash.exe лежит в Git\bin — то есть `where bash` молчит на машине, где
+rem     bash есть, и человек читает «поставь Git», уже поставив Git;
+rem   * после установки WSL2 (он нужен Docker Desktop) в системе появляется
+rem     C:\Windows\System32\bash.exe — запускалка подсистемы Linux, а не оболочка.
+rem     `where bash` находит её первой, и запуск через неё падает с «WSL (10 - Relay)
+rem     ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or
+rem     directory» — сообщением, которое ни про Git, ни про PATH не говорит ничего.
+rem Дописать Git\bin в PATH второе не лечит в принципе: системный PATH просматривается
+rem раньше пользовательского. Поэтому bash ищется по путям, а не спрашивается у PATH.
+
+rem Путь, заданный человеком руками, — первым: Git может стоять где угодно.
+if defined TD_BASH if exist "%TD_BASH%" exit /b 0
+set "TD_BASH="
+
+if exist "%ProgramFiles%\Git\bin\bash.exe" set "TD_BASH=%ProgramFiles%\Git\bin\bash.exe"
+if defined TD_BASH exit /b 0
+
+rem Кавычки вокруг всего пути обязательны: в имени этой переменной есть скобки.
+if exist "%ProgramFiles(x86)%\Git\bin\bash.exe" set "TD_BASH=%ProgramFiles(x86)%\Git\bin\bash.exe"
+if defined TD_BASH exit /b 0
+
+rem Установка «только для меня»: её установщик Git предлагает, когда прав администратора нет.
+if exist "%LOCALAPPDATA%\Programs\Git\bin\bash.exe" set "TD_BASH=%LOCALAPPDATA%\Programs\Git\bin\bash.exe"
+if defined TD_BASH exit /b 0
+
+rem Git в нестандартной папке. Сам git.exe в PATH есть — его туда кладёт установщик по
+rem умолчанию, — а bash.exe лежит на два уровня выше рядом: Git\cmd\git.exe даёт
+rem Git\bin\bash.exe. Так же сходится и Git\bin\git.exe, и Git\mingw64\bin\git.exe.
+rem %%~f приводит путь с «..» к нормальному виду, существования файла не требуя.
+set "TD_GITEXE="
+for %%I in (git.exe) do set "TD_GITEXE=%%~$PATH:I"
+if defined TD_GITEXE for %%I in ("%TD_GITEXE%\..\..\bin\bash.exe") do set "TD_BASH=%%~fI"
+if defined TD_BASH if exist "%TD_BASH%" exit /b 0
+set "TD_BASH="
+
+echo Не найден bash.exe из Git for Windows. Без него не работает ни один шаг установки.
+echo.
+echo Искали здесь:
+echo     %ProgramFiles%\Git\bin\bash.exe
+echo     %ProgramFiles(x86)%\Git\bin\bash.exe
+echo     %LOCALAPPDATA%\Programs\Git\bin\bash.exe
+echo     ..\..\bin\bash.exe рядом с git.exe из PATH
+echo.
+echo Git не установлен — поставьте: https://git-scm.com/download/win
+echo Git стоит в другой папке — назовите файл сами, в окне cmd:
+echo     set TD_BASH=D:\Git\bin\bash.exe
+echo     "%~dp0%~1"
+echo.
+echo PATH здесь ни при чём: bash ищется по путям, а не в PATH. Править PATH не нужно.
+exit /b 1

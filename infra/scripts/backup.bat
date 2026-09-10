@@ -5,15 +5,16 @@ rem чинить каждую правку дважды, а расходятся
 rem через bash из Git for Windows и пауза в конце.
 setlocal
 
-where bash >nul 2>nul
+rem Где взять bash и почему это не `where bash` — в find-bash.bat (X-63).
+rem Он же печатает отказ, если bash не нашёлся, — один текст на все обёртки.
+call "%~dp0find-bash.bat" "%~nx0"
 if errorlevel 1 goto :nobash
 
-bash "%~dp0backup.sh" %*
+"%TD_BASH%" "%~dp0backup.sh" %*
 set RC=%errorlevel%
 goto :done
 
 :nobash
-echo Не найден bash. Поставь Git for Windows — https://git-scm.com/download/win
 set RC=1
 
 :done

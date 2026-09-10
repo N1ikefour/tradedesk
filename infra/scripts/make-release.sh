@@ -245,6 +245,7 @@ apps/collector-mt5/install-service.bat apps/collector-mt5/stop-collector.bat
 apps/collector-mt5/status-collector.bat
 packages/shared-schemas/ingest-deals.schema.json
 infra/caddy/Caddyfile infra/scripts/init-env.sh infra/scripts/init.bat infra/scripts/common.sh
+infra/scripts/find-bash.bat
 infra/scripts/start.sh infra/scripts/start.bat infra/scripts/stop.sh infra/scripts/stop.bat
 infra/scripts/backup.sh infra/scripts/backup.bat infra/scripts/restore.sh infra/scripts/restore.bat
 infra/scripts/update.sh infra/scripts/update.bat"

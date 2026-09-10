@@ -8,16 +8,16 @@ rem ровно там, где человек ещё ничего не получ
 rem как зависимость: init-env.sh генерирует секреты его openssl. Заходить в него — нет.
 setlocal
 
-where bash >nul 2>nul
+rem Где взять bash и почему это не `where bash` — в find-bash.bat (X-63).
+rem Он же печатает отказ, если bash не нашёлся, — один текст на все обёртки.
+call "%~dp0find-bash.bat" "%~nx0"
 if errorlevel 1 goto :nobash
 
-bash "%~dp0init-env.sh" %*
+"%TD_BASH%" "%~dp0init-env.sh" %*
 set RC=%errorlevel%
 goto :done
 
 :nobash
-echo Не найден bash. Поставь Git for Windows — https://git-scm.com/download/win
-echo Он нужен и для создания .env, и для запуска.
 set RC=1
 
 :done

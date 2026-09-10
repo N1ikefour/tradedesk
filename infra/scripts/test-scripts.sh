@@ -36,9 +36,12 @@ trap 'rm -rf "$WORK"' EXIT INT TERM
 
 FAILED=0
 
-ok() { echo "  ok    $1"; }
+# printf, а не echo, и по той же причине, что в common.sh: в названиях проверок теперь
+# встречаются windows-пути, и `echo` на macOS развернул бы «\b» в Git\bin в возврат
+# каретки — название проверки врало бы про то, что проверка как раз и стережёт.
+ok() { printf '  ok    %s\n' "$1"; }
 bad() {
-  echo "  ПРОВАЛ $1" >&2
+  printf '  ПРОВАЛ %s\n' "$1" >&2
   FAILED=1
 }
 
@@ -630,6 +633,11 @@ fi
 
 for bat_file in "$ROOT"/infra/scripts/*.bat; do
   bat_name="$(basename "$bat_file")"
+  # find-bash.bat человек не запускает: его зовут через `call` остальные, и пауза в нём
+  # повесила бы каждый из них. Свои проверки у него ниже, в разделе про поиск bash.
+  if [ "$bat_name" = "find-bash.bat" ]; then
+    continue
+  fi
   if grep -qF 'if not "%TD_NO_PAUSE%"=="1" pause' "$bat_file"; then
     ok "$bat_name ждёт клавиши перед закрытием окна"
   else
@@ -658,6 +666,185 @@ for sh_file in start.sh stop.sh; do
   else
     ok "$sh_file ввода не ждёт"
   fi
+done
+
+## ----------------------------------------------------------------------------
+## Как `.bat` находят bash (X-63). Прогнать их на macOS нечем — проверяются байты.
+##
+## На живой Windows 10 22H2 (19045.6332) `where bash` поломался дважды подряд: сразу
+## после установки Git он молчал (установщик кладёт в PATH только Git\cmd, а bash.exe
+## лежит в Git\bin), а после установки WSL2 стал находить C:\Windows\System32\bash.exe —
+## запускалку подсистемы Linux. Запуск через неё падает с «execvpe(/bin/bash) failed».
+## Правкой пользовательского PATH второе не лечится: системный PATH просматривается
+## раньше. Отсюда сторожа ниже: `where bash` не должно остаться нигде, кроме комментария.
+## ----------------------------------------------------------------------------
+
+echo ""
+echo "-- .bat: поиск bash (X-63) -----------------------------------------"
+
+FINDER="$ROOT/infra/scripts/find-bash.bat"
+if [ -f "$FINDER" ]; then
+  ok "find-bash.bat на месте"
+else
+  bad "find-bash.bat пропал — все шесть обёрток остались без bash"
+fi
+
+# rem-строки не считаются: в самом find-bash.bat `where bash` назван — там объяснено,
+# почему им нельзя пользоваться. Ищется исполняемая строка.
+bat_code() { grep -viE '^[[:space:]]*rem([[:space:]]|$)' "$1"; }
+
+for bat_file in "$ROOT"/infra/scripts/*.bat; do
+  bat_name="$(basename "$bat_file")"
+  if bat_code "$bat_file" | grep -qiF 'where bash'; then
+    bad "$bat_name спрашивает bash у PATH — после установки WSL там System32\\bash.exe"
+  else
+    ok "$bat_name не спрашивает bash у PATH"
+  fi
+  if [ "$bat_name" = "find-bash.bat" ]; then
+    continue
+  fi
+  if grep -qF 'call "%~dp0find-bash.bat"' "$bat_file"; then
+    ok "$bat_name ищет bash через общий find-bash.bat"
+  else
+    bad "$bat_name не зовёт find-bash.bat — своя копия поиска разойдётся молча"
+  fi
+  # Полный путь, а не голое `bash`: даже найденный по путям bash нельзя звать по имени —
+  # разрешать имя снова будет PATH, и System32 опять окажется первым.
+  if grep -qF '"%TD_BASH%" "%~dp0' "$bat_file"; then
+    ok "$bat_name зовёт bash по полному пути"
+  else
+    bad "$bat_name зовёт bash не по полному пути из TD_BASH"
+  fi
+done
+
+# setlocal в find-bash.bat стёр бы TD_BASH на выходе, и вызывающий получил бы пустоту.
+if bat_code "$FINDER" | grep -qiE '^[[:space:]]*setlocal'; then
+  bad "find-bash.bat делает setlocal — TD_BASH не доживёт до вызывающего"
+else
+  ok "find-bash.bat не делает setlocal — TD_BASH доходит до вызывающего"
+fi
+
+# Те самые три места из измерения плюс вывод из git.exe для установки в чужую папку.
+for probe in \
+  '%ProgramFiles%\Git\bin\bash.exe' \
+  '%ProgramFiles(x86)%\Git\bin\bash.exe' \
+  '%LOCALAPPDATA%\Programs\Git\bin\bash.exe'; do
+  if grep -qF "if exist \"$probe\"" "$FINDER"; then
+    ok "find-bash.bat проверяет $probe"
+  else
+    bad "find-bash.bat не проверяет $probe"
+  fi
+done
+if grep -qF '%%~$PATH:I' "$FINDER"; then
+  ok "find-bash.bat выводит путь из git.exe — Git в нестандартной папке тоже находится"
+else
+  bad "find-bash.bat не пробует вывести bash из git.exe"
+fi
+
+# Отказ обязан называть, где искали: «поставь Git» — неверный совет тому, у кого Git стоит.
+if grep -qF 'Искали здесь:' "$FINDER"; then
+  ok "отказ называет, где искали"
+else
+  bad "отказ не называет мест поиска — человек с установленным Git прочтёт «поставь Git»"
+fi
+# Именно в напечатанном тексте, а не где-нибудь в файле: TD_BASH там встречается и в самом
+# поиске, и этого хватило бы, чтобы сторож промолчал о выкинутой подсказке.
+if grep -iE '^[[:space:]]*echo([[:space:]]|$)' "$FINDER" | grep -qF 'TD_BASH'; then
+  ok "отказ называет способ задать путь вручную"
+else
+  bad "отказ не оставляет выхода для Git в нестандартной папке"
+fi
+
+## ----------------------------------------------------------------------------
+## Вывод скриптов называет команды той платформы, где человек стоит (X-64).
+##
+## `make` на Windows не ставится и по SETUP.md §1 не нужен, а `.bat` бессмысленны на
+## macOS. Человек читает вывод В МОМЕНТ действия, и совет выполнить несуществующую
+## команду здесь дороже той же неточности в документе. Найдено на живой машине:
+## «Дальше: make up» в окне init.bat.
+## ----------------------------------------------------------------------------
+
+echo ""
+echo "-- вывод скриптов: команды по платформе (X-64) ----------------------"
+
+# Обе ветки на одной машине: td_is_windows смотрит на `uname -s`, и подставной uname
+# в PATH отвечает за Git Bash. Своего seam-переключателя в common.sh для этого нет
+# намеренно — переменная, меняющая тексты, однажды окажется выставленной случайно.
+STUB_WIN="$WORK/stubwin"
+mkdir -p "$STUB_WIN"
+cat >"$STUB_WIN/uname" <<'STUB'
+#!/bin/sh
+[ "$1" = "-s" ] && { echo "MINGW64_NT-10.0-19045"; exit 0; }
+exec /usr/bin/uname "$@"
+STUB
+chmod +x "$STUB_WIN/uname"
+
+as_windows() {
+  # $1 — что позвать. OS=Windows_NT добавлен не для проверки, а чтобы подделка была
+  # похожа на настоящий Git Bash целиком.
+  PATH="$STUB_WIN:$PATH" OS="Windows_NT" sh -c ". \"$ROOT/infra/scripts/common.sh\"; $1"
+}
+
+same "на macOS действие называется make up" "$(td_cmd up)" "make up"
+same "на macOS остановка называется make down" "$(td_cmd down)" "make down"
+same "на macOS восстановление называется с файлом" "$(td_cmd restore)" "make restore file=…"
+same "на macOS путь скрипта — .sh" "$(td_script backup)" "infra/scripts/backup.sh"
+
+same "на Windows действие называется start.bat" \
+  "$(as_windows 'td_cmd up')" 'infra\scripts\start.bat'
+same "на Windows создание .env называется init.bat" \
+  "$(as_windows 'td_cmd init')" 'infra\scripts\init.bat'
+same "на Windows остановка называется stop.bat" \
+  "$(as_windows 'td_cmd down')" 'infra\scripts\stop.bat'
+same "на Windows восстановление называется restore.bat" \
+  "$(as_windows 'td_cmd restore')" 'infra\scripts\restore.bat'
+same "на Windows путь скрипта — .bat" \
+  "$(as_windows 'td_script backup')" 'infra\scripts\backup.bat'
+# Обратный слэш обязан дожить до экрана: `echo` на macOS и на Debian разворачивает
+# escape-последовательности, и `\r` в «infra\scripts\restore.bat» съел бы полстроки.
+# Проверено: та же строка через echo печатается как «infra\scriptsestore.bat».
+same "обратные слэши не съедаются печатью" \
+  "$(as_windows 'td_say "$(td_script restore)"')" 'infra\scripts\restore.bat'
+
+# Ни один скрипт установки не имеет права называть команду в открытую: имя выбирает
+# td_cmd, и только он. common.sh исключён — он и есть то единственное место.
+# Скрипты разработчика (make-release, ci-target, тесты) сюда не входят: их читает не
+# тестировщик, а человек с make.
+for sh_file in init-env.sh start.sh stop.sh backup.sh restore.sh update.sh; do
+  if grep -vE '^[[:space:]]*#' "$ROOT/infra/scripts/$sh_file" | grep -qE '(^|[^-])make '; then
+    bad "$sh_file называет make — на Windows этой команды нет"
+  else
+    ok "$sh_file не называет make"
+  fi
+done
+
+# ADR-0005: установка обновляется распаковкой релиза, а не git. Совет `git pull` тут
+# неверен и человеку, у которого Git есть только ради bash.
+for sh_file in init-env.sh start.sh stop.sh backup.sh restore.sh update.sh common.sh; do
+  if grep -vE '^[[:space:]]*#' "$ROOT/infra/scripts/$sh_file" | grep -qF 'git pull'; then
+    bad "$sh_file советует git pull — дистрибуция архивом (ADR-0005)"
+  else
+    ok "$sh_file не советует git pull"
+  fi
+done
+
+# Опечатка в ключе td_cmd молча напечатала бы сам ключ: «Дальше: sart». Ключи известны,
+# поэтому проверяются они, а не поведение на неизвестном ключе.
+KNOWN_CMD=" init up down backup restore update "
+KNOWN_SCRIPT=" start stop backup restore update "
+for sh_file in init-env.sh start.sh stop.sh backup.sh restore.sh update.sh; do
+  for key in $(grep -o 'td_cmd [a-z-]*' "$ROOT/infra/scripts/$sh_file" | cut -d' ' -f2); do
+    case "$KNOWN_CMD" in
+      *" $key "*) ok "$sh_file: td_cmd $key — ключ известен" ;;
+      *) bad "$sh_file: td_cmd $key — такого ключа нет, напечатается сам ключ" ;;
+    esac
+  done
+  for key in $(grep -o 'td_script [a-z-]*' "$ROOT/infra/scripts/$sh_file" | cut -d' ' -f2); do
+    case "$KNOWN_SCRIPT" in
+      *" $key "*) ok "$sh_file: td_script $key — пара .sh/.bat сходится" ;;
+      *) bad "$sh_file: td_script $key — у этого имени нет парного .bat" ;;
+    esac
+  done
 done
 
 echo ""

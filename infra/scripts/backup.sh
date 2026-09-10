@@ -20,10 +20,10 @@ KEEP="${TD_BACKUP_KEEP:-14}"
 BACKUP_DIR="$TD_ROOT/backups"
 
 usage() {
-  echo "Использование: infra/scripts/backup.sh [--quiet]" >&2
-  echo "" >&2
-  echo "  Снимает дамп базы в backups/td-<дата>.sql.gz, проверяет его и удаляет" >&2
-  echo "  всё, кроме $KEEP последних по времени создания." >&2
+  td_warn "Использование: $(td_script backup) [--quiet]"
+  td_warn ""
+  td_warn "  Снимает дамп базы в backups/td-<дата>.sql.gz, проверяет его и удаляет"
+  td_warn "  всё, кроме $KEEP последних по времени создания."
 }
 
 QUIET=0

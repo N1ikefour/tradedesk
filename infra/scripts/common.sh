@@ -1,10 +1,13 @@
 #!/usr/bin/env sh
-# Общая часть backup/restore/update (SPEC.md 11.3). Сам по себе не запускается — только
+# Общая часть скриптов установки (SPEC.md 11.3). Сам по себе не запускается — только
 # `. common.sh` из скрипта, который уже определил TD_ROOT.
 #
-# Почему отдельный файл: три скрипта делают одно и то же с .env, docker и postgres, и
+# Почему отдельный файл: скрипты делают одно и то же с .env, docker и postgres, и
 # расхождение этих кусков стоило бы данных. `.bat`-обёртки логики не содержат вовсе
 # (см. start.bat) — значит, версия на Windows и на macOS ровно одна, и разойтись им негде.
+#
+# init-env.sh и stop.sh берут отсюда только td_cmd и печать (X-64): своя копия определения
+# платформы в каждом скрипте разошлась бы ровно так же молча, как разошлись бы .bat и .sh.
 #
 # ⚠️ Значения секретов из .env здесь не читаются и не печатаются никогда. MASTER_KEY
 # проверяется только на присутствие (`td_env_present`), а его отпечаток считает контейнер
@@ -32,6 +35,61 @@ td_say() {
 # То, что человек обязан увидеть, даже когда вывод скрипта заглушён (`backup --quiet`).
 td_warn() {
   printf '%s\n' "$1" >&2
+}
+
+# Windows ли под нами. Git Bash отвечает MINGW64_NT-…, MSYS_NT-… или CYGWIN_NT-…;
+# OS=Windows_NT приезжает из самой Windows и в Git Bash сохраняется — второй признак нужен
+# на случай, если uname в PATH не окажется вовсе.
+td_is_windows() {
+  case "$(uname -s 2>/dev/null || true)" in
+    MINGW* | MSYS* | CYGWIN*) return 0 ;;
+  esac
+  [ "${OS:-}" = "Windows_NT" ]
+}
+
+# Как называется действие там, где человек стоит: init | up | down | backup | restore |
+# update. Одной строкой на обе платформы не обойтись — `make` на Windows не ставится и по
+# SETUP.md §1 не нужен, а `.bat` бессмысленны на macOS.
+#
+# ⚠️ X-64. Скрипт — единственный источник, который человек читает В МОМЕНТ действия, и он
+# ведёт его дальше по установке. Совет выполнить несуществующую команду здесь дороже той же
+# неточности в документе: до документа человек ещё дойдёт, а окно у него перед глазами уже
+# сейчас. Найдено на живой машине: «Дальше: make up» в окне init.bat.
+#
+# Имена совпадают с SETUP.md дословно — там то же действие называется `infra\scripts\start.bat`.
+td_cmd() {
+  if td_is_windows; then
+    case "$1" in
+      init) printf '%s\n' 'infra\scripts\init.bat' ;;
+      up) printf '%s\n' 'infra\scripts\start.bat' ;;
+      down) printf '%s\n' 'infra\scripts\stop.bat' ;;
+      backup) printf '%s\n' 'infra\scripts\backup.bat' ;;
+      restore) printf '%s\n' 'infra\scripts\restore.bat' ;;
+      update) printf '%s\n' 'infra\scripts\update.bat' ;;
+      *) printf '%s\n' "$1" ;;
+    esac
+  else
+    case "$1" in
+      restore) printf '%s\n' 'make restore file=…' ;;
+      init | up | down | backup | update) printf '%s\n' "make $1" ;;
+      *) printf '%s\n' "$1" ;;
+    esac
+  fi
+}
+
+# Сам файл скрипта — для строк «Использование: …». Отличается от td_cmd тем, что несёт
+# флаги: `make backup` не умеет --quiet (цель зовёт скрипт без аргументов), а backup.bat
+# умеет — он отдаёт %* внутрь.
+#
+# ⚠️ Годятся только имена, у которых пара .sh/.bat сходится: start, stop, backup, restore,
+# update. init-env.sh на Windows называется init.bat, и «init-env» здесь дало бы путь к
+# файлу, которого нет. За этим следит сторож в test-scripts.sh.
+td_script() {
+  if td_is_windows; then
+    printf '%s\n' "infra\\scripts\\$1.bat"
+  else
+    printf '%s\n' "infra/scripts/$1.sh"
+  fi
 }
 
 # Значение переменной из .env: последнее вхождение, без хвостового комментария и пробелов.
