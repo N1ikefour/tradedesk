@@ -1,6 +1,6 @@
 # BOARD — доска задач
 
-Updated: 2026-09-09
+Updated: 2026-09-11
 
 Статусы и переходы — `docs/WORKFLOW.md` §2. Формулировки задач и Definition of Done — **`SPEC.md` §12**, здесь не дублируются. Файл тикета `docs/tickets/<ID>.md` заводится в момент взятия задачи в работу.
 
@@ -67,7 +67,7 @@ Updated: 2026-09-09
 | T-04 | Кнопка «Сообщить о проблеме» | frontend + backend | Backlog | — |
 | T-05 | Чек-лист приёмки | оркестратор | Backlog | — |
 | T-06 | Тест инструкции на чистой машине | принципал | Backlog | — |
-| T-07 | Коллектор работает с открытым терминалом; пароли убираются | backend + frontend | Todo | — |
+| T-07 | Коллектор работает с открытым терминалом; пароли убираются | backend + frontend | **Done** | [PR #41](https://github.com/N1ikefour/tradedesk/pull/41) |
 
 ---
 
@@ -156,15 +156,15 @@ Updated: 2026-09-09
 | X-54 | Docker Compose не собирает из пути с кириллицей | infra | **Done** | [PR #30](https://github.com/N1ikefour/tradedesk/pull/30) |
 | X-55 | `.bat` в UTF-8, а русская консоль Windows в CP866 | infra | Todo | — |
 | X-56 | `make ci-target` не гоняет тесты коллектора | infra | Todo | — |
-| X-57 | Жёсткое завершение менеджера оставляет процессы сиротами | collector | Todo | — |
+| X-57 | Жёсткое завершение менеджера оставляет процессы сиротами | collector | **Снят** | предмета нет: дочерних процессов больше нет ([PR #41](https://github.com/N1ikefour/tradedesk/pull/41)) |
 | X-58 | Файлы установки с секретами читаемы любой учёткой машины | infra | Todo | — |
 | X-59 | Сумма дня в календаре обрезается на 768 px | frontend | Todo | — |
 | X-60 | Шапка на планшете: пункты навигации не помещаются | frontend | Todo | — |
 | X-61 | `start.bat` закрывает окно вместе с адресами и ошибкой | infra | **Done** | [PR #38](https://github.com/N1ikefour/tradedesk/pull/38) |
 | X-62 | Экран «Счета» говорит про коллектор неправду | frontend | **Done** | [PR #39](https://github.com/N1ikefour/tradedesk/pull/39) |
-| X-63 | `bash` не попадает в PATH при установке Git по умолчанию | infra | Todo | — |
-| X-64 | Скрипты советят Windows-пользователю `make`, которого нет | infra | Todo | — |
+| X-63 | `bash` не попадает в PATH при установке Git по умолчанию | infra | **Done** | [PR #40](https://github.com/N1ikefour/tradedesk/pull/40) |
+| X-64 | Скрипты советят Windows-пользователю `make`, которого нет | infra | **Done** | [PR #40](https://github.com/N1ikefour/tradedesk/pull/40) |
 | X-65 | WSL2 в инструкции — одна строка, на деле четыре шага и VPN | infra | Todo | — |
-| X-66 | 🔴 `initialize(path=…, portable=True)` не достаёт терминал, который `initialize()` достаёт | collector | Todo | — |
-| X-67 | Числовой код ошибки MT5 не попадает в лог | collector | Todo | — |
-| X-68 | Коллектор ходит на localhost через системный прокси | collector | Todo | — |
+| X-66 | 🔴 `initialize(path=…, portable=True)` не достаёт терминал, который `initialize()` достаёт | collector | **Done** | [PR #41](https://github.com/N1ikefour/tradedesk/pull/41) |
+| X-67 | Числовой код ошибки MT5 не попадает в лог | collector | **Done** | [PR #41](https://github.com/N1ikefour/tradedesk/pull/41) |
+| X-68 | Коллектор ходит на localhost через системный прокси | collector | **Done** | [PR #41](https://github.com/N1ikefour/tradedesk/pull/41) |
