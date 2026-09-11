@@ -187,6 +187,8 @@ describe('три состояния связи вместо одной «Заг�
       expect(screen.getByText(t.connection.serverDownTitle)).toBeInTheDocument();
       expect(screen.queryByRole('heading', { name: t.login.title })).not.toBeInTheDocument();
       expect(screen.queryByText(t.login.sessionCheckFailed)).not.toBeInTheDocument();
+      // Остаться на защищённом маршруте — не то же самое, что показать его содержимое.
+      expect(screen.queryByRole('heading', { name: t.pages.journal })).not.toBeInTheDocument();
       expect(router.state.location.pathname).toBe('/journal');
     } finally {
       restore();
