@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { messageForError } from '@/api/error-message';
-import { ApiRequestError, NetworkError, toApiRequestError } from '@/api/errors';
+import {
+  ApiRequestError,
+  isServerUnreachable,
+  NetworkError,
+  toApiRequestError,
+} from '@/api/errors';
 import { t } from '@/i18n';
 
 describe('разбор ошибки API', () => {
@@ -56,7 +61,7 @@ describe('текст ошибки', () => {
   });
 
   it('несостоявшийся запрос отличается от ответа с ошибкой', () => {
-    expect(messageForError(new NetworkError(new Error('offline')))).toBe(t.errors.network);
+    expect(messageForError(new NetworkError(new Error('offline')))).toBe(t.errors.serverDown);
   });
 
   it('обрыв по своему таймауту — не «проверьте соединение»', () => {
@@ -69,5 +74,32 @@ describe('текст ошибки', () => {
       expect(messageForError(aborted)).toBe(t.errors.timeout);
     }
     expect(new NetworkError(new TypeError('Failed to fetch')).timedOut).toBe(false);
+  });
+});
+
+describe('признак «приложение не поднято»', () => {
+  it('чтение, оборванное своим пределом, — это недоступность, а не ответ сервера', () => {
+    // Пока `timedOut` исключался, молчащая проверка сессии считалась «сервер ответил» и
+    // уводила на /login — в тупик, ради которого X-42 и заводилась: форма входа ходит по
+    // тому же мёртвому адресу. У чтения побочных эффектов нет, отделять его обрыв незачем.
+    for (const name of ['TimeoutError', 'AbortError']) {
+      expect(isServerUnreachable(new NetworkError(new DOMException('прервано', name)))).toBe(true);
+    }
+    expect(isServerUnreachable(new NetworkError(new TypeError('Failed to fetch')))).toBe(true);
+  });
+
+  it('текст оборванной записи от этого не меняется: «запрос мог и дойти»', () => {
+    // Единственная причина, по которой `timedOut` вообще остаётся различимым.
+    const aborted = new NetworkError(new DOMException('прервано', 'TimeoutError'));
+
+    expect(messageForError(aborted)).toBe(t.errors.timeout);
+    expect(messageForError(aborted)).not.toBe(t.errors.serverDown);
+  });
+
+  it('5xx с телом SPEC.md 5.1 — живой сервер, а без тела — прокси перед ним', () => {
+    expect(isServerUnreachable(new ApiRequestError(500, 'internal_error', '', {}))).toBe(false);
+    expect(isServerUnreachable(new ApiRequestError(502, null, '', {}))).toBe(true);
+    // 4xx без кода сервер всё же ответил осмысленно — проверять там Docker Desktop незачем.
+    expect(isServerUnreachable(new ApiRequestError(404, null, '', {}))).toBe(false);
   });
 });

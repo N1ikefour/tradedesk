@@ -12,6 +12,7 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { messageForError } from '@/api/error-message';
 import { ApiRequestError, ERROR_CODE } from '@/api/errors';
+import { QueryProgress } from '@/components/query-progress';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { t } from '@/i18n';
@@ -64,7 +65,7 @@ export function PositionCard({
     <section className="flex w-full flex-col gap-4">
       <PositionNavBar nav={nav} />
 
-      {query.isPending ? <p className="text-sm text-muted-foreground">{t.common.loading}</p> : null}
+      {query.isPending ? <QueryProgress fetchStatus={query.fetchStatus} /> : null}
 
       {query.isError ? (
         <div className="flex flex-col items-start gap-3">

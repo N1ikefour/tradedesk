@@ -9,12 +9,14 @@
  * онбординга. Четыре пустые рамки с прочерками читались бы как поломка, а сегодня это не
  * редкий случай: `positions` наполняет ингест (`S1-04`), которого ещё нет.
  */
+import type { FetchStatus } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { Link } from 'react-router';
 
 import { useAccounts } from '@/accounts/api';
 import { useAccountIds } from '@/accounts/selection';
 import { messageForError } from '@/api/error-message';
+import { QueryProgress } from '@/components/query-progress';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { calendarParams, useCalendarMonth } from '@/calendar/api';
@@ -44,6 +46,7 @@ type QueryLike = {
   readonly isError: boolean;
   readonly error: Error | null;
   readonly isFetching: boolean;
+  readonly fetchStatus: FetchStatus;
   readonly refetch: () => Promise<unknown>;
 };
 
@@ -54,13 +57,21 @@ type QueryLike = {
  */
 function blockState(query: QueryLike, asked: boolean): BlockQueryState {
   if (!asked) {
-    return { isPending: false, isError: false, error: null, isFetching: false, refetch: () => {} };
+    return {
+      isPending: false,
+      isError: false,
+      error: null,
+      isFetching: false,
+      fetchStatus: 'idle',
+      refetch: () => {},
+    };
   }
   return {
     isPending: query.isPending,
     isError: query.isError,
     error: query.error,
     isFetching: query.isFetching,
+    fetchStatus: query.fetchStatus,
     refetch: () => {
       void query.refetch();
     },
@@ -145,9 +156,7 @@ export function DashboardPage() {
         </Alert>
       ) : null}
 
-      {accounts.isPending ? (
-        <p className="text-sm text-muted-foreground">{t.common.loading}</p>
-      ) : null}
+      {accounts.isPending ? <QueryProgress fetchStatus={accounts.fetchStatus} /> : null}
 
       {selection.empty ? (
         <div className="flex flex-col items-start gap-3 rounded-lg border border-border p-6">

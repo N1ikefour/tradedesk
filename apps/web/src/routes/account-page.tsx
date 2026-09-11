@@ -7,6 +7,7 @@ import { useAccounts, useSyncRuns, type Account, type SyncRun } from '@/accounts
 import { CollectorBlock } from '@/accounts/collector-block';
 import { DangerActions } from '@/accounts/danger-actions';
 import { PauseButton, SyncNowButton } from '@/accounts/sync-controls';
+import { QueryProgress } from '@/components/query-progress';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -39,9 +40,7 @@ export function AccountPage() {
         <Link to="/accounts">{t.account.backToList}</Link>
       </Button>
 
-      {accounts.isPending ? (
-        <p className="text-sm text-muted-foreground">{t.common.loading}</p>
-      ) : null}
+      {accounts.isPending ? <QueryProgress fetchStatus={accounts.fetchStatus} /> : null}
 
       {accounts.isError ? (
         <div className="flex flex-col items-start gap-3">
@@ -164,9 +163,7 @@ function SyncRunsTable({ accountId }: { accountId: string }) {
           <p className="text-xs text-muted-foreground">{t.account.syncRunsHint}</p>
         </div>
 
-        {runs.isPending ? (
-          <p className="text-sm text-muted-foreground">{t.common.loading}</p>
-        ) : null}
+        {runs.isPending ? <QueryProgress fetchStatus={runs.fetchStatus} /> : null}
 
         {runs.isError ? (
           <div className="flex flex-col items-start gap-3">

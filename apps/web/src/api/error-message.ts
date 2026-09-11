@@ -2,12 +2,17 @@
  * Код ошибки → текст для человека. Одно место на приложение: иначе один и тот же код
  * объясняется на разных экранах по-разному.
  */
-import { ApiRequestError, ERROR_CODE, NetworkError } from '@/api/errors';
+import { ApiRequestError, ERROR_CODE, isServerUnreachable, NetworkError } from '@/api/errors';
 import { t } from '@/i18n';
 
 export function messageForError(error: unknown): string {
-  if (error instanceof NetworkError) {
-    return error.timedOut ? t.errors.timeout : t.errors.network;
+  if (error instanceof NetworkError && error.timedOut) {
+    return t.errors.timeout;
+  }
+  // Раньше сюда доходило только «запрос не доехал», а `502` от прокси попадал в общее
+  // «что-то пошло не так» — то есть самый частый отказ установки объяснялся хуже всех.
+  if (isServerUnreachable(error)) {
+    return t.errors.serverDown;
   }
   if (!(error instanceof ApiRequestError)) {
     return t.errors.unknown;

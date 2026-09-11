@@ -1,3 +1,4 @@
+import { onlineManager } from '@tanstack/react-query';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,6 +10,7 @@ import type { PositionListItem } from '@/journal/api';
 import { ROW_HEIGHT } from '@/journal/positions-list';
 import { errorResponse, installFetchMock, jsonResponse, type RouteTable } from '@/test/fetch-mock';
 import { renderApp, TEST_USER } from '@/test/render';
+import { setTabHidden } from '@/test/tab-visibility';
 
 const SESSION = 'GET /api/v1/auth/me';
 const ACCOUNTS = 'GET /api/v1/accounts';
@@ -124,6 +126,9 @@ async function openJournal(entries: string[] = ['/journal']) {
 beforeEach(() => {
   window.localStorage.clear();
   useAccountSelectionStore.setState({ mode: 'all', ids: [] });
+  // Сеть и видимость вкладки глобальные: оставленные, они подвесили бы соседние тесты.
+  onlineManager.setOnline(true);
+  setTabHidden(false);
 });
 
 describe('журнал: список', () => {
@@ -324,6 +329,61 @@ describe('журнал: пустые состояния', () => {
     await userEvent.click(screen.getByRole('button', { name: t.common.retry }));
 
     expect(await screen.findByText('EURUSD')).toBeInTheDocument();
+  });
+
+  it('упавший запрос перезапрашивается возвратом во вкладку, без перезагрузки страницы', async () => {
+    // X-42. Общий `refetchOnWindowFocus` выключен, и без исключения для упавших запросов
+    // ошибка залипала до F5 — даже после того, как `api` доехал. Человек, дождавшийся
+    // Docker Desktop, возвращается во вкладку именно за этим.
+    let attempt = 0;
+    installFetchMock({
+      [SESSION]: () => jsonResponse(200, TEST_USER),
+      [ACCOUNTS]: () => jsonResponse(200, { items: [account(FIRST_ACCOUNT, 'Основной')] }),
+      [POSITIONS]: () => {
+        attempt += 1;
+        return attempt === 1
+          ? errorResponse(500, 'internal_error', 'сервер не смог')
+          : jsonResponse(200, { items: [position(1)], next_cursor: null });
+      },
+    });
+    await openJournal();
+    expect(await screen.findByRole('alert')).toHaveTextContent(t.journal.loadFailed);
+
+    setTabHidden(true);
+    setTabHidden(false);
+
+    expect(await screen.findByText('EURUSD')).toBeInTheDocument();
+  });
+
+  it('удачно загруженный экран возвратом во вкладку НЕ перезапрашивается', async () => {
+    // X-42, вторая половина решения про фокус. Исключение заведено ровно для упавших
+    // запросов: сделай его общим (`refetchOnWindowFocus: true`) — и каждый взгляд в
+    // терминал MT5 и обратно перечитывал бы страницу журнала целиком.
+    const { routes, queries } = withJournal([position(1)]);
+    installFetchMock(routes);
+    await openJournal();
+    expect(await screen.findByText('EURUSD')).toBeInTheDocument();
+    const asked = queries.length;
+
+    setTabHidden(true);
+    setTabHidden(false);
+    await settle();
+
+    expect(queries).toHaveLength(asked);
+  });
+
+  it('браузер офлайн не подвешивает список: API живёт на этой же машине', async () => {
+    // X-42. По умолчанию библиотека **не отправляет** запрос, пока браузер считает себя
+    // офлайн, — на месте таблицы остаётся «Загрузка…» насовсем. Здесь это было бы прямым
+    // враньём: Wi-Fi выключен, а `localhost` отвечает. Положение дел задаёт `onlineManager`,
+    // а не падающий `fetch`: это разные вещи, и мокнутый отказ паузы не воспроизводит.
+    const { routes } = withJournal([position(1)]);
+    installFetchMock(routes);
+    onlineManager.setOnline(false);
+    await openJournal();
+
+    expect(await screen.findByText('EURUSD')).toBeInTheDocument();
+    expect(screen.queryByText(t.common.loading)).not.toBeInTheDocument();
   });
 });
 

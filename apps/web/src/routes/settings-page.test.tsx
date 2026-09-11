@@ -234,7 +234,7 @@ describe('/settings', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(t.settings.saveFailed);
-    expect(alert).toHaveTextContent(t.errors.network);
+    expect(alert).toHaveTextContent(t.errors.serverDown);
     expect(nameField()).toHaveValue('Ник');
   });
 

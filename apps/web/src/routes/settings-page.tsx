@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 
 import { messageForError } from '@/api/error-message';
 import { ApiRequestError } from '@/api/errors';
+import { QueryProgress } from '@/components/query-progress';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -191,6 +192,12 @@ function SettingsForm({ user }: { user: Profile }) {
               )}
             </Field>
 
+            {/*
+              Единственное ожидание в приложении не через `QueryProgress`, и намеренно:
+              здесь ждёт одно поле на рабочем экране, а не экран, и «Загрузка…» не сказала
+              бы, какое именно. В паузу этот запрос попасть не может — повторов у него нет
+              (`user/time-zones.ts`), а пауза бывает только у повтора.
+            */}
             {timeZones.isPending ? (
               <p className="text-sm text-muted-foreground" aria-live="polite">
                 {t.settings.timezoneListLoading}
@@ -322,9 +329,7 @@ export function SettingsPage() {
         <p className="text-sm text-muted-foreground">{t.settings.hint}</p>
       </div>
 
-      {profile.isPending ? (
-        <p className="text-sm text-muted-foreground">{t.common.loading}</p>
-      ) : null}
+      {profile.isPending ? <QueryProgress fetchStatus={profile.fetchStatus} /> : null}
 
       {profile.isError ? (
         <div className="flex flex-col items-start gap-3">

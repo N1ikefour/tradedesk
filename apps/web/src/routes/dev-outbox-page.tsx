@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 
 import { api, unwrap } from '@/api/client';
 import { messageForError } from '@/api/error-message';
+import { QueryProgress } from '@/components/query-progress';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -52,9 +53,7 @@ export function DevOutboxPage() {
 
       <p className="mb-6 text-sm text-muted-foreground">{t.outbox.hint}</p>
 
-      {outbox.isPending ? (
-        <p className="text-sm text-muted-foreground">{t.common.loading}</p>
-      ) : null}
+      {outbox.isPending ? <QueryProgress fetchStatus={outbox.fetchStatus} /> : null}
 
       {outbox.isError ? (
         <Alert variant="destructive">
