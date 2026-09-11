@@ -11,19 +11,30 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 EXAMPLE="$ROOT/.env.example"
 TARGET="$ROOT/.env"
 
+# Отсюда берутся td_cmd и печать через printf. Своя копия определения платформы здесь
+# разошлась бы с общей молча, а `echo` съел бы обратные слэши в `infra\scripts\…` (X-64).
+TD_ROOT="$ROOT"
+. "$ROOT/infra/scripts/common.sh"
+
+INIT="$(td_cmd init)"
+
 if [ -f "$TARGET" ]; then
-  echo "make init: $TARGET уже существует — ничего не изменено." >&2
-  echo "" >&2
-  echo "Перезапись стёрла бы MASTER_KEY, а вместе с ним пароли всех брокерских счетов:" >&2
-  echo "расшифровать их без ключа нельзя, дамп базы тут не поможет." >&2
-  echo "" >&2
-  echo "Нужен новый файл — сначала уберите старый вручную, осознанно:" >&2
-  echo "    mv .env .env.bak && make init" >&2
+  td_warn "$INIT: $TARGET уже существует — ничего не изменено."
+  td_warn ""
+  td_warn "Перезапись стёрла бы MASTER_KEY, а вместе с ним пароли всех брокерских счетов:"
+  td_warn "расшифровать их без ключа нельзя, дамп базы тут не поможет."
+  td_warn ""
+  td_warn "Нужен новый файл — сначала уберите старый вручную, осознанно:"
+  if td_is_windows; then
+    td_warn "    переименуйте .env в .env.bak, затем запустите $INIT"
+  else
+    td_warn "    mv .env .env.bak && $INIT"
+  fi
   exit 1
 fi
 
 if [ ! -f "$EXAMPLE" ]; then
-  echo "make init: не найден $EXAMPLE" >&2
+  td_warn "$INIT: не найден $EXAMPLE"
   exit 1
 fi
 
@@ -37,8 +48,8 @@ elif command -v python3 >/dev/null 2>&1; then
   gen_base64_32() { python3 -c "import base64,os;print(base64.b64encode(os.urandom(32)).decode())"; }
   gen_hex() { python3 -c "import os,sys;print(os.urandom(int(sys.argv[1])).hex())" "$1"; }
 else
-  echo "make init: нужен openssl или python3 — генерировать секреты нечем." >&2
-  echo "На Windows openssl приходит вместе с Git for Windows (Git Bash)." >&2
+  td_warn "$INIT: нужен openssl или python3 — генерировать секреты нечем."
+  td_warn "На Windows openssl приходит вместе с Git for Windows (Git Bash)."
   exit 1
 fi
 
@@ -60,6 +71,7 @@ chmod 600 "$TMP"
 trap 'rm -f "$TMP"' EXIT INT TERM
 
 awk \
+  -v init_cmd="$INIT" \
   -v secret_key="$SECRET_KEY" \
   -v master_key="$MASTER_KEY" \
   -v otp_pepper="$OTP_PEPPER" \
@@ -88,7 +100,7 @@ BEGIN {
     # подставляется в готовый URL из .env.example, чтобы форма URL осталась одна.
     sub(/^[ \t]+/, "", value); sub(/[ \t]+$/, "", value)
     if (sub(/:\/\/td:[^@]*@/, "://td:" postgres_password "@", value) == 0) {
-      print "make init: DATABASE_URL в .env.example не той формы, пароль не подставлен" > "/dev/stderr"
+      print init_cmd ": DATABASE_URL в .env.example не той формы, пароль не подставлен" > "/dev/stderr"
       exit 3
     }
   } else {
@@ -102,9 +114,9 @@ mv "$TMP" "$TARGET"
 chmod 600 "$TARGET"
 trap - EXIT INT TERM
 
-echo "Создан $TARGET (права 600). Секреты сгенерированы, плейсхолдеры заменены."
-echo ""
-echo "⚠️  MASTER_KEY шифрует пароли брокерских счетов. Потеря ключа необратима —"
-echo "    сохраните .env вместе с резервными копиями базы, иначе дамп бесполезен."
-echo ""
-echo "Дальше: make up"
+td_say "Создан $TARGET (права 600). Секреты сгенерированы, плейсхолдеры заменены."
+td_say ""
+td_say "⚠️  MASTER_KEY шифрует пароли брокерских счетов. Потеря ключа необратима —"
+td_say "    сохраните .env вместе с резервными копиями базы, иначе дамп бесполезен."
+td_say ""
+td_say "Дальше: $(td_cmd up)"

@@ -18,17 +18,17 @@ cd "$TD_ROOT"
 . "$TD_ROOT/infra/scripts/common.sh"
 
 usage() {
-  echo "Использование: infra/scripts/restore.sh <backups/td-….sql.gz> [--yes]" >&2
-  echo "" >&2
-  echo "  Заменяет содержимое базы данными из бэкапа." >&2
-  echo "  --yes — не спрашивать подтверждения (для неинтерактивного запуска)." >&2
-  echo "" >&2
-  echo "Доступные бэкапы:" >&2
+  td_warn "Использование: $(td_script restore) <backups/td-….sql.gz> [--yes]"
+  td_warn ""
+  td_warn "  Заменяет содержимое базы данными из бэкапа."
+  td_warn "  --yes — не спрашивать подтверждения (для неинтерактивного запуска)."
+  td_warn ""
+  td_warn "Доступные бэкапы:"
   available="$(ls -t "$TD_ROOT"/backups/td-*.sql.gz 2>/dev/null || true)"
   if [ -n "$available" ]; then
     printf '%s\n' "$available" | sed 's|^|      |' >&2
   else
-    echo "      (в backups/ пусто — снимите копию: make backup)" >&2
+    td_warn "      (в backups/ пусто — снимите копию: $(td_cmd backup))"
   fi
 }
 

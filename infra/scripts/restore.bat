@@ -6,15 +6,16 @@ rem Путь к файлу приезжает сюда как есть — с о
 rem в Git Bash «\» разделителем каталогов не считается, и normalize там, а не тут.
 setlocal
 
-where bash >nul 2>nul
+rem Где взять bash и почему это не `where bash` — в find-bash.bat (X-63).
+rem Он же печатает отказ, если bash не нашёлся, — один текст на все обёртки.
+call "%~dp0find-bash.bat" "%~nx0"
 if errorlevel 1 goto :nobash
 
-bash "%~dp0restore.sh" %*
+"%TD_BASH%" "%~dp0restore.sh" %*
 set RC=%errorlevel%
 goto :done
 
 :nobash
-echo Не найден bash. Поставь Git for Windows — https://git-scm.com/download/win
 set RC=1
 
 :done

@@ -22,7 +22,7 @@ UP_TIMEOUT="${UP_TIMEOUT:-600}"
 td_require_ascii_path
 
 if [ ! -f "$ROOT/.env" ]; then
-  echo "Нет $ROOT/.env — сначала запусти: make init" >&2
+  td_warn "Нет $ROOT/.env — сначала запусти: $(td_cmd init)"
   exit 1
 fi
 
@@ -32,8 +32,8 @@ if ! docker info >/dev/null 2>&1; then
 fi
 
 if [ -z "$(td_env_value POSTGRES_PASSWORD)" ]; then
-  echo "В .env пуст POSTGRES_PASSWORD — postgres откажется инициализировать базу." >&2
-  echo "Его генерирует make init; если .env писался руками, задайте пароль и повторите." >&2
+  td_warn "В .env пуст POSTGRES_PASSWORD — postgres откажется инициализировать базу."
+  td_warn "Его генерирует $(td_cmd init); если .env писался руками, задайте пароль и повторите."
   exit 1
 fi
 
@@ -209,5 +209,5 @@ if [ "$PROFILE" = "local" ]; then
 else
   echo "  Приложение   https://$(td_env_value DOMAIN)"
 fi
-echo ""
-echo "Остановить: make down"
+td_say ""
+td_say "Остановить: $(td_cmd down)"
