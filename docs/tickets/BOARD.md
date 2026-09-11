@@ -116,7 +116,7 @@ Updated: 2026-09-11
 | X-10 | Инлайн-объявления ошибок растят типы впятеро | backend | Todo | — |
 | X-11 | Заголовки ответов не объявлены в OpenAPI | backend | Todo | — |
 | X-12 | Том postgres переживает worktree, `make up` умирает на пароле | infra | Todo | — |
-| X-13 | Приостановленный запрос выглядит как вечная загрузка | frontend | Todo | — |
+| X-13 | Приостановленный запрос выглядит как вечная загрузка | frontend | In Review | [PR #45](https://github.com/N1ikefour/tradedesk/pull/45) · вместе с `X-42` |
 | X-14 | Новая зависимость не доезжает до существующего окружения | infra | Todo | — |
 | X-15 | Линтер ловит кнопку без `type` | frontend | **Done** | [PR #11](https://github.com/N1ikefour/tradedesk/pull/11) |
 | X-16 | Уход на страницу писем сбрасывает форму входа (+ `X-36`) | frontend | **Done** | [PR #33](https://github.com/N1ikefour/tradedesk/pull/33) |
@@ -145,7 +145,7 @@ Updated: 2026-09-11
 | X-39 | Виртуализация журнала держится на константе высоты | frontend | Todo | — |
 | X-40 | Границу торгового дня считают двое, общих примеров нет | frontend | Todo | — |
 | X-41 | Схема разрешает закрытую позицию без времени закрытия | backend | Todo | — |
-| X-42 | Экран без сети показывает вечную «Загрузка…» | frontend | Todo | — |
+| X-42 | Экран без сети показывает вечную «Загрузка…» (+ `X-13`) | frontend | In Review | [PR #45](https://github.com/N1ikefour/tradedesk/pull/45) |
 | X-43 | Кириллица в имени пользователя Windows | collector + infra | Todo | — |
 | X-44 | Депозит не проходит контракт ингеста: пустой `symbol` | backend | **Done** | [PR #26](https://github.com/N1ikefour/tradedesk/pull/26) |
 | X-45 | Индексы приходят с префиксом `$$` | backend | Todo | — |
