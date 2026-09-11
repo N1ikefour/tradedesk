@@ -15,6 +15,7 @@ import { Link, Outlet, useMatch, useSearchParams } from 'react-router';
 import { useAccounts } from '@/accounts/api';
 import { useAccountIds } from '@/accounts/selection';
 import { messageForError } from '@/api/error-message';
+import { QueryProgress } from '@/components/query-progress';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { t } from '@/i18n';
@@ -155,7 +156,7 @@ export function JournalPage() {
       ) : null}
 
       {positions.isPending && !selection.empty ? (
-        <p className="text-sm text-muted-foreground">{t.common.loading}</p>
+        <QueryProgress fetchStatus={positions.fetchStatus} />
       ) : null}
 
       {positions.isError ? (

@@ -3,9 +3,11 @@
  * «Повторить» и пустое состояние выглядят одинаково во всех четырёх блоках: разъехавшись,
  * они читались бы как разные виды поломки.
  */
+import type { FetchStatus } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 
 import { messageForError } from '@/api/error-message';
+import { QueryProgress } from '@/components/query-progress';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -44,6 +46,7 @@ export type BlockQueryState = {
   readonly isError: boolean;
   readonly error: Error | null;
   readonly isFetching: boolean;
+  readonly fetchStatus: FetchStatus;
   readonly refetch: () => void;
 };
 
@@ -77,7 +80,7 @@ export function BlockStatus({
     );
   }
   if (query.isPending) {
-    return <p className="text-sm text-muted-foreground">{t.common.loading}</p>;
+    return <QueryProgress fetchStatus={query.fetchStatus} />;
   }
   return null;
 }

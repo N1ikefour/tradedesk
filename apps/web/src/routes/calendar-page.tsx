@@ -28,6 +28,7 @@ import { MONTH_PARAM, monthOfDay, monthTitle, readMonth, shiftMonth } from '@/ca
 import { MonthTotals } from '@/calendar/month-totals';
 import { MonthView } from '@/calendar/month-view';
 import { totalsOf } from '@/calendar/totals';
+import { QueryProgress } from '@/components/query-progress';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { t } from '@/i18n';
@@ -158,9 +159,7 @@ export function CalendarPage() {
         </div>
       ) : null}
 
-      {calendar.isPending && asked ? (
-        <p className="text-sm text-muted-foreground">{t.common.loading}</p>
-      ) : null}
+      {calendar.isPending && asked ? <QueryProgress fetchStatus={calendar.fetchStatus} /> : null}
 
       {calendar.isError ? (
         <div className="flex flex-col items-start gap-3">

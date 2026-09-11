@@ -110,6 +110,25 @@ export class NetworkError extends Error {
   }
 }
 
+const SERVER_ERROR_STATUS = 500;
+
+/**
+ * Отвечало не наше API, а значит приложение не поднято. Два признака, и оба однозначные:
+ * запрос не доехал вовсе, либо на 5xx не пришло тело SPEC.md 5.1 — так выглядит страница
+ * ошибки прокси (`502` от Caddy, пока контейнер `api` ещё стартует), а не отказ API.
+ *
+ * Настоящий отказ API отличим по коду: `internal_error` с телом значит, что сервер жив и
+ * сломался внутри, и звать человека проверять Docker Desktop там было бы неправдой.
+ */
+export function isServerUnreachable(error: unknown): boolean {
+  if (error instanceof NetworkError) {
+    return !error.timedOut;
+  }
+  return (
+    error instanceof ApiRequestError && error.status >= SERVER_ERROR_STATUS && error.code === null
+  );
+}
+
 /**
  * Тело ответа с ошибкой → `ApiRequestError`. Тело приходит как `unknown`: обещание схемы
  * проверяется здесь один раз, чтобы дальше по коду ошибка была одной формы.

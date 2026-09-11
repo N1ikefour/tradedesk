@@ -8,6 +8,7 @@ import { useAccountSelectionStore } from '@/accounts/selection';
 import { t } from '@/i18n';
 import type { Deal, JournalEntryDetail, PositionCard, PositionListItem } from '@/journal/api';
 import { AUTOSAVE_DELAY_MS } from '@/journal/use-autosave';
+import { stubAbortTimeout, timeoutReason } from '@/test/abort-timeout';
 import {
   errorResponse,
   installFetchMock,
@@ -230,27 +231,6 @@ function bodyOf(calls: MockedCall[], path: string): Record<string, unknown> {
   return call.body as Record<string, unknown>;
 }
 
-/**
- * Подменить `AbortSignal.timeout` управляемым сигналом. Иначе таймаут сохранения нечем
- * привести в действие: он длиной в пятнадцать секунд, а `AbortSignal.timeout` заводит свой
- * таймер мимо подменённых часов vitest.
- */
-function stubAbortTimeout(signal: AbortSignal): () => void {
-  const original = Object.getOwnPropertyDescriptor(AbortSignal, 'timeout');
-  Object.defineProperty(AbortSignal, 'timeout', {
-    value: () => signal,
-    configurable: true,
-    writable: true,
-  });
-  return () => {
-    if (original === undefined) {
-      Reflect.deleteProperty(AbortSignal, 'timeout');
-      return;
-    }
-    Object.defineProperty(AbortSignal, 'timeout', original);
-  };
-}
-
 beforeEach(() => {
   window.localStorage.clear();
   useAccountSelectionStore.setState({ mode: 'all', ids: [] });
@@ -388,7 +368,7 @@ describe('карточка позиции: автосохранение', () => 
     await user.tab();
 
     expect(await screen.findAllByText(t.position.saveFailed)).not.toHaveLength(0);
-    expect(screen.getAllByText(t.errors.network).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(t.errors.serverDown).length).toBeGreaterThan(0);
     expect(notes).toHaveValue('мысль, которую жалко потерять');
     expect(screen.queryByText(t.position.saved)).not.toBeInTheDocument();
   });
@@ -430,7 +410,7 @@ describe('карточка позиции: автосохранение', () => 
         [ENTRY]: ({ signal }) =>
           new Promise<Response>((_, reject) => {
             signal?.addEventListener('abort', () => {
-              reject(new DOMException('истекло время ожидания', 'TimeoutError'));
+              reject(timeoutReason());
             });
           }),
       });
@@ -443,13 +423,13 @@ describe('карточка позиции: автосохранение', () => 
       expect(await screen.findAllByText(t.position.saving)).not.toHaveLength(0);
 
       await act(async () => {
-        timeout.abort(new DOMException('истекло время ожидания', 'TimeoutError'));
+        timeout.abort(timeoutReason());
       });
 
       expect(await screen.findAllByText(t.position.saveFailed)).not.toHaveLength(0);
       // Текст отличается от обрыва сети: соединение могло быть цело, а запись — примениться.
       expect(screen.getAllByText(t.errors.timeout).length).toBeGreaterThan(0);
-      expect(screen.queryByText(t.errors.network)).not.toBeInTheDocument();
+      expect(screen.queryByText(t.errors.serverDown)).not.toBeInTheDocument();
       expect(notes).toHaveValue('сервер молчит');
     } finally {
       restoreTimeout();

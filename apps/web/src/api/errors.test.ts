@@ -56,7 +56,7 @@ describe('текст ошибки', () => {
   });
 
   it('несостоявшийся запрос отличается от ответа с ошибкой', () => {
-    expect(messageForError(new NetworkError(new Error('offline')))).toBe(t.errors.network);
+    expect(messageForError(new NetworkError(new Error('offline')))).toBe(t.errors.serverDown);
   });
 
   it('обрыв по своему таймауту — не «проверьте соединение»', () => {

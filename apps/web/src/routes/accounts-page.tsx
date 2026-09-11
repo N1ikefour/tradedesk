@@ -6,6 +6,7 @@ import { AccountCard } from '@/accounts/account-card';
 import { AccountForm } from '@/accounts/account-form';
 import { useAccounts } from '@/accounts/api';
 import { CollectorBlock } from '@/accounts/collector-block';
+import { QueryProgress } from '@/components/query-progress';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -62,9 +63,7 @@ export function AccountsPage() {
         </div>
       </div>
 
-      {accounts.isPending ? (
-        <p className="text-sm text-muted-foreground">{t.common.loading}</p>
-      ) : null}
+      {accounts.isPending ? <QueryProgress fetchStatus={accounts.fetchStatus} /> : null}
 
       {accounts.isError ? (
         <div className="flex flex-col items-start gap-3">
