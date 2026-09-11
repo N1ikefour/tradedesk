@@ -69,8 +69,8 @@ Updated: 2026-09-11
 | T-06 | Тест инструкции на чистой машине | принципал | Backlog | — |
 | T-07 | Коллектор работает с открытым терминалом; пароли убираются | backend + frontend | **Done** | [PR #41](https://github.com/N1ikefour/tradedesk/pull/41) |
 | T-08 | `SETUP.md` по итогам первого прогона (вкл. `X-65`) | infra | **Done** | [PR #42](https://github.com/N1ikefour/tradedesk/pull/42) |
-| X-69 | Цитаты `SETUP.md` не сверяются с текстами кода ничем | infra | Todo | — |
-| X-70 | Хвосты отменённой архитектуры в текстах для человека | collector + infra | Todo | — |
+| X-69 | Цитаты `SETUP.md` не сверяются с текстами кода ничем | infra | In Review | [PR #43](https://github.com/N1ikefour/tradedesk/pull/43) |
+| X-70 | Хвосты отменённой архитектуры в текстах для человека | collector + infra | In Review | [PR #44](https://github.com/N1ikefour/tradedesk/pull/44) |
 
 ---
 
