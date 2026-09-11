@@ -72,6 +72,7 @@ Updated: 2026-09-11
 | X-69 | Цитаты `SETUP.md` не сверяются с текстами кода ничем | infra | In Review | [PR #43](https://github.com/N1ikefour/tradedesk/pull/43) |
 | X-70 | Хвосты отменённой архитектуры в текстах для человека | collector + infra | In Review | [PR #44](https://github.com/N1ikefour/tradedesk/pull/44) |
 | X-71 | Отменённая архитектура осталась в документах read order | backend + infra | Todo | — |
+| X-72 | Сличитель цитат: мёртвая ветка, потолок и дешёвая подстановка | infra | Todo | — |
 
 ---
 
