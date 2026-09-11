@@ -103,6 +103,24 @@ def _stop_outcomes() -> dict[str, str]:
     return {"мягкая ветка": graceful, "принудительная ветка": forced, "шапка .bat": header}
 
 
+def _task_manager_advice() -> str:
+    """Что `Install-Task` говорит про «Снять задачу» — подряд идущими строками вывода.
+
+    Отдельно от тела функции: тело большое, и «сирот не остаётся» где-нибудь в нём нашлось
+    бы вместе с опровержением абзацем ниже, а человек читает именно этот блок.
+    """
+    lines = _powershell_function("Install-Task").splitlines()
+    start = next((i for i, line in enumerate(lines) if "«Снять задачу»" in line), None)
+    assert start is not None, "про «Снять задачу» скрипт больше ничего не говорит"
+    said = []
+    for line in lines[start:]:
+        text = line.strip()
+        if not text.startswith("Write-"):
+            break
+        said.append(text)
+    return "\n".join(said)
+
+
 def _task_result_table() -> dict[str, str]:
     """Таблица `$TaskResultText` из `install-service.ps1`, ключ → текст для человека."""
     text = _text("install-service.ps1")
@@ -373,6 +391,36 @@ def test_the_forced_stop_says_what_it_costs() -> None:
 
     assert "принудительно" in body
     assert "не на связи" in body
+
+
+def test_the_task_manager_stop_is_not_promised_to_leave_nothing_behind() -> None:
+    """Под задачей Планировщика процесса два, и «Снять задачу» снимает не оба.
+
+    Задача заведена как `cmd.exe /c "run-collector.bat" --service`, а `.bat` поднимает
+    `python.exe` дочерним и ждёт его. То есть под задачей два процесса, а Windows детей за
+    родителем не гасит: «Снять задачу» по `cmd.exe` на вкладке «Подробности» оставляет
+    `python.exe` синхронизировать счёт дальше — ровно то состояние, которое `Show-Status`
+    сам называет «коллектор запущен дважды».
+
+    Верна здесь только половина: процессов **счетов** больше нет (`X-66` снял `X-57`),
+    коллектор работает одним процессом. Достроить до «сирот не остаётся» нельзя — человек
+    прочтёт обещание, не заглянет в диспетчер и получит второй коллектор при следующем
+    запуске. Поэтому проверяемый совет («проверьте диспетчер или запустите
+    `stop-collector.bat`») обязан остаться: снять его обратно молча не должно получиться.
+    """
+    install = _powershell_function("Install-Task")
+    # Сначала — что под задачей действительно два процесса. Иначе правило ниже держалось бы
+    # на памяти о механизме, а не на самом механизме: сделают запуск python.exe напрямую —
+    # текст станет неверным в другую сторону, и сказать об этом будет некому.
+    assert r"System32\cmd.exe" in install
+    assert '/c ""$Bat"" --service' in install
+    assert '"%TD_VENV_PY%" -m collector.main' in _text("run-collector.bat")
+
+    advice = _task_manager_advice()
+    assert "cmd.exe" in advice and "python.exe" in advice, f"процессы не названы: {advice}"
+    assert "проверьте" in advice.lower(), f"совет проверить пропал: {advice}"
+    assert "stop-collector.bat" in advice, f"правильный способ не назван: {advice}"
+    assert "не остаётся" not in advice, f"снова обещано, что сирот не будет: {advice}"
 
 
 def test_no_stop_outcome_promises_the_cards_will_say_stopped() -> None:
