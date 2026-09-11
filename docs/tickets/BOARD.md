@@ -68,7 +68,7 @@ Updated: 2026-09-11
 | T-05 | Чек-лист приёмки | оркестратор | Backlog | — |
 | T-06 | Тест инструкции на чистой машине | принципал | Backlog | — |
 | T-07 | Коллектор работает с открытым терминалом; пароли убираются | backend + frontend | **Done** | [PR #41](https://github.com/N1ikefour/tradedesk/pull/41) |
-| T-08 | `SETUP.md` по итогам первого прогона (вкл. `X-65`) | infra | In Progress | `docs/T-08-setup-after-run` |
+| T-08 | `SETUP.md` по итогам первого прогона (вкл. `X-65`) | infra | **Done** | [PR #42](https://github.com/N1ikefour/tradedesk/pull/42) |
 | X-69 | Цитаты `SETUP.md` не сверяются с текстами кода ничем | infra | Todo | — |
 | X-70 | Хвосты отменённой архитектуры в текстах для человека | collector + infra | Todo | — |
 
@@ -167,7 +167,7 @@ Updated: 2026-09-11
 | X-62 | Экран «Счета» говорит про коллектор неправду | frontend | **Done** | [PR #39](https://github.com/N1ikefour/tradedesk/pull/39) |
 | X-63 | `bash` не попадает в PATH при установке Git по умолчанию | infra | **Done** | [PR #40](https://github.com/N1ikefour/tradedesk/pull/40) |
 | X-64 | Скрипты советят Windows-пользователю `make`, которого нет | infra | **Done** | [PR #40](https://github.com/N1ikefour/tradedesk/pull/40) |
-| X-65 | WSL2 в инструкции — одна строка, на деле четыре шага и VPN | infra | Todo | — |
+| X-65 | WSL2 в инструкции — одна строка, на деле четыре шага и VPN | infra | **Done** | [PR #42](https://github.com/N1ikefour/tradedesk/pull/42) · шаг про блок 0 переехал в `X-70` |
 | X-66 | 🔴 `initialize(path=…, portable=True)` не достаёт терминал, который `initialize()` достаёт | collector | **Done** | [PR #41](https://github.com/N1ikefour/tradedesk/pull/41) |
 | X-67 | Числовой код ошибки MT5 не попадает в лог | collector | **Done** | [PR #41](https://github.com/N1ikefour/tradedesk/pull/41) |
 | X-68 | Коллектор ходит на localhost через системный прокси | collector | **Done** | [PR #41](https://github.com/N1ikefour/tradedesk/pull/41) |
