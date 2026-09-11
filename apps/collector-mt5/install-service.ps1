@@ -194,7 +194,7 @@ function Request-GracefulStop {
         Write-Note "не удалось создать $StopFlag — остановлю принудительно."
         return $false
     }
-    Write-Step "Прошу менеджер остановиться сам (до $GracefulStopSeconds с) ..."
+    Write-Step "Прошу коллектор выйти самому (до $GracefulStopSeconds с) ..."
     for ($second = 0; $second -lt $GracefulStopSeconds; $second++) {
         Start-Sleep -Seconds 1
         if (@(Get-CollectorProcess).Count -eq 0) { return $true }
@@ -217,7 +217,7 @@ function Stop-Collector {
     if ($found -gt 0) { $graceful = Request-GracefulStop }
 
     # Задача Планировщика гасится ПОСЛЕ просьбы, а не до неё: Stop-ScheduledTask снимает
-    # дерево процессов задачи целиком, то есть убил бы менеджер раньше, чем тот успел бы
+    # дерево процессов задачи целиком, то есть убил бы коллектор раньше, чем тот успел бы
     # попрощаться, — а ради прощания всё и затевалось.
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if ($task) {
@@ -382,10 +382,10 @@ function Install-Task {
     Write-Step 'Остановить коллектор — файлом stop-collector.bat: он сначала просит'
     Write-Step 'коллектор выйти самому и только потом снимает силой.'
     Write-Step 'Посмотреть, что с ним сейчас, — файлом status-collector.bat.'
-    Write-Warn '«Снять задачу» в диспетчере задач останавливает не всё: процессов счетов'
-    Write-Note 'больше нет и коллектор работает одним процессом, но под задачей их два —'
-    Write-Note 'cmd.exe и запущенный им python.exe. Снимете cmd.exe — python.exe останется'
-    Write-Note 'работать. После неё проверьте диспетчер или запустите stop-collector.bat.'
+    Write-Warn '«Снять задачу» в диспетчере задач останавливает не всё: коллектор'
+    Write-Note 'работает одним процессом, но под задачей их два — cmd.exe и запущенный'
+    Write-Note 'им python.exe. Снимете cmd.exe — python.exe останется работать. После'
+    Write-Note 'неё проверьте диспетчер или запустите stop-collector.bat.'
 
     if ($NoStart) { return }
 
