@@ -68,6 +68,7 @@ Updated: 2026-09-11
 | T-05 | Чек-лист приёмки | оркестратор | Backlog | — |
 | T-06 | Тест инструкции на чистой машине | принципал | Backlog | — |
 | T-07 | Коллектор работает с открытым терминалом; пароли убираются | backend + frontend | **Done** | [PR #41](https://github.com/N1ikefour/tradedesk/pull/41) |
+| T-08 | `SETUP.md` по итогам первого прогона (вкл. `X-65`) | infra | In Progress | `docs/T-08-setup-after-run` |
 
 ---
 
