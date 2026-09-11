@@ -1,9 +1,10 @@
 import { onlineManager } from '@tanstack/react-query';
-import { screen } from '@testing-library/react';
+import { act, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { t } from '@/i18n';
+import { silentRoute, stubAbortTimeout, timeoutReason } from '@/test/abort-timeout';
 import { errorResponse, installFetchMock, jsonResponse } from '@/test/fetch-mock';
 import { renderApp, TEST_USER } from '@/test/render';
 import { setTabHidden } from '@/test/tab-visibility';
@@ -14,7 +15,10 @@ const ACCOUNTS = 'GET /api/v1/accounts';
 /** Повтор запроса сессии откладывается на секунду — ожидание должно её пережить. */
 const AFTER_RETRY_MS = 5000;
 
-/** Страница ошибки прокси: `502` без тела SPEC.md 5.1 — так отвечает Caddy, пока api не встал. */
+/**
+ * Страница ошибки прокси перед `api`: `502` без тела SPEC.md 5.1. В профиле `local` так
+ * отвечает dev-сервер vite, в `prod` — Caddy; поведение одно, пока контейнер `api` стартует.
+ */
 function gatewayError(): Response {
   return new Response('<html>502 Bad Gateway</html>', {
     status: 502,
@@ -150,6 +154,43 @@ describe('три состояния связи вместо одной «Заг�
     await user.click(screen.getByRole('button', { name: t.common.retry }));
 
     expect(await screen.findByRole('heading', { name: t.pages.journal })).toBeInTheDocument();
+  });
+
+  it('молчащая проверка сессии обрывается пределом — и это «не отвечает», а не /login', async () => {
+    // X-42. Предел ожидания (30 с) — это тоже «ответа не пришло», и пока он считался
+    // ответом сервера, гейт уводил на /login со словами «сервер ответил ошибкой» — туда,
+    // где форма входа ходит по тому же мёртвому адресу. Ровно тот тупик, который задача
+    // закрывала, и он не гипотетический: `api` поднялся и ещё не отвечает, прокси в
+    // середине, уснувший туннель VPN — всё это утренний путь этой установки.
+    const timeout = new AbortController();
+    const restore = stubAbortTimeout(timeout.signal);
+    try {
+      const { calls } = installFetchMock({
+        [ME]: silentRoute,
+        [ACCOUNTS]: () => jsonResponse(200, { items: [] }),
+      });
+      const { router } = renderApp(['/journal']);
+      await vi.waitFor(() => expect(calls).not.toHaveLength(0));
+
+      await act(async () => {
+        timeout.abort(timeoutReason());
+      });
+
+      // Ждать надо любой исход, а не только верный: у проверки сессии один повтор, и он
+      // отложен на секунду. Иначе красное от неверного исхода выглядит как таймаут теста,
+      // а не как «увело на /login».
+      const settled = () =>
+        screen.queryByText(t.connection.serverDownTitle) ??
+        screen.queryByRole('heading', { name: t.login.title });
+      await vi.waitFor(() => expect(settled()).not.toBeNull(), { timeout: AFTER_RETRY_MS });
+
+      expect(screen.getByText(t.connection.serverDownTitle)).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: t.login.title })).not.toBeInTheDocument();
+      expect(screen.queryByText(t.login.sessionCheckFailed)).not.toBeInTheDocument();
+      expect(router.state.location.pathname).toBe('/journal');
+    } finally {
+      restore();
+    }
   });
 
   it('приостановленный запрос сессии называет себя паузой, а не загрузкой', async () => {

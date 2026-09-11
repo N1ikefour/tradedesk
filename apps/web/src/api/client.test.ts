@@ -4,22 +4,8 @@ import { api, unwrap, unwrapEmpty } from '@/api/client';
 import { messageForError } from '@/api/error-message';
 import { NetworkError } from '@/api/errors';
 import { t } from '@/i18n';
-import { stubAbortTimeout, timeoutReason } from '@/test/abort-timeout';
+import { silentRoute, stubAbortTimeout, timeoutReason } from '@/test/abort-timeout';
 import { emptyResponse, installFetchMock, type MockedCall } from '@/test/fetch-mock';
-
-/**
- * Соединение, которое приняли и не ответили: ни данных, ни ошибки. Закончиться оно может
- * только обрывом, поэтому обрыв здесь единственный выход из промиса.
- */
-function silent({ signal }: { signal: AbortSignal | null }): Promise<Response> {
-  return new Promise<Response>((_, reject) => {
-    if (signal?.aborted === true) {
-      reject(timeoutReason());
-      return;
-    }
-    signal?.addEventListener('abort', () => reject(timeoutReason()));
-  });
-}
 
 /** Обрывать раньше, чем запрос ушёл, бессмысленно: обрывать было бы нечего. */
 async function requestSent(calls: MockedCall[]): Promise<void> {
@@ -33,7 +19,7 @@ describe('предел ожидания чтения', () => {
     const timeout = new AbortController();
     const restore = stubAbortTimeout(timeout.signal);
     try {
-      const { calls } = installFetchMock({ 'GET /api/v1/auth/me': silent });
+      const { calls } = installFetchMock({ 'GET /api/v1/auth/me': silentRoute });
       const call = unwrap(api.GET('/api/v1/auth/me')).catch((error: unknown) => error);
       await requestSent(calls);
 
@@ -71,6 +57,28 @@ describe('предел ожидания чтения', () => {
       answer(emptyResponse(204));
 
       await expect(call).resolves.toBeUndefined();
+    } finally {
+      restore();
+    }
+  });
+
+  it('свой сигнал вызывающего предел не съедает', async () => {
+    // Предел ставится подменой сигнала запроса целиком, поэтому сигнал вызывающего легко
+    // потерять молча: GET, который отменяют по уходу с экрана, висел бы до тридцатой
+    // секунды. Сегодня таких вызывающих нет — тест держит обещание, данное комментарием
+    // в `withReadTimeout`, до первого из них.
+    const caller = new AbortController();
+    const restore = stubAbortTimeout(new AbortController().signal);
+    try {
+      const { calls } = installFetchMock({ 'GET /api/v1/auth/me': silentRoute });
+      const call = unwrap(api.GET('/api/v1/auth/me', { signal: caller.signal })).catch(
+        (error: unknown) => error,
+      );
+      await requestSent(calls);
+
+      caller.abort(new DOMException('экран закрыли', 'AbortError'));
+
+      expect(await call).toBeInstanceOf(NetworkError);
     } finally {
       restore();
     }

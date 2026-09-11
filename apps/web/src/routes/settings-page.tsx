@@ -192,6 +192,12 @@ function SettingsForm({ user }: { user: Profile }) {
               )}
             </Field>
 
+            {/*
+              Единственное ожидание в приложении не через `QueryProgress`, и намеренно:
+              здесь ждёт одно поле на рабочем экране, а не экран, и «Загрузка…» не сказала
+              бы, какое именно. В паузу этот запрос попасть не может — повторов у него нет
+              (`user/time-zones.ts`), а пауза бывает только у повтора.
+            */}
             {timeZones.isPending ? (
               <p className="text-sm text-muted-foreground" aria-live="polite">
                 {t.settings.timezoneListLoading}

@@ -355,6 +355,23 @@ describe('журнал: пустые состояния', () => {
     expect(await screen.findByText('EURUSD')).toBeInTheDocument();
   });
 
+  it('удачно загруженный экран возвратом во вкладку НЕ перезапрашивается', async () => {
+    // X-42, вторая половина решения про фокус. Исключение заведено ровно для упавших
+    // запросов: сделай его общим (`refetchOnWindowFocus: true`) — и каждый взгляд в
+    // терминал MT5 и обратно перечитывал бы страницу журнала целиком.
+    const { routes, queries } = withJournal([position(1)]);
+    installFetchMock(routes);
+    await openJournal();
+    expect(await screen.findByText('EURUSD')).toBeInTheDocument();
+    const asked = queries.length;
+
+    setTabHidden(true);
+    setTabHidden(false);
+    await settle();
+
+    expect(queries).toHaveLength(asked);
+  });
+
   it('браузер офлайн не подвешивает список: API живёт на этой же машине', async () => {
     // X-42. По умолчанию библиотека **не отправляет** запрос, пока браузер считает себя
     // офлайн, — на месте таблицы остаётся «Загрузка…» насовсем. Здесь это было бы прямым
