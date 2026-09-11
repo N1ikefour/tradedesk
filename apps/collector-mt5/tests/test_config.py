@@ -20,8 +20,6 @@ BASE = {
     "api_url": "http://localhost:8000",
     "collector_token": TOKEN,
     "collector_id": "nikita-laptop",
-    "mt5_terminal_exe": "C:\\Program Files\\MetaTrader 5\\terminal64.exe",
-    "mt5_portable_root": "C:\\td-terminals",
 }
 
 
@@ -34,7 +32,6 @@ def test_defaults_match_the_spec() -> None:
     assert settings.sync_interval_seconds == 60
     assert settings.heartbeat_interval_seconds == 60
     assert settings.first_sync_days == 3650
-    assert settings.max_accounts == 3
     assert settings.log_level == "INFO"
 
 
@@ -137,3 +134,19 @@ def test_cyrillic_path_is_flagged_but_not_forbidden() -> None:
 
 def test_log_dir_defaults_to_the_working_folder() -> None:
     assert _settings().log_dir == Path("logs")
+    assert _settings().state_dir == Path("state")
+
+
+def test_the_settings_of_the_old_scheme_are_ignored_not_refused() -> None:
+    """`X-66` убрал три поля, а `collector.env` первого пользователя их содержит.
+
+    Отказ стартовать из-за строки, которая перестала что-либо значить, — это работающая
+    установка, сломанная обновлением, на машине, до которой мы не дотянемся.
+    """
+    settings = _settings(
+        mt5_terminal_exe="C:\\Program Files\\MetaTrader 5\\terminal64.exe",
+        mt5_portable_root="C:\\td-terminals",
+        max_accounts="4",
+    )
+    assert not hasattr(settings, "mt5_portable_root")
+    assert not hasattr(settings, "max_accounts")

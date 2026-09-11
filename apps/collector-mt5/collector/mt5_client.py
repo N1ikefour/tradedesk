@@ -1,34 +1,37 @@
 """Обёртка над библиотекой `MetaTrader5`. **Единственный непроверяемый модуль пакета.**
 
 Здесь и только здесь коллектор разговаривает с терминалом. Всё, что можно было решить
-без него, вынесено в `payload.py`, `sync.py` и `messages.py` — их проверяют тесты на
-машине разработки. Этот файл на macOS не выполняется ни разу: `MetaTrader5` существует
-только под Windows.
+без него, вынесено в `payload.py`, `sync.py`, `identity.py` и `messages.py` — их проверяют
+тесты на машине разработки. Этот файл на macOS не выполняется ни разу: `MetaTrader5`
+существует только под Windows.
+
+**Коллектор подключается к терминалу, который открыл человек** (`X-66`, `T-07`). Он не
+запускает терминал, не делает его копий и не входит в счёт паролем: `mt5.initialize()`
+зовётся без единого параметра, кроме таймаута, — ровно так, как это доказанно работает на
+живой машине. Попытка передать `path=` и `portable=True` возвращала `(-10005, 'IPC
+timeout')` всегда, в том числе к заведомо живому и доступному терминалу.
 
 Отсюда два правила, которым модуль подчинён целиком.
 
 1. **Никаких решений.** Функции забирают данные и переводят коды ошибок в человеческий
-   текст через `messages`. Ни расчёта окон, ни отбора сделок, ни арифметики. Три решения,
-   которые здесь всё-таки принимаются, вынесены в чистые функции модуля и проверены
-   тестами: какой тик считать свежайшим (`freshest_tick_time`), означает ли `None` от
-   `positions_get()` пустоту или отказ (`positions_mean_empty`), догрузилась ли история
-   (`history_step`). В методах `Mt5Terminal` остались вызовы библиотеки и ничего больше.
+   текст через `messages`. Ни расчёта окон, ни отбора сделок, ни арифметики, ни ответа на
+   вопрос «наш ли это счёт» — последний живёт в `identity.py`. Три решения, которые здесь
+   всё-таки принимаются, вынесены в чистые функции модуля и проверены тестами: какой тик
+   считать свежайшим (`freshest_tick_time`), означает ли `None` от `positions_get()`
+   пустоту или отказ (`positions_mean_empty`), догрузилась ли история (`history_step`).
 2. **Импорт библиотеки — внутри функции, а не наверху файла.** Иначе `worker.py` нельзя
    было бы даже импортировать на машине разработки, и вместе с ним стали бы
    непроверяемыми его собственные решения.
 
 Права коллектора кончаются на чтении: ни одного вызова, отправляющего ордер, здесь нет и
-быть не должно (`CLAUDE.md` §5, investor-пароль).
+быть не должно (`CLAUDE.md` §5).
 """
 
 from __future__ import annotations
 
-import shutil
 import time
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from types import ModuleType
 from typing import Final, Literal, Protocol
 
@@ -37,11 +40,6 @@ from collector.logging_setup import get_logger
 from collector.payload import RawAccountInfo, RawDeal, RawPosition
 
 log = get_logger(__name__)
-
-# Что не копируется в портабельный экземпляр. `config` — не оптимизация, а требование:
-# там лежат сохранённые терминалом учётные данные исходной установки, и тащить их в
-# папку каждого счёта незачем. Остальное терминал соберёт заново сам.
-PORTABLE_SKIP: Final[frozenset[str]] = frozenset({"config", "bases", "logs", "tester"})
 
 INITIALIZE_TIMEOUT_MS: Final = 60_000
 
@@ -56,31 +54,25 @@ TIME_PROBE_SYMBOLS: Final[tuple[str, ...]] = ("EURUSD", "XAUUSD", "GBPUSD", "USD
 
 
 class TerminalError(Exception):
-    """Отказ терминала, уже переведённый в человеческий текст."""
+    """Отказ терминала, уже переведённый в человеческий текст.
 
-    def __init__(self, message: str, *, code: int = 0) -> None:
+    `code` и `description` — то, что сказала библиотека. Человеку они не показываются
+    (`X-67`: на карточке счёта нужен смысл, а не число), но в файл лога уходят отдельными
+    полями: диагноз `X-66` занял час ровно потому, что кода в логе не было.
+    """
+
+    def __init__(self, message: str, *, code: int = 0, description: str = "") -> None:
         super().__init__(message)
         self.message = message
         self.code = code
-
-
-@dataclass(frozen=True)
-class Credentials:
-    """Чем входить в терминал. Пароль — только в памяти процесса."""
-
-    login: int
-    server: str
-    # `repr=False` по тому же доводу, что у `Assignment.password`: это последний объект на
-    # пути пароля, он лежит в кадре стека `Mt5Terminal.connect`, а кадры печатаются при
-    # любом падении. Автоматический `repr` датакласса вынес бы пароль в трейсбек.
-    password: str = field(repr=False)
+        self.description = description
 
 
 class Terminal(Protocol):
-    """То, что нужно `worker.py` от терминала.
+    """То, что нужно циклу синхронизации от терминала.
 
-    Протокол объявлен затем, чтобы цикл синхронизации проверялся тестами на подделке:
-    настоящую реализацию запустить негде.
+    Протокол объявлен затем, чтобы цикл проверялся тестами на подделке: настоящую
+    реализацию запустить негде.
     """
 
     def connect(self) -> None: ...
@@ -148,83 +140,36 @@ def history_step(total: object, previous: int) -> HistoryStep:
     return "settled" if total == previous else "growing"
 
 
-def portable_dir(root: Path, account_id: str) -> Path:
-    """Папка портабельного экземпляра счёта — `MT5_PORTABLE_ROOT\\<account_id>`."""
-    return root / account_id
-
-
-def skips_portable_entry(name: str) -> bool:
-    """Не копировать ли эту папку в портабельный экземпляр."""
-    return name.casefold() in PORTABLE_SKIP
-
-
-def prepare_portable_dir(terminal_exe: Path, root: Path, account_id: str) -> Path:
-    """Разложить копию терминала под счёт и вернуть путь к её `terminal64.exe`.
-
-    Копия делается один раз: существующая папка означает, что счёт уже поднимался, и
-    перезаписывать её нельзя — там настройки и кэш истории этого счёта.
-    """
-    if not terminal_exe.exists():
-        raise TerminalError(messages.TERMINAL_EXE_MISSING.format(path=terminal_exe))
-    destination = portable_dir(root, account_id)
-    target_exe = destination / terminal_exe.name
-    if target_exe.exists():
-        return target_exe
-    try:
-        shutil.copytree(
-            terminal_exe.parent,
-            destination,
-            ignore=lambda _directory, names: [name for name in names if skips_portable_entry(name)],
-            dirs_exist_ok=True,
-        )
-    except OSError as error:
-        raise TerminalError(
-            messages.PORTABLE_COPY_FAILED.format(path=destination, reason=error.strerror or error)
-        ) from error
-    if not target_exe.exists():
-        raise TerminalError(messages.TERMINAL_EXE_MISSING.format(path=target_exe))
-    return target_exe
-
-
 class Mt5Terminal:
-    """Реальный терминал. Всё в этом классе выполняется только на Windows."""
+    """Открытый человеком терминал. Всё в этом классе выполняется только на Windows."""
 
-    def __init__(
-        self,
-        *,
-        credentials: Credentials,
-        terminal_exe: Path,
-        portable_root: Path,
-        account_id: str,
-        sleep: Callable[[float], None] = time.sleep,
-    ) -> None:
-        self._credentials = credentials
-        self._terminal_exe = terminal_exe
-        self._portable_root = portable_root
-        self._account_id = account_id
+    def __init__(self, *, sleep: Callable[[float], None] = time.sleep) -> None:
         self._mt5: ModuleType | None = None
-        self._exe_in_use: Path | None = None
         self._sleep = sleep
 
     # -- подключение ---------------------------------------------------------------
 
     def connect(self) -> None:
+        """Подключиться к уже открытому терминалу — без пути, без входа в счёт.
+
+        Ни `path=`, ни `portable=True`, ни `login`/`password`/`server`: измерено на живой
+        машине (`X-66`), что с ними вызов возвращает `IPC timeout` всегда, а без них —
+        `True` мгновенно. Чей счёт в этом терминале открыт, спрашивают отдельно
+        (`account_info` плюс `identity.match_open_account`), и до ответа не отправляется
+        ничего.
+        """
         mt5 = import_mt5()
         self._mt5 = mt5
-        exe = prepare_portable_dir(self._terminal_exe, self._portable_root, self._account_id)
-        self._exe_in_use = exe
-        ok = mt5.initialize(
-            path=str(exe),
-            login=self._credentials.login,
-            password=self._credentials.password,
-            server=self._credentials.server,
-            portable=True,
-            timeout=INITIALIZE_TIMEOUT_MS,
-        )
-        if not ok:
+        if not mt5.initialize(timeout=INITIALIZE_TIMEOUT_MS):
             raise self._failure("connect")
 
     def close(self) -> None:
+        """Отпустить канал до терминала.
+
+        Окно терминала при этом не закрывается: терминал не наш, его открыл человек, и
+        `shutdown()` рвёт только соединение библиотеки. До `X-66` здесь оставался жить
+        портабельный экземпляр коллектора (допущение 36) — оставлять больше нечего.
+        """
         if self._mt5 is not None:
             self._mt5.shutdown()
             self._mt5 = None
@@ -288,7 +233,6 @@ class Mt5Terminal:
         # батч уедет неполным, и единственный способ потом это понять — увидеть строку.
         log.warning(
             "collector.history_still_loading",
-            account_id=self._account_id,
             deals_seen=previous,
             waited_seconds=waited,
         )
@@ -303,13 +247,7 @@ class Mt5Terminal:
     def _failure(self, stage: messages.Stage) -> TerminalError:
         code, description = self._module().last_error()
         return TerminalError(
-            messages.describe_mt5_failure(
-                int(code),
-                str(description),
-                stage=stage,
-                server=self._credentials.server,
-                login=self._credentials.login,
-                terminal_path=str(self._exe_in_use or self._terminal_exe),
-            ),
+            messages.describe_mt5_failure(int(code), str(description), stage=stage),
             code=int(code),
+            description=str(description),
         )

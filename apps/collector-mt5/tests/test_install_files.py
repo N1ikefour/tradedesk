@@ -10,11 +10,11 @@
 2. **Переводы строк.** `cmd.exe` разбирает `.bat` построчно и на файлах с одними LF
    спотыкается о `goto` и блоки в скобках. Git на macOS хранит байты как есть, то есть
    единственная защита — проверка.
-3. **Пути.** `MT5_PORTABLE_ROOT` и `LOG_DIR` не имеют права оказаться внутри профиля
+3. **Пути.** `STATE_DIR` и `LOG_DIR` не имеют права оказаться внутри профиля
    пользователя: у первого пользователя он кириллический (`X-43`), а под Планировщиком
    заданий рабочей папкой по умолчанию становится `C:\\Windows\\System32`.
 4. **Смысл, разъезжающийся между файлами.** Коды выхода живут в трёх местах сразу —
-   `collector/worker.py`, `run-collector.bat` и таблица в `install-service.ps1`, откуда
+   `collector/main.py`, `run-collector.bat` и таблица в `install-service.ps1`, откуда
    их читает человек после отказа автозапуска. Разошедшийся текст не ломает ничего
    видимого: он просто уводит человека не туда. Ревью `S1-10` нашло там ровно это —
    код 2 был описан как «Планировщик не нашёл файл» вместо «ошибка в collector.env».
@@ -24,6 +24,11 @@
 разработки, ни в CI. Поэтому здесь проверяется его текст: таблица кодов, порядок в
 `Stop-Collector`, чтение лога и наличие обработчика на отказе Планировщика. Всё
 остальное — `docs/collector-windows-checklist.md`, по нему идёт живой человек.
+
+⚠️ С `X-66` у файлов установки появилось пятое свойство, и оно из той же породы «ломается
+молча»: **скрипты не имеют права закрывать терминал MetaTrader 5**. Раньше терминалы были
+наши, портабельные, и `stop-collector.bat` их перечислял. Теперь терминал открывает
+человек, и `Stop-Process` по `terminal64.exe` выкинул бы его из счёта посреди торговли.
 """
 
 from __future__ import annotations
@@ -34,9 +39,8 @@ from pathlib import Path
 import pytest
 
 from collector import bootstrap
-from collector import main as manager
-from collector.main import EXIT_FAILURE
-from collector.worker import EXIT_CONFIG, EXIT_OK, EXIT_PLATFORM
+from collector import main as collector_main
+from collector.main import EXIT_CONFIG, EXIT_FAILURE, EXIT_OK, EXIT_PLATFORM
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PACKAGE_ROOT.parents[1]
@@ -167,22 +171,42 @@ def test_batch_files_never_point_into_the_user_profile(name: str) -> None:
 
 @pytest.mark.parametrize("name", INSTALL_FILES)
 def test_install_files_do_not_set_collector_paths(name: str) -> None:
-    """`MT5_PORTABLE_ROOT` и `LOG_DIR` задаёт `collector.env`, и только он.
+    """`STATE_DIR` и `LOG_DIR` задаёт `collector.env`, и только он.
 
     Подстановка этих путей из скрипта вернула бы профиль пользователя через чёрный ход:
     скрипт знает `%~dp0` и переменные Windows, и обе дороги ведут туда.
     """
     text = _text(name)
-    for key in ("MT5_PORTABLE_ROOT=", "LOG_DIR="):
+    for key in ("STATE_DIR=", "LOG_DIR="):
         assert key not in text, f"{name}: {key} задаётся мимо collector.env"
 
 
-def test_the_example_keeps_the_terminal_root_short_and_latin() -> None:
+@pytest.mark.parametrize("name", INSTALL_FILES)
+def test_no_install_file_ever_closes_the_users_terminal(name: str) -> None:
+    """X-66: терминал открыл человек, и он в нём торгует.
+
+    До `X-66` терминалы были наши, портабельные, и скрипт останова перечислял оставшиеся.
+    Теперь `Stop-Process` по `terminal64.exe` выкинул бы человека из счёта, а `taskkill`
+    по нему — то же самое: молча и посреди торговли.
+    """
+    text = _text(name)
+    lowered = text.lower()
+    for line in lowered.splitlines():
+        if "terminal64" not in line:
+            continue
+        for weapon in ("stop-process", "taskkill", "kill(", "closemainwindow"):
+            assert weapon not in line, f"{name}: строка гасит терминал человека — {line.strip()}"
+
+
+def test_the_example_keeps_the_state_folder_relative_and_latin() -> None:
+    """Пути коллектора относительны папке установки: она уже проверена на латиницу."""
     values = bootstrap.parse_env((PACKAGE_ROOT / "collector.env.example").read_text("utf-8"))
 
-    assert values["MT5_PORTABLE_ROOT"] == "C:\\td-terminals"
-    assert values["MT5_PORTABLE_ROOT"].isascii()
+    assert values["STATE_DIR"] == "state"
     assert values["LOG_DIR"] == "logs"
+    assert "MT5_TERMINAL_EXE" not in values
+    assert "MT5_PORTABLE_ROOT" not in values
+    assert "MAX_ACCOUNTS" not in values
 
 
 def test_the_scheduled_task_sets_its_working_directory() -> None:
@@ -211,19 +235,19 @@ def test_the_batch_calls_bootstrap_the_way_bootstrap_expects() -> None:
         assert f"{option} " in text
 
 
-def test_the_manager_is_started_by_its_module_path() -> None:
+def test_the_collector_is_started_by_its_module_path() -> None:
     text = _text("run-collector.bat")
 
     assert "-m collector.main" in text
 
 
-def test_the_manager_is_told_where_its_settings_are() -> None:
+def test_the_collector_is_told_where_its_settings_are() -> None:
     """Относительный путь к `collector.env` считался бы от текущей папки, а она чужая.
 
-    Под Планировщиком рабочую папку задаёт задача, но менеджер запускают и руками, из
-    произвольного окна cmd. От этого же пути менеджер отсчитывает файл-просьбу
-    остановиться, который кладёт `Stop-Collector`, — разъедься они, и остановка
-    молча превратилась бы в принудительную.
+    Под Планировщиком рабочую папку задаёт задача, но коллектор запускают и руками, из
+    произвольного окна cmd. От этого же пути он отсчитывает файл-просьбу остановиться,
+    который кладёт `Stop-Collector`, — разъедься они, и остановка молча превратилась бы
+    в принудительную.
     """
     text = _text("run-collector.bat")
 
@@ -237,7 +261,7 @@ def test_service_mode_does_not_swallow_the_other_keys() -> None:
     assert 'call "%TD_SELF%"%TD_ARGS%' in text
 
 
-def test_every_exit_code_of_the_manager_is_explained_to_the_human() -> None:
+def test_every_exit_code_of_the_collector_is_explained_to_the_human() -> None:
     """Коды выхода живут в трёх файлах, и текст к ним человек читает в двух последних."""
     table = _task_result_table()
     said = _batch_exit_messages()
@@ -251,7 +275,7 @@ def test_the_task_result_table_says_what_the_exit_code_really_means() -> None:
     """Ревью `S1-10`: код 2 был описан как «Планировщик не нашёл run-collector.bat».
 
     Это код выхода действия, а не Планировщика, и означает он ошибку в `collector.env`
-    (`worker.EXIT_CONFIG`) — то есть самый частый отказ из всех: человек правит этот
+    (`main.EXIT_CONFIG`) — то есть самый частый отказ из всех: человек правит этот
     файл руками. Неверная подсказка отправляла его переустанавливать автозапуск, а
     настоящая причина лежала строкой ниже, в хвосте лога.
     """
@@ -290,39 +314,37 @@ def test_an_unexpected_exit_code_is_still_explained() -> None:
     assert "%TD_RC%" in fallback
 
 
-def test_the_stop_asks_the_manager_before_it_kills_him() -> None:
+def test_the_stop_asks_the_collector_before_it_kills_him() -> None:
     """Порядок — это и есть разница между прощанием и расстрелом.
 
     `Stop-ScheduledTask` снимает дерево процессов задачи целиком, то есть убивает
-    менеджер: спрошенный после неё уже некому услышать просьбу. А `Stop-Process -Force`
-    не доводит менеджер до `_shutdown`, где он единственный раз гасит процессы счетов
-    сам. На карточках счетов эта разница не видна вовсе — только в диспетчере задач.
+    коллектор: спрошенный после неё уже некому услышать просьбу. А `Stop-Process -Force`
+    не доводит его до `_shutdown`, где он отпускает канал к терминалу и шлёт прощальный
+    heartbeat. На карточках счетов эта разница не видна вовсе — только в окне скрипта.
     """
     body = _powershell_function("Stop-Collector")
 
     assert body.index("Request-GracefulStop") < body.index("Stop-ScheduledTask")
     assert body.index("Stop-ScheduledTask") < body.index("Stop-Process")
-    # Менеджер гасится раньше процессов счетов: живой поднял бы их обратно своим тиком.
-    assert "@($managers) + @($workers)" in body
 
 
-def test_the_stop_writes_the_file_the_manager_is_watching() -> None:
+def test_the_stop_writes_the_file_the_collector_is_watching() -> None:
     """Имя файла живёт в двух языках сразу, и разъезд был бы молчаливым."""
     text = _text("install-service.ps1")
 
-    assert f"'{manager.STOP_FLAG_NAME}'" in text
+    assert f"'{collector_main.STOP_FLAG_NAME}'" in text
 
 
-def test_the_stop_flag_lands_in_the_folder_the_manager_watches() -> None:
+def test_the_stop_flag_lands_in_the_folder_the_collector_watches() -> None:
     """Имя файла закреплено, а каталог — нет, и разъезд был бы полностью молчаливым.
 
     Просьба выйти работает только если `stop-collector.bat` кладёт файл ровно туда, куда
-    смотрит менеджер. Цепочка идёт через три языка: `.ps1` строит путь от `$Here`, `.bat`
-    отдаёт менеджеру `--env-file "%TD_HOME%collector.env"` от `%~dp0`, а менеджер берёт
+    смотрит коллектор. Цепочка идёт через три языка: `.ps1` строит путь от `$Here`, `.bat`
+    отдаёт коллектору `--env-file "%TD_HOME%collector.env"` от `%~dp0`, а тот берёт
     каталог этого файла. Разойдись любое звено — `Request-GracefulStop` создаст файл,
-    которого никто не ждёт, менеджер о просьбе не узнает, и остановка молча выродится в
-    принудительную: двадцать секунд ожидания впустую, процессы счетов гасятся силой,
-    прощального `state=stopped` нет. Ни один тест этого не поймал бы: имена совпадают,
+    которого никто не ждёт, коллектор о просьбе не узнает, и остановка молча выродится в
+    принудительную: двадцать секунд ожидания впустую, процесс гасится силой, прощального
+    `state=stopped` нет. Ни один тест этого не поймал бы: имена совпадают,
     порядок вызовов верен, а текст на экране честно скажет «остановлен принудительно» —
     и будет верен, потому что так и вышло.
     """
@@ -330,7 +352,7 @@ def test_the_stop_flag_lands_in_the_folder_the_manager_watches() -> None:
     bat = _text("run-collector.bat")
     source = (PACKAGE_ROOT / "collector" / "main.py").read_text(encoding="utf-8")
 
-    assert f"$StopFlag = Join-Path $Here '{manager.STOP_FLAG_NAME}'" in ps1
+    assert f"$StopFlag = Join-Path $Here '{collector_main.STOP_FLAG_NAME}'" in ps1
     assert 'set "TD_HOME=%~dp0"' in bat
     assert '--env-file "%TD_HOME%collector.env"' in bat
     assert "stop_flag=env_file.parent / STOP_FLAG_NAME" in source

@@ -1045,7 +1045,12 @@ async def test_card_deal_hides_raw_and_server_time(client: AsyncClient, account:
 
 
 async def test_no_response_carries_the_account_password(client: AsyncClient, account: str) -> None:
-    """Пароль счёта не покидает `/internal/collector/assignments` (CLAUDE.md §5)."""
+    """Пароль счёта не покидает сервер ни одним маршрутом (`CLAUDE.md` §5, `T-07`).
+
+    Счёт здесь заводится с паролем (`MT5_BODY`) намеренно: форма его больше не спрашивает,
+    но в базе первого пользователя такие строки есть, и искать в ответах надо именно то,
+    что там лежит.
+    """
     position = await seed_position(account)
     await seed_deal(account, await broker_id_of(position), ticket=1, entry="in")
 

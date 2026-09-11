@@ -46,6 +46,18 @@ describe('блок «Коллектор»', () => {
     expect(screen.getByText(t.accounts.collectorNotReady)).toBeInTheDocument();
   });
 
+  /**
+   * Развилка `T-07`: пароля в форме больше нет, и вместо него человек обязан прочитать, как
+   * счёт вообще попадает в синк и почему синкается только открытый. Место одно — правило
+   * общее для всех счетов; следствие для одного счёта стоит на его карточке.
+   */
+  it('называет словами, что коллектор подключается к открытому терминалу, и цену этого', () => {
+    const text = blockText();
+
+    expect(text).toContain(t.accounts.collectorOpenTerminal);
+    expect(text).toContain(t.accounts.collectorOneAtATime);
+  });
+
   it('не называет внутренних номеров задач', () => {
     expect(blockText()).not.toMatch(TICKET_ID);
   });

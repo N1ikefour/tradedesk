@@ -53,14 +53,15 @@ def test_token_is_carried_over_from_the_installation(tmp_path: Path) -> None:
     )
 
     assert bootstrap.parse_env(env_file.read_text(encoding="utf-8"))["COLLECTOR_TOKEN"] == TOKEN
-    assert outcome.exit_code == bootstrap.EXIT_NEEDS_HUMAN
+    assert outcome.exit_code == bootstrap.EXIT_OK
 
 
-def test_a_freshly_created_file_stops_the_run(tmp_path: Path) -> None:
-    """Созданный файл — момент решения про MAX_ACCOUNTS и путь к терминалу.
+def test_a_freshly_created_file_does_not_stop_the_run_any_more(tmp_path: Path) -> None:
+    """X-66: решений, которые человек принимал в этом файле, больше нет.
 
-    Первому пользователю нужно четыре счёта при значении по умолчанию три (`SPEC.md`
-    §12, `S1-09`), и сказать об этом можно ровно один раз — здесь.
+    Останов был нужен ради `MT5_TERMINAL_EXE` и `MAX_ACCOUNTS`; терминал теперь открывает
+    человек, и синхронизируется тот счёт, который открыт. Требовать второй запуск ради
+    ничего — значит учить человека проходить мимо текста на экране.
     """
     outcome = bootstrap.ensure_env_file(
         env_file=tmp_path / "collector.env",
@@ -68,10 +69,22 @@ def test_a_freshly_created_file_stops_the_run(tmp_path: Path) -> None:
         app_env_file=_app_env_file(tmp_path),
     )
 
-    assert outcome.exit_code == bootstrap.EXIT_NEEDS_HUMAN
+    assert outcome.exit_code == bootstrap.EXIT_OK
     text = "\n".join(outcome.lines)
-    assert "MAX_ACCOUNTS" in text
-    assert "MT5_TERMINAL_EXE" in text
+    assert "MetaTrader 5" in text
+    assert "войдите в счёт" in text
+
+
+def test_a_file_created_without_a_token_still_stops_the_run(tmp_path: Path) -> None:
+    """Без токена коллектор получит 401 и напишет на карточке «TradeDesk не отвечает»."""
+    outcome = bootstrap.ensure_env_file(
+        env_file=tmp_path / "collector.env",
+        example_file=_example_file(tmp_path),
+        app_env_file=tmp_path / "missing.env",
+    )
+
+    assert outcome.exit_code == bootstrap.EXIT_NEEDS_HUMAN
+    assert "COLLECTOR_TOKEN" in "\n".join(outcome.lines)
 
 
 def test_the_token_never_reaches_the_screen(
@@ -209,4 +222,4 @@ def test_the_real_example_produces_settings_the_collector_accepts(tmp_path: Path
 
     assert settings.collector_token.get_secret_value() == TOKEN
     assert settings.api_url == "http://localhost:8000"
-    assert str(settings.mt5_portable_root) == "C:\\td-terminals"
+    assert str(settings.state_dir) == "state"

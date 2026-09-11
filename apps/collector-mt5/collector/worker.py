@@ -1,52 +1,35 @@
-"""Один счёт: подключение к терминалу и цикл синхронизации — `SPEC.md` §8.2, пункт 2.
+"""Один счёт: цикл синхронизации через уже открытый терминал — `SPEC.md` §8.2, пункт 2.
 
-Ручной запуск:
-
-    python -m collector.worker --account-id <uuid>
-
-Менеджер процессов, который поднимает такой процесс на каждый счёт из assignments, —
-`S1-09`; здесь один счёт и один процесс.
+Терминалом и подключением к нему владеет `main.py`: экземпляр `MetaTrader5` на машине
+один, и открывает его человек (`X-66`, `T-07`). Здесь — только то, что коллектор делает
+со счётом, который в этом терминале открыт: окно выборки, смещение часов брокера, сборка
+и отправка батча, строка для карточки счёта.
 
 Устройство модуля подчинено тому, что терминала на машине разработки нет. Цикл ходит в
-терминал **только** через протокол `Terminal` и в API — только через `ApiClient`, поэтому
-все его решения проверяются на подделках: и «отправлять ли батч», и «что делать с
-неверным паролем», и «сколько ждать перед повторной попыткой». Непроверяемым остаётся
-`mt5_client.Mt5Terminal`, и в нём нет ни одного решения.
+терминал **только** через протокол `Terminal` и в API — только через `Api`, поэтому все
+его решения проверяются на подделках. Непроверяемым остаётся `mt5_client.Mt5Terminal`, и
+в нём нет ни одного решения.
 
-Heartbeat здесь — **по смене состояния**, а не по расписанию: периодический heartbeat и
-опрос assignments живут в менеджере (`S1-09`). Без этих трёх строк неверный пароль не
-доехал бы до экрана вовсе (`SPEC.md` §8.2, пункт 2).
+⚠️ **Главный сторож этого модуля — вторая сверка счёта** (`_switched_away`). Первая
+живёт в `main.py` и отвечает на вопрос «чей счёт мы собираемся спросить»; вторая стоит
+после чтения истории и отвечает на другой — «чей счёт нам ответил». Между ними человек
+вправе переключить счёт в терминале одним щелчком, и без второй сверки сделки чужого счёта
+уехали бы в чужой журнал молча, а `deals` — append-only факты (`CLAUDE.md` §2).
 """
 
 from __future__ import annotations
 
-import argparse
-import contextlib
-import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, Protocol
 
-from collector import messages, state, sync
-from collector.api_client import (
-    ApiClient,
-    ApiError,
-    Assignment,
-    HeartbeatAccount,
-    IngestResult,
-)
-from collector.config import (
-    DEFAULT_ENV_FILENAME,
-    CollectorSettings,
-    ConfigError,
-    load_settings,
-    non_ascii_path_warning,
-    platform_refusal,
-)
-from collector.logging_setup import account_log_name, get_logger, setup_logging
-from collector.mt5_client import Credentials, Mt5Terminal, Terminal, TerminalError
+from collector import identity, messages, state, sync
+from collector.api_client import ApiError, Assignment, IngestResult
+from collector.config import CollectorSettings
+from collector.logging_setup import get_logger
+from collector.mt5_client import Terminal, TerminalError
 from collector.payload import (
     RawAccountInfo,
     RawDeal,
@@ -63,15 +46,11 @@ log = get_logger(__name__)
 class Api(Protocol):
     """То, что цикл счёта берёт у API. `ApiClient` подходит под него структурно.
 
-    Протокол, а не сам клиент: подделка в тесте не обязана наследовать httpx-клиент, а
-    цикл синхронизации проверяется только подделками — сети в тестах нет.
+    Только отправка батча: assignments спрашивает и heartbeat собирает `main.py` — за все
+    счета сразу, одним запросом (`SPEC.md` §8.2, пункт 1).
     """
 
-    def assignments(self, collector_id: str) -> list[Assignment]: ...
-
     def send_deals(self, batch: dict[str, Any]) -> IngestResult: ...
-
-    def heartbeat(self, collector_id: str, accounts: Iterable[HeartbeatAccount]) -> None: ...
 
 
 STATE_RUNNING: Final = "running"
@@ -91,18 +70,25 @@ OFFSET_REPORTS: Final[dict[str, tuple[str, str]]] = {
 
 USD: Final = "USD"
 
-EXIT_OK: Final = 0
-EXIT_CONFIG: Final = 2
-EXIT_PLATFORM: Final = 3
-EXIT_ACCOUNT: Final = 4
-
 Clock = Callable[[], datetime]
-Sleep = Callable[[float], None]
-TerminalFactory = Callable[[Assignment], Terminal]
 
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+@dataclass(frozen=True)
+class Report:
+    """Что сказать про этот счёт в общем heartbeat'е (`SPEC.md` §5.3).
+
+    `state=running` без сообщения означает «коллектор ведёт этот счёт»: `apply_heartbeat`
+    двигает при нём только `last_heartbeat_at` и не трогает ни статус, ни текст на
+    карточке. Текст ставит только `state=error` — другого канала до экрана нет.
+    """
+
+    state: str
+    message: str | None = None
+    terminal_login: int | None = None
 
 
 @dataclass
@@ -117,153 +103,59 @@ class SyncState:
     # Кандидат в смещение, ждущий подтверждения второй котировкой (`sync.resolve_offset`).
     pending_offset: sync.OffsetProbe | None = None
     catch_up_done_at: datetime | None = None
-    reported_state: str | None = None
-    reported_message: str | None = None
+
+
+@dataclass(frozen=True)
+class OffsetOutcome:
+    """Смещение брокера на этом тике либо причина, по которой батча не будет."""
+
+    minutes: int | None
+    report: Report | None
 
 
 @dataclass
 class AccountWorker:
-    """Цикл одного счёта. Терминал и API приходят снаружи — иначе это не проверить."""
+    """Синхронизация одного счёта. Терминал и API приходят снаружи — иначе это не проверить."""
 
     account_id: str
     settings: CollectorSettings
     api: Api
-    terminal_factory: TerminalFactory
     clock: Clock = utc_now
-    sleep: Sleep = time.sleep
     state_file: Path | None = None
-    _terminal: Terminal | None = field(default=None, init=False)
     _sync: SyncState = field(default_factory=SyncState, init=False)
-    _login: int | None = field(default=None, init=False)
-    # Задание держится в памяти процесса ради переподключения: терминал вправе умереть
-    # посреди суток работы, а пароль к тому моменту взять неоткуда. `repr=False` на
-    # `Assignment.password` защищает его в кадрах стека; в файл и в лог он не попадает.
-    _assignment_in_use: Assignment | None = field(default=None, init=False, repr=False)
-    _max_connect_attempts: int = field(default=0, init=False)
+    _offset_loaded: bool = field(default=False, init=False)
 
-    # -- запуск --------------------------------------------------------------------
+    def tick(self, terminal: Terminal, *, assignment: Assignment, info: RawAccountInfo) -> Report:
+        """Один проход синхронизации счёта, который открыт в терминале прямо сейчас.
 
-    def run(self, *, max_ticks: int = 0, max_connect_attempts: int = 0) -> int:
-        """Подключиться и крутить синхронизацию. Возврат — код выхода процесса.
+        `info` — тот самый снимок `account_info()`, по которому `main.py` уже опознал счёт.
+        Он передаётся сюда, а не запрашивается заново, чтобы проверенный снимок и снимок,
+        уехавший в батч, были одним и тем же объектом: два вызова дали бы два состояния,
+        и проверить можно было бы одно, а отправить другое.
 
-        `max_ticks=0` — бесконечный цикл, как в бою. Число — столько итераций и выход;
-        это и `--once`, и единственный способ проверить цикл тестом, не останавливая его
-        исключением.
+        `TerminalError` наружу не ловится: терминалом владеет `main.py`, он и решает, что
+        делать с оборвавшейся связью.
         """
-        try:
-            assignment = self._assignment()
-        except ApiError as error:
-            self._report(STATE_ERROR, error.message)
-            log.error("collector.assignments_failed", reason=error.message)
-            return EXIT_ACCOUNT
-        if assignment is None:
-            missing = messages.ASSIGNMENT_MISSING.format(account_id=self.account_id)
-            self._report(STATE_ERROR, missing)
-            return EXIT_ACCOUNT
-        self._login = assignment.login
-        self._assignment_in_use = assignment
-        self._sync.last_sync_at = assignment.last_sync_at
-        self._sync.server_utc_offset_minutes = self._remembered_offset()
-        self._max_connect_attempts = max_connect_attempts
-
-        if not self._connect(assignment, max_attempts=max_connect_attempts):
-            return EXIT_ACCOUNT
-        try:
-            return self._loop(max_ticks=max_ticks)
-        finally:
-            self._disconnect()
-
-    def _assignment(self) -> Assignment | None:
-        """Задание на свой счёт. Пароль отсюда не уходит никуда, кроме `connect`."""
-        for item in self.api.assignments(self.settings.collector_id):
-            if item.account_id == self.account_id:
-                return item
-        return None
-
-    def _connect(self, assignment: Assignment, *, max_attempts: int) -> bool:
-        """Подключение с удвоением задержки до 15 минут (`SPEC.md` §8.2)."""
-        attempt = 0
-        while True:
-            attempt += 1
-            terminal = self.terminal_factory(assignment)
-            try:
-                terminal.connect()
-                terminal.wait_for_history()
-            except TerminalError as error:
-                log.warning("collector.connect_failed", attempt=attempt, reason=error.message)
-                self._report(STATE_ERROR, error.message)
-                if max_attempts and attempt >= max_attempts:
-                    return False
-                self.sleep(sync.retry_delay_seconds(attempt))
-                continue
-            self._terminal = terminal
-            log.info("collector.connected", account_id=self.account_id, attempt=attempt)
-            return True
-
-    def _terminal_lost(self, error: TerminalError) -> int | None:
-        """Терминал отвалился посреди работы — переподключиться, а не жаловаться вечно.
-
-        Терминал закрывают руками, он падает, машина уходит в сон. Без этой ветки процесс
-        остался бы жив, каждую минуту слал бы одну и ту же ошибку и не синхронизировал
-        ничего до тех пор, пока человек не заметит и не перезапустит его сам.
-        """
-        self._report(STATE_ERROR, error.message)
-        log.warning("collector.terminal_lost", account_id=self.account_id, reason=error.message)
-        if self._terminal is not None:
-            # Закрытие мёртвого терминала само вправе отказать — это уже неважно.
-            with contextlib.suppress(TerminalError):
-                self._terminal.close()
-            self._terminal = None
-        assignment = self._assignment_in_use
-        if assignment is None:  # pragma: no cover — `run` заполняет его до цикла
-            return EXIT_ACCOUNT
-        if not self._connect(assignment, max_attempts=self._max_connect_attempts):
-            return EXIT_ACCOUNT
-        return None
-
-    def _disconnect(self) -> None:
-        if self._terminal is not None:
-            self._terminal.close()
-            self._terminal = None
-        self._report(STATE_STOPPED, messages.STOPPED)
-
-    # -- цикл ----------------------------------------------------------------------
-
-    def _loop(self, *, max_ticks: int) -> int:
-        ticks = 0
-        while True:
-            code = self._tick()
-            if code is not None:
-                return code
-            ticks += 1
-            if max_ticks and ticks >= max_ticks:
-                return EXIT_OK
-            self.sleep(float(self.settings.sync_interval_seconds))
-
-    def _tick(self) -> int | None:
-        """Одна итерация. `None` — продолжаем, число — код выхода процесса."""
-        terminal = self._require_terminal()
-        try:
-            info = terminal.account_info()
-        except TerminalError as error:
-            return self._terminal_lost(error)
-
         currency = str(info.currency).strip().upper()
         if currency != USD:
-            # SPEC.md 8.2: синк не выполняется вовсе. Процесс остаётся жив и молчит —
-            # починка тут не в перезапуске, а в смене счёта, и это делает человек.
-            self._report(STATE_ERROR, messages.not_usd(currency))
-            return EXIT_ACCOUNT
+            # SPEC.md 8.2: синк не выполняется вовсе. Чинится это не перезапуском, а
+            # сменой счёта, и делает это человек.
+            return Report(STATE_ERROR, messages.not_usd(currency))
 
-        offset = self._offset(terminal)
-        if offset is None:
-            return None
+        expected = identity.read_open_account(info)
+        if expected is None:  # pragma: no cover — `main` опознал этот же снимок до нас
+            return Report(STATE_ERROR, messages.ACCOUNT_UNREADABLE)
+        self._remember_assignment(assignment)
+        outcome = self._offset(terminal)
+        if outcome.minutes is None:
+            return outcome.report or Report(STATE_ERROR, messages.OFFSET_UNKNOWN)
+        offset = outcome.minutes
 
         now = self.clock()
         window = sync.plan_window(
             now,
             last_sync_at=self._sync.last_sync_at,
-            sync_requested_at=self._requested_at(),
+            sync_requested_at=assignment.sync_requested_at,
             last_finished_at=self._sync.catch_up_done_at,
             first_sync_days=self.settings.first_sync_days,
         )
@@ -278,11 +170,12 @@ class AccountWorker:
                 now=str(now),
             )
         start, end = sync.terminal_bounds(window, offset)
-        try:
-            raw_deals = terminal.history_deals(start, end)
-            raw_positions = terminal.open_positions()
-        except TerminalError as error:
-            return self._terminal_lost(error)
+        raw_deals = terminal.history_deals(start, end)
+        raw_positions = terminal.open_positions()
+
+        switched = self._switched_away(terminal, expected)
+        if switched is not None:
+            return switched
 
         sendable, rejected = split_sendable(raw_deals)
         if rejected:
@@ -321,9 +214,9 @@ class AccountWorker:
         )
         if not decision.send:
             log.debug("collector.nothing_to_send", account_id=self.account_id)
-            return None
+            return Report(STATE_RUNNING, terminal_login=expected.login)
 
-        if not self._send(
+        refused = self._send(
             info=info,
             deals=deals,
             open_positions=open_positions,
@@ -331,8 +224,9 @@ class AccountWorker:
             window_reason=window.reason,
             reason=str(decision.reason),
             now=now,
-        ):
-            return None
+        )
+        if refused is not None:
+            return refused
 
         self._sync.last_sent_at = now
         self._sync.last_sync_at = now
@@ -341,8 +235,36 @@ class AccountWorker:
             self._sync.last_sent_ticket = newest
         if window.reason == "catch_up":
             self._sync.catch_up_done_at = now
-        self._report(STATE_RUNNING, _running_message(rejected, rejected_positions))
-        return None
+        return Report(
+            STATE_RUNNING,
+            _running_message(rejected, rejected_positions),
+            terminal_login=expected.login,
+        )
+
+    # -- сторож счёта ------------------------------------------------------------------
+
+    def _switched_away(self, terminal: Terminal, expected: identity.OpenAccount) -> Report | None:
+        """Тот же счёт в терминале, что и до чтения истории? `None` — да, можно отправлять.
+
+        Второй запрос `account_info()` — это сторож, а не источник данных: в батч уезжает
+        первый снимок, тот же самый, по которому счёт опознали. Здесь спрашивается ровно
+        одно — не переключил ли человек счёт, пока терминал отдавал историю.
+        """
+        after = terminal.account_info()
+        now_open = identity.read_open_account(after)
+        if now_open is not None and identity.stayed_the_same(expected, now_open):
+            return None
+        # Нечитаемый ответ — тоже отказ: доказать, что счёт тот же, не удалось, а батч
+        # уезжает только на доказанном.
+        log.error(
+            "collector.account_switched_mid_read",
+            account_id=self.account_id,
+            expected_login=expected.login,
+            open_login=now_open.login if now_open is not None else None,
+        )
+        return Report(STATE_ERROR, messages.ACCOUNT_SWITCHED)
+
+    # -- отправка ----------------------------------------------------------------------
 
     def _send(
         self,
@@ -354,8 +276,8 @@ class AccountWorker:
         window_reason: str,
         reason: str,
         now: datetime,
-    ) -> bool:
-        """Отправить окно батчами по 5000. `False` — не доехало, повторим на следующем тике.
+    ) -> Report | None:
+        """Отправить окно батчами по 5000. `None` — доехало; отчёт — нет, повторим тиком позже.
 
         Открытые позиции едут в **каждом** батче, а не только в последнем: пустой список
         по контракту означает «открытых нет», и промежуточный батч с пустым списком
@@ -375,7 +297,7 @@ class AccountWorker:
                 # Сборка внутри `try` не из осторожности. Снаружи её исключение убивало бы
                 # процесс молча: трейсбек уходит в `sys.excepthook`, то есть в консоль,
                 # которой под Task Scheduler (`S1-10`) нет, — в файл лога не попадало бы
-                # ничего, а `S1-09` перезапускал бы процесс в краш-петлю без следа.
+                # ничего.
                 log.error(
                     "collector.batch_unbuildable",
                     account_id=self.account_id,
@@ -383,8 +305,7 @@ class AccountWorker:
                     of=len(chunks),
                     reason=str(error),
                 )
-                self._report(STATE_ERROR, messages.BATCH_UNBUILDABLE.format(reason=error))
-                return False
+                return Report(STATE_ERROR, messages.BATCH_UNBUILDABLE.format(reason=error))
             try:
                 result = self.api.send_deals(batch)
             except ApiError as error:
@@ -396,25 +317,30 @@ class AccountWorker:
                     code=error.code,
                     status=error.status,
                 )
-                self._report(STATE_ERROR, messages.API_REFUSED.format(message=error.message))
-                return False
+                return Report(STATE_ERROR, messages.API_REFUSED.format(message=error.message))
             _log_result(self.account_id, result, reason=reason, window=window_reason, at=now)
-        return True
+        return None
 
     # -- смещение часов брокера ------------------------------------------------------
 
-    def _offset(self, terminal: Terminal) -> int | None:
+    def _offset(self, terminal: Terminal) -> OffsetOutcome:
         """Смещение сервера брокера, с памятью между запусками (`SPEC.md` §6.3).
 
-        `None` — работать нечем; отчёт человеку уже отправлен. Смещение обязательно в
-        каждом батче, поэтому тик на этом и заканчивается.
+        Смещение обязательно в каждом батче, поэтому его отсутствие заканчивает тик — и
+        тогда вместе с ним возвращается то, что человек прочтёт на карточке счёта.
         """
         try:
             tick_time = terminal.server_time()
         except TerminalError as error:
-            log.warning("collector.server_time_failed", reason=error.message)
+            log.warning(
+                "collector.server_time_failed",
+                account_id=self.account_id,
+                reason=error.message,
+                mt5_code=error.code,
+                mt5_description=error.description,
+            )
             tick_time = None
-        known = self._sync.server_utc_offset_minutes
+        known = self._remembered_offset()
         decision = sync.resolve_offset(
             tick_time, self.clock(), known=known, pending=self._sync.pending_offset
         )
@@ -423,12 +349,15 @@ class AccountWorker:
         if decision.confirmed and decision.offset is not None:
             self._sync.server_utc_offset_minutes = decision.offset
             self._remember_offset(decision.offset)
-        if decision.offset is None:
-            account_state, message = OFFSET_REPORTS.get(
-                decision.status, (STATE_ERROR, messages.OFFSET_UNKNOWN)
-            )
-            self._report(account_state, message.format(hours=_hours(tick_time, self.clock())))
-        return decision.offset
+        if decision.offset is not None:
+            return OffsetOutcome(minutes=decision.offset, report=None)
+        account_state, message = OFFSET_REPORTS.get(
+            decision.status, (STATE_ERROR, messages.OFFSET_UNKNOWN)
+        )
+        return OffsetOutcome(
+            minutes=None,
+            report=Report(account_state, message.format(hours=_hours(tick_time, self.clock()))),
+        )
 
     def _log_offset(
         self, decision: sync.OffsetDecision, *, tick_time: int | None, known: int | None
@@ -469,9 +398,15 @@ class AccountWorker:
             )
 
     def _remembered_offset(self) -> int | None:
-        if self.state_file is None:
-            return None
-        return state.read_state(self.state_file).server_utc_offset_minutes
+        """Смещение с прошлого запуска читается один раз, дальше живёт в памяти."""
+        if self._sync.server_utc_offset_minutes is not None or self._offset_loaded:
+            return self._sync.server_utc_offset_minutes
+        self._offset_loaded = True
+        if self.state_file is not None:
+            self._sync.server_utc_offset_minutes = state.read_state(
+                self.state_file
+            ).server_utc_offset_minutes
+        return self._sync.server_utc_offset_minutes
 
     def _remember_offset(self, offset: int) -> None:
         if self.state_file is None:
@@ -483,56 +418,10 @@ class AccountWorker:
             # потеря стоит одного пропущенного окна, а не сделок.
             log.warning("collector.state_not_written", reason=type(error).__name__)
 
-    def _requested_at(self) -> datetime | None:
-        """Просьба о внеочередном синке приходит только из assignments (`SPEC.md` §5.2)."""
-        try:
-            assignment = self._assignment()
-        except ApiError as error:
-            log.warning("collector.assignments_unavailable", reason=error.message)
-            return None
-        if assignment is None:
-            return None
-        self._assignment_in_use = assignment
+    def _remember_assignment(self, assignment: Assignment) -> None:
+        """`last_sync_at` двигает сервер, и он же чинит окно после перезапуска коллектора."""
         if assignment.last_sync_at is not None:
             self._sync.last_sync_at = _later(self._sync.last_sync_at, assignment.last_sync_at)
-        return assignment.sync_requested_at
-
-    # -- служебное -------------------------------------------------------------------
-
-    def _require_terminal(self) -> Terminal:
-        if self._terminal is None:  # pragma: no cover — `run` подключается до цикла
-            raise TerminalError(messages.TERMINAL_LOST)
-        return self._terminal
-
-    def _report(self, account_state: str, message: str | None) -> None:
-        """Heartbeat по смене состояния. Повтор того же самого сервер не увидит.
-
-        Молчание при неизменном состоянии — не экономия трафика: `status_message` на
-        экране счёта переписывается каждым heartbeat, и поток одинаковых сообщений
-        стирал бы историю ровно в тот момент, когда человек её читает.
-        """
-        if account_state == self._sync.reported_state and message == self._sync.reported_message:
-            return
-        self._sync.reported_state = account_state
-        self._sync.reported_message = message
-        try:
-            self.api.heartbeat(
-                self.settings.collector_id,
-                [
-                    HeartbeatAccount(
-                        account_id=self.account_id,
-                        state=account_state,
-                        message=message,
-                        terminal_login=self._login,
-                    )
-                ],
-            )
-        except ApiError as error:
-            # Heartbeat, который не доехал, не имеет права уронить синк: сделки важнее
-            # отметки о состоянии, и следующая попытка всё равно будет через минуту.
-            log.warning("collector.heartbeat_failed", reason=error.message)
-            self._sync.reported_state = None
-            self._sync.reported_message = None
 
 
 def _running_message(
@@ -587,100 +476,3 @@ def _log_result(
         sync_run_id=result.sync_run_id,
         at=at.isoformat(),
     )
-
-
-# --------------------------------------------------------------------------------------
-# Точка входа
-# --------------------------------------------------------------------------------------
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="collector.worker",
-        description="Синхронизация одного счёта MT5 с TradeDesk",
-    )
-    parser.add_argument("--account-id", required=True, help="UUID счёта в TradeDesk")
-    parser.add_argument(
-        "--env-file",
-        type=Path,
-        default=Path(DEFAULT_ENV_FILENAME),
-        help=f"Путь к файлу настроек (по умолчанию {DEFAULT_ENV_FILENAME})",
-    )
-    parser.add_argument(
-        "--once",
-        action="store_true",
-        help="Один проход синхронизации вместо бесконечного цикла",
-    )
-    return parser
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-
-    refusal = platform_refusal()
-    if refusal is not None:
-        print(refusal)
-        return EXIT_PLATFORM
-
-    try:
-        settings = load_settings(args.env_file)
-    except ConfigError as error:
-        print(str(error))
-        return EXIT_CONFIG
-
-    setup_logging(
-        log_file=settings.log_dir / account_log_name(args.account_id),
-        level=settings.log_level,
-        secrets=settings.secrets,
-    )
-    for path in (settings.mt5_terminal_exe, settings.mt5_portable_root):
-        warning = non_ascii_path_warning(path)
-        if warning is not None:
-            log.warning("collector.non_ascii_path", message=warning)
-
-    with ApiClient(settings) as api:
-        worker = AccountWorker(
-            account_id=args.account_id,
-            settings=settings,
-            api=api,
-            terminal_factory=lambda assignment: Mt5Terminal(
-                credentials=Credentials(
-                    login=assignment.login,
-                    server=assignment.server,
-                    password=assignment.password,
-                ),
-                terminal_exe=settings.mt5_terminal_exe,
-                portable_root=settings.mt5_portable_root,
-                account_id=args.account_id,
-            ),
-            state_file=state.state_path(settings.mt5_portable_root / args.account_id),
-        )
-        try:
-            return worker.run(max_ticks=1 if args.once else 0)
-        except Exception as error:
-            # Последний рубеж, и он про диагностику, а не про устойчивость: без него
-            # неожиданное исключение уходит в `sys.excepthook`, то есть в консоль,
-            # которой под Task Scheduler (`S1-10`) нет. В `account-<id>.log` не попадало
-            # бы ничего, и краш-петля из-под `S1-09` не оставляла бы следа вовсе.
-            log.exception("collector.crashed", account_id=args.account_id)
-            crashed = messages.CRASHED.format(error=type(error).__name__)
-            print(crashed)
-            # Heartbeat отсюда — не украшение: `EXIT_ACCOUNT` для менеджера означает «этот
-            # процесс уже объяснил человеку свой уход» (`pool.EXPLAINED_EXIT_CODES`), и он
-            # не станет писать своё поверх. Без этой отправки единственный путь, выходящий
-            # с кодом 4 молча, оставлял бы на карточке предыдущее сообщение — то есть
-            # неправду — до тех пор, пока кто-нибудь не откроет файл лога.
-            with contextlib.suppress(ApiError):
-                api.heartbeat(
-                    settings.collector_id,
-                    [
-                        HeartbeatAccount(
-                            account_id=args.account_id, state=STATE_ERROR, message=crashed
-                        )
-                    ],
-                )
-            return EXIT_ACCOUNT
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())

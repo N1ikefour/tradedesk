@@ -12,7 +12,6 @@ import {
   type RouteTable,
 } from '@/test/fetch-mock';
 import { renderApp, TEST_USER } from '@/test/render';
-import { findSecret } from '@/test/secret-probe';
 
 const SESSION = 'GET /api/v1/auth/me';
 const LIST = 'GET /api/v1/accounts';
@@ -113,7 +112,7 @@ describe('страница счёта', () => {
           jsonResponse(200, {
             items: [
               run({ id: 3, finished_at: null, deals_received: null, deals_new: null }),
-              run({ id: 2, error: 'Неверный пароль инвестора' }),
+              run({ id: 2, error: 'Батч отвергнут: в нём больше 5000 сделок' }),
               run({ id: 1 }),
             ],
           }),
@@ -123,7 +122,7 @@ describe('страница счёта', () => {
 
     expect(await screen.findByText(t.account.runRunning)).toBeInTheDocument();
     expect(screen.getByText(t.account.runFailed)).toBeInTheDocument();
-    expect(screen.getByText('Неверный пароль инвестора')).toBeInTheDocument();
+    expect(screen.getByText('Батч отвергнут: в нём больше 5000 сделок')).toBeInTheDocument();
     expect(screen.getByText(t.account.runOk)).toBeInTheDocument();
     // Время прогона — в зоне пользователя (Asia/Yekaterinburg, UTC+5), а не в UTC.
     expect(screen.getAllByText('02.09.2026 17:00')).toHaveLength(3);
@@ -151,18 +150,22 @@ describe('страница счёта', () => {
 
 describe('правка счёта', () => {
   /**
-   * Присланные `server`, `login` или `password` возвращают счёт в `pending` (контракт
-   * S1-06). Значит переименование обязано отправить только `label`: иначе смена подписи
+   * Изменённые `server` или `login` возвращают счёт в `pending` (контракт S1-06, `T-07`).
+   * Значит переименование обязано отправить только `label`: иначе смена подписи
    * останавливала бы работающий синк.
+   *
+   * Здесь же проверяется кэш мутаций: форма правки остаётся на экране после сохранения, а
+   * её наблюдатель живёт до ухода со страницы — без `forget` тело запроса лежало бы там
+   * столько же, и на том же `forget` держится признак «сохранено».
    */
-  it('переименование отправляет только label и не трогает доступы', async () => {
+  it('переименование отправляет только label и не оставляет тело запроса в кэше', async () => {
     const user = userEvent.setup();
     const { calls } = installFetchMock(
       withAccount(account(), {
         [PATCH]: () => jsonResponse(200, account({ label: 'FTMO Real' })),
       }),
     );
-    await openAccount();
+    const { client } = await openAccount();
 
     const label = await screen.findByLabelText(t.accounts.labelLabel);
     await user.clear(label);
@@ -173,6 +176,9 @@ describe('правка счёта', () => {
       expect(callsTo(calls, PATCH)).toHaveLength(1);
     });
     expect(callsTo(calls, PATCH)[0]?.body).toEqual({ label: 'FTMO Real' });
+    await waitFor(() => {
+      expect(client.getMutationCache().getAll()).toHaveLength(0);
+    });
   });
 
   it('без изменений сохранять нечего и запрос не уходит', async () => {
@@ -184,44 +190,13 @@ describe('правка счёта', () => {
     expect(callsTo(calls, PATCH)).toHaveLength(0);
   });
 
-  it('поле пароля открывается пустым: с сервера он не приходит', async () => {
+  it('поля пароля в форме правки нет вовсе (`T-07`)', async () => {
     installFetchMock(withAccount(account()));
     await openAccount();
 
-    expect(await screen.findByLabelText(t.accounts.passwordLabel)).toHaveValue('');
-  });
-
-  /**
-   * Форма правки остаётся на экране после сохранения, а её наблюдатель мутации — живым
-   * до ухода со страницы. Значит пароль обязан быть стёрт явно во всех местах сразу: в
-   * поле, в разметке и в теле мутации, — `findSecret` проверяет каждое отдельно.
-   */
-  it('после сохранения пароля нет ни в поле, ни в разметке, ни в кэше мутаций', async () => {
-    const user = userEvent.setup();
-    const password = 'investor-secret-7712';
-    const { calls } = installFetchMock(
-      withAccount(account(), {
-        [PATCH]: () => jsonResponse(200, account()),
-      }),
-    );
-    const { client } = await openAccount();
-
-    await user.type(await screen.findByLabelText(t.accounts.passwordLabel), password);
-    expect(findSecret(password, client)).toContain('значение поля account-edit-password');
-
-    await user.click(screen.getByRole('button', { name: t.accounts.save }));
-
-    await waitFor(() => {
-      expect(callsTo(calls, PATCH)).toHaveLength(1);
-    });
-    expect(callsTo(calls, PATCH)[0]?.body).toEqual({ password });
-    await waitFor(() => {
-      expect(screen.getByLabelText(t.accounts.passwordLabel)).toHaveValue('');
-    });
-    expect(findSecret(password, client)).toEqual([]);
-    // Наблюдатель на странице счёта живёт всю сессию: без явного стирания тело запроса
-    // осталось бы в кэше мутаций ровно столько же.
-    expect(client.getMutationCache().getAll()).toHaveLength(0);
+    await screen.findByLabelText(t.accounts.labelLabel);
+    expect(screen.queryByLabelText(/пароль/i)).not.toBeInTheDocument();
+    expect(document.querySelector('input[type="password"]')).toBeNull();
   });
 
   it('успешное сохранение подтверждается на экране', async () => {
@@ -257,11 +232,11 @@ describe('правка счёта', () => {
   });
 
   /**
-   * Развилка 2 тикета: один и тот же промах приходит двумя кодами. `PATCH` отвечает
-   * `422 not_mt5_account`, и объяснение обязано встать у поля пароля, а не только
-   * в общей ошибке формы.
+   * `422 not_mt5_account` формой уже не вызвать: поля MT5 она у другой платформы не
+   * показывает и не отправляет. Но код в контракте остался, и человек обязан прочитать
+   * причину, а не «что-то пошло не так», — поэтому он разбирается общим текстом ошибки.
    */
-  it('422 not_mt5_account объясняется у поля пароля', async () => {
+  it('422 not_mt5_account объясняется общей ошибкой формы', async () => {
     const user = userEvent.setup();
     installFetchMock(
       withAccount(account(), {
@@ -270,14 +245,12 @@ describe('правка счёта', () => {
     );
     await openAccount();
 
-    await user.type(await screen.findByLabelText(t.accounts.passwordLabel), 'x');
+    const label = await screen.findByLabelText(t.accounts.labelLabel);
+    await user.type(label, ' 2');
     await user.click(screen.getByRole('button', { name: t.accounts.save }));
 
-    const field = await screen.findByLabelText(t.accounts.passwordLabel);
-    await waitFor(() => {
-      expect(field).toHaveAttribute('aria-invalid', 'true');
-    });
-    expect(screen.getByText(t.errors.notMt5Account)).toBeInTheDocument();
+    expect(await screen.findByText(new RegExp(t.accounts.saveFailed))).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(t.errors.notMt5Account))).toBeInTheDocument();
   });
 
   it('400 validation_error встаёт у названного сервером поля', async () => {

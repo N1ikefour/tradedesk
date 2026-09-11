@@ -6,10 +6,15 @@
 себя: коллектор стартует, получает `401` и пишет на карточку счёта, что TradeDesk не
 отвечает. Поэтому перенос делает `run-collector.bat` этим модулем, а не человек глазами.
 
-Переносится **только** `COLLECTOR_TOKEN`. Остальное в примере либо уже верно (`API_URL`
-указывает на тот же `localhost:8000`, что публикует compose), либо является решением
-человека — путь к терминалу и `MAX_ACCOUNTS`, — и подставлять за него значение здесь
-значило бы спрятать решение в скрипте.
+Переносится **только** `COLLECTOR_TOKEN`. Остальное в примере уже верно: `API_URL`
+указывает на тот же `localhost:8000`, что публикует compose, а `LOG_DIR` и `STATE_DIR`
+относительны папке установки.
+
+⚠️ **Первый запуск больше не останавливается, если токен доехал** (`X-66`). Останов был
+нужен ради двух решений человека — `MT5_TERMINAL_EXE` и `MAX_ACCOUNTS`, — и оба поля из
+настроек ушли: терминал открывает человек, и синхронизируется тот счёт, который открыт.
+Спрашивать стало нечего, а требовать второй запуск ради ничего — значит учить человека
+проходить мимо текста на экране.
 
 Тексты живут в этом модуле, а не в `messages.py`: там потолок 200 символов, потому что
 каждая строка оттуда уезжает в `status_message` карточки счёта. Здесь — консоль первого
@@ -46,11 +51,10 @@ TOKEN_MISSING: Final = (
     "в такую же строку файла {path}."
 )
 
-CHECK_BEFORE_START: Final = (
-    "Проверьте в файле {path} две строки и запустите run-collector.bat ещё раз:\n"
-    "  MT5_TERMINAL_EXE — путь к terminal64.exe вашего терминала MetaTrader 5;\n"
-    "  MAX_ACCOUNTS — сколько счетов коллектор ведёт одновременно (по умолчанию 3, "
-    "каждый счёт держит терминал на 300-400 МБ)."
+OPEN_THE_TERMINAL: Final = (
+    "Дальше нужен MetaTrader 5: откройте терминал и войдите в счёт.\n"
+    "Коллектор синхронизирует тот счёт, который открыт в терминале, и ждёт остальные, "
+    "пока вы в них не войдёте. Пароль счёта коллектору не нужен."
 )
 
 TOKEN_EMPTY_IN_EXISTING: Final = (
@@ -123,9 +127,9 @@ def fill_example(example: str, source: Mapping[str, str]) -> tuple[str, tuple[st
 def ensure_env_file(*, env_file: Path, example_file: Path, app_env_file: Path) -> Outcome:
     """Довести `collector.env` до состояния, в котором коллектор имеет смысл запускать.
 
-    Созданный файл — всегда остановка, даже когда токен перенесён: `MAX_ACCOUNTS` по
-    умолчанию 3, а счетов у первого пользователя четыре, и это ровно тот момент, когда
-    об этом надо сказать. Второй запуск уже ничего не спрашивает.
+    Токен доехал — запуск продолжается: решений, которые надо было бы принять человеку в
+    этом файле, больше не осталось (`X-66`). Не доехал — остановка: без токена коллектор
+    получит `401` и напишет на карточке счёта, что TradeDesk не отвечает.
     """
     if env_file.exists():
         return _existing(env_file, app_env_file)
@@ -137,12 +141,12 @@ def ensure_env_file(*, env_file: Path, example_file: Path, app_env_file: Path) -
     env_file.write_text(content, encoding="utf-8")
 
     lines = [ENV_CREATED.format(path=env_file)]
-    if TOKEN_KEY in taken:
-        lines.append(TOKEN_TAKEN.format(source=app_env_file))
-    else:
+    if TOKEN_KEY not in taken:
         lines.append(TOKEN_MISSING.format(reason=reason, env=app_env_file, path=env_file))
-    lines.append(CHECK_BEFORE_START.format(path=env_file))
-    return Outcome(tuple(lines), EXIT_NEEDS_HUMAN)
+        return Outcome(tuple(lines), EXIT_NEEDS_HUMAN)
+    lines.append(TOKEN_TAKEN.format(source=app_env_file))
+    lines.append(OPEN_THE_TERMINAL)
+    return Outcome(tuple(lines), EXIT_OK)
 
 
 def _existing(env_file: Path, app_env_file: Path) -> Outcome:

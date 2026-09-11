@@ -1,10 +1,11 @@
-"""Канал управления коллектором против настоящих Postgres и Redis — DoD S1-05.
+"""Канал управления коллектором против настоящих Postgres и Redis — DoD S1-05, `T-07`.
 
 Три вещи здесь проверяются не формой ответа, а состоянием таблиц и содержимым логов,
 потому что именно так они и ломаются молча:
 
-* пароль ищется как **значение** — в теле ответа он обязан быть ровно один раз,
-  в логах не должен встречаться никогда;
+* пароль ищется как **значение** — с `T-07` он не обязан встречаться нигде: ни в теле
+  ответа, ни в логах. Счёт с сохранённым паролем при этом обязан выдаваться как обычный,
+  иначе «убрали пароль» означало бы «сломали счета первого пользователя»;
 * закрепление коллектора за счётом читается из `trading_accounts.collector_id`;
 * переходы статусов читаются из `trading_accounts.status`, а не из того, что вернул
   heartbeat.
@@ -60,16 +61,19 @@ COLLECTOR_TOKEN = "test-collector-token"
 COLLECTOR = "desk-01"
 OTHER_COLLECTOR = "desk-02"
 
+# Событие журнала выдачи (SPEC.md 5.6): счёт закреплён за этим коллектором.
+CLAIMED_EVENT = "collector.accounts_claimed"
+
 # Значение, которого нет больше нигде: по нему обыскиваются тела ответов и логи.
 INVESTOR_PASSWORD = "s3cret-investor-pw-4b7e0d"
 
+# Тело формы после `T-07`: пароля в нём нет, потому что его нет в интерфейсе.
 MT5_BODY: dict[str, Any] = {
     "label": "Демо FTMO",
     "platform": "mt5",
     "is_demo": True,
     "server": "FTMO-Demo",
     "login": 7001234,
-    "password": INVESTOR_PASSWORD,
 }
 
 _CODE_RE = re.compile(r"\b\d{6}\b")
@@ -205,6 +209,11 @@ async def login(client: AsyncClient, email: str) -> None:
 async def execute(statement: str, **params: Any) -> None:
     async with get_engine().begin() as connection:
         await connection.execute(text(statement), params)
+
+
+async def execute_scalar(statement: str, **params: Any) -> Any:
+    async with get_engine().connect() as connection:
+        return await connection.scalar(text(statement), params)
 
 
 async def row_of(account_id: str) -> dict[str, Any]:
@@ -359,7 +368,6 @@ async def test_assignment_carries_everything_the_collector_needs(
         "account_id",
         "server",
         "login",
-        "password",
         "sync_requested_at",
         "last_sync_at",
         "status",
@@ -367,7 +375,6 @@ async def test_assignment_carries_everything_the_collector_needs(
     assert issued["account_id"] == account_id
     assert issued["server"] == MT5_BODY["server"]
     assert issued["login"] == MT5_BODY["login"]
-    assert issued["password"] == INVESTOR_PASSWORD
     assert issued["status"] == accounts.STATUS_PENDING
     assert issued["last_sync_at"] is None
     assert issued["sync_requested_at"] is not None
@@ -444,7 +451,7 @@ async def test_two_collectors_asking_at_once_never_get_the_same_account(
         f"замка ждали {sorted(waiting)} из {sorted(pids.values())}: обе выдачи не встретились "
         "на одних строках, и результат ниже ничего не доказывает"
     )
-    left, right = ({str(item.account.id) for item in batch} for batch in batches)
+    left, right = ({str(account.id) for account in batch} for batch in batches)
 
     assert left & right == set()
     assert left | right == created
@@ -478,11 +485,11 @@ async def test_account_out_of_work_is_not_issued(
 
 
 async def test_non_mt5_account_is_not_issued(client: AsyncClient, collector: AsyncClient) -> None:
-    """У ручного счёта нет ни сервера, ни логина: войти коллектору некуда.
+    """У ручного счёта нет ни сервера, ни логина: следить коллектору не за чем.
 
-    Проверяется не только пустая выдача. Счёт, попавший в выборку и отсеянный уже на
-    расшифровке, выглядел бы так же — но при этом закрепился бы за коллектором и уехал
-    в `needs_attention` с просьбой ввести пароль, которого у него нет и не должно быть.
+    Проверяется не только пустая выдача. Счёт, попавший в выборку и отсеянный позже,
+    выглядел бы так же — но при этом закрепился бы за коллектором, и `collector_id`
+    ручного счёта показывал бы машину, которая к нему отношения не имеет.
     """
     response = await client.post(
         ACCOUNTS, json={"label": "Ручной", "platform": "manual", "is_demo": False}
@@ -508,57 +515,90 @@ async def test_assignments_are_ordered_deterministically(
     assert issued == [first, second]
 
 
-async def test_unreadable_credentials_are_skipped_and_reported(
-    client: AsyncClient, collector: AsyncClient
-) -> None:
-    """Один нечитаемый счёт не должен уносить с собой всю выдачу установки.
-
-    И молчать о нём нельзя: `needs_attention` — единственный способ, которым
-    пользователь узнает, что пароль надо ввести заново.
-    """
-    broken = await create_account(client, label="Битый", login=7002001)
-    healthy = await create_account(client, label="Живой", login=7002002)
-    await execute(
-        "update account_credentials set ciphertext = decode('0102030405', 'hex') "
-        "where account_id = :id",
-        id=broken,
-    )
-
-    issued = [item["account_id"] for item in await ask_assignments(collector)]
-
-    assert issued == [healthy]
-    assert (await row_of(broken))["status"] == accounts.STATUS_NEEDS_ATTENTION
-    assert (await row_of(broken))["status_message"] == (
-        collector_service.CREDENTIALS_UNREADABLE_MESSAGE
-    )
-
-
-async def test_password_reaches_the_collector_but_never_the_log(
+async def test_account_with_a_stored_password_is_issued_without_it(
     client: AsyncClient, collector: AsyncClient, log_stream: io.StringIO
 ) -> None:
-    """SPEC.md 5.6: доступ логируется (`account_id`, `collector_id`, время) без пароля.
+    """Главная проверка `T-07`: пароль остался в базе и не покидает её.
 
-    Обе половины проверяются вместе. Без первой тест остался бы зелёным, если бы
-    журнала доступа не было вовсе, — и перестал бы что-либо доказывать.
+    Счёт заводится **с** паролем — так, как его завёл первый пользователь до этого
+    решения, и API такое тело принимает до сих пор (SPEC.md 11.4). Дальше три
+    утверждения, и они разные:
 
-    Счетов два намеренно: на одном «запись на счёт» и «запись на запрос» неотличимы, а
-    `issue_assignments` обещает первое — журнал того, что пароль покинул систему, а не
-    счётчик обращений. Сравниваются мультимножества, а не списки: одна запись на счёт —
-    обещание журнала, а порядок записей повторяет сортировку выдачи и закреплён отдельно
-    (`test_assignments_are_ordered_deterministically`).
+    1. счёт выдан коллектору как обычный — «убрали пароль» не должно означать «сломали
+       заведённые счета»;
+    2. значения пароля нет в теле ответа. Ищется именно значение: имя поля закреплено
+       контрактным тестом, а сюда пароль вернётся с любым именем;
+    3. строка `account_credentials` на месте — миграция вперёд-совместима, ничего не
+       стёрто.
+
+    Логи проверяются заодно и по той же причине, что и раньше: канал другой, а значение
+    то же самое.
     """
-    first = await create_account(client, label="Первый", login=7005001)
-    second = await create_account(client, label="Второй", login=7005002)
+    account_id = await create_account(
+        client, label="Заведён до T-07", login=7005001, password=INVESTOR_PASSWORD
+    )
 
     items = await ask_assignments(collector)
     output = log_stream.getvalue()
 
-    assert [item["password"] for item in items] == [INVESTOR_PASSWORD, INVESTOR_PASSWORD]
-    audit = [line for line in log_lines(output) if line["event"] == "collector.credentials_issued"]
-    assert sorted(line["account_id"] for line in audit) == sorted([first, second])
-    assert {line["collector_id"] for line in audit} == {COLLECTOR}
-    assert all(line["timestamp"] for line in audit)
+    assert [item["account_id"] for item in items] == [account_id]
+    assert INVESTOR_PASSWORD not in json.dumps(items, ensure_ascii=False)
     assert INVESTOR_PASSWORD not in output
+    stored = await execute_scalar(
+        "select count(*) from account_credentials where account_id = :id", id=account_id
+    )
+    assert stored == 1
+
+
+async def test_account_without_credentials_is_issued_like_any_other(
+    client: AsyncClient, collector: AsyncClient
+) -> None:
+    """Счёт без пароля — норма с `T-07`, а не поломка.
+
+    До него отсутствие credentials выбрасывало счёт из выдачи и уводило в
+    `needs_attention` с просьбой ввести пароль заново. Теперь так заводится **каждый**
+    счёт, и вернувшаяся проверка объявила бы неисправной всю установку.
+    """
+    account_id = await create_account(client, label="Без пароля", login=7005002)
+    assert (
+        await execute_scalar(
+            "select count(*) from account_credentials where account_id = :id", id=account_id
+        )
+        == 0
+    )
+
+    issued = [item["account_id"] for item in await ask_assignments(collector)]
+
+    assert issued == [account_id]
+    row = await row_of(account_id)
+    assert row["status"] == accounts.STATUS_PENDING
+    assert row["status_message"] is None
+
+
+async def test_claiming_an_account_is_logged(
+    client: AsyncClient, collector: AsyncClient, log_stream: io.StringIO
+) -> None:
+    """SPEC.md 5.6: кто из коллекторов забрал счёт, видно в журнале.
+
+    Записывается закрепление, а не каждая выдача: assignments опрашивается раз в минуту,
+    и строка на счёт за тик была бы шумом, в котором это же событие и потерялось бы.
+    Поэтому вторая половина теста — про повтор: он ничего не закрепляет и ничего не пишет.
+    """
+    first = await create_account(client, label="Первый", login=7006001)
+    second = await create_account(client, label="Второй", login=7006002)
+
+    await ask_assignments(collector)
+    claimed = [line for line in log_lines(log_stream.getvalue()) if line["event"] == CLAIMED_EVENT]
+    log_stream.truncate(0)
+    log_stream.seek(0)
+    await ask_assignments(collector)
+    repeated = [line for line in log_lines(log_stream.getvalue()) if line["event"] == CLAIMED_EVENT]
+
+    assert len(claimed) == 1
+    assert sorted(claimed[0]["account_ids"]) == sorted([first, second])
+    assert claimed[0]["collector_id"] == COLLECTOR
+    assert claimed[0]["timestamp"]
+    assert repeated == []
 
 
 # --- heartbeat ---------------------------------------------------------------

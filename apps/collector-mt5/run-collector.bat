@@ -10,9 +10,13 @@ rem кракозябрами (X-55). PYTHONUTF8 — та же беда со ст
 rem русской строки в консоли CP866 падает с UnicodeEncodeError, а structlog заваливает
 rem экран сообщениями «--- Logging error ---» вместо строк лога.
 rem
+rem Коллектор синхронизирует тот счёт, который открыт в терминале MetaTrader 5 (X-66,
+rem T-07): терминал открывает человек, коллектор к нему подключается. Терминал этот файл
+rem не запускает и копий его не делает.
+rem
 rem Режимы:
 rem   run-collector.bat             запуск коллектора; остановка — Ctrl+C или stop-collector.bat
-rem   run-collector.bat --once      один проход: проверить настройки и связь с TradeDesk
+rem   run-collector.bat --once      один проход: настройки, связь с TradeDesk и один синк
 rem   run-collector.bat --reinstall переустановить зависимости и выйти
 rem   run-collector.bat --service   запуск из Планировщика заданий: вывод в logs\run-collector.log
 rem
@@ -207,6 +211,7 @@ if /i "%~1"=="--once" goto :launch_once
 
 echo.
 echo Коллектор запущен. Это окно закрывать нельзя — в нём он и работает.
+echo Откройте MetaTrader 5 и войдите в счёт: синхронизируется тот счёт, который открыт.
 echo Остановить: Ctrl+C здесь или файл stop-collector.bat.
 echo Что происходит со счетами, видно в TradeDesk на экране «Счета».
 echo.
@@ -214,27 +219,27 @@ goto :launch
 
 :launch_once
 echo.
-echo Один проход: спрашиваю задания, проверяю настройки и связь с TradeDesk.
-echo Синхронизации не будет — для неё запустите файл без ключей.
+echo Один проход: спрашиваю задания, подключаюсь к открытому терминалу и синхронизирую
+echo открытый в нём счёт один раз. Дальше — запуск без ключей.
 echo.
 
 rem Путь к настройкам передаётся явно: иначе он считался бы от текущей папки, а у
-rem запуска из Планировщика она своя. От него же менеджер отсчитывает файл-просьбу
+rem запуска из Планировщика она своя. От него же коллектор отсчитывает файл-просьбу
 rem остановиться (collector-stop.flag), которую кладёт stop-collector.bat.
 :launch
 "%TD_VENV_PY%" -m collector.main --env-file "%TD_HOME%collector.env" %*
 set "TD_RC=%errorlevel%"
 
-rem Коды те же, что у процесса счёта (collector/worker.py), и та же таблица есть в
-rem install-service.ps1 — там их читает Планировщик. Расходиться им нельзя.
+rem Коды заданы в collector/main.py, и та же таблица есть в install-service.ps1 — там их
+rem читает Планировщик. Расходиться им нельзя.
 echo.
 if "%TD_RC%"=="0" goto :say_stopped
 if "%TD_RC%"=="1" goto :say_crashed
 if "%TD_RC%"=="2" goto :say_config
 if "%TD_RC%"=="3" goto :say_platform
 echo Коллектор остановлен принудительно, код %TD_RC%. Так завершают его stop-collector.bat
-echo и «Снять задачу» в диспетчере задач. Процессы счетов после такой остановки могут
-echo остаться живыми — проверьте диспетчер задач.
+echo и «Снять задачу» в диспетчере задач. TradeDesk об этом не узнаёт: карточки счетов
+echo через пять минут скажут «коллектор не на связи». Окно MetaTrader 5 остаётся открытым.
 goto :done
 
 :say_stopped

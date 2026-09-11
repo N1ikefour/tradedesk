@@ -45,12 +45,23 @@ def test_write_is_atomic_enough_to_survive_a_power_cut(tmp_path: Path) -> None:
     assert list(tmp_path.glob("*.tmp")) == []
 
 
-def test_state_file_lives_next_to_the_portable_terminal(tmp_path: Path) -> None:
-    """Путь из MT5_PORTABLE_ROOT спека держит вне профиля пользователя (X-43)."""
-    assert state.state_path(tmp_path / "acc").name == state.STATE_FILENAME
+def test_the_state_file_is_per_account(tmp_path: Path) -> None:
+    """Смещение у каждого брокера своё, и один общий файл сложил бы их в одно значение."""
+    first = state.state_path(tmp_path, "0192f1d4-2c6a-7c3f-9d1e-2b6a8f4c1d55")
+    second = state.state_path(tmp_path, "0192f1d4-2c6a-7c3f-9d1e-2b6a8f4c1d66")
+    assert first != second
+    assert first.parent == tmp_path
+
+
+@pytest.mark.parametrize("account_id", ["../../etc/passwd", "a\\b", ""])
+def test_the_state_file_never_leaves_its_folder(account_id: str) -> None:
+    name = state.state_file_name(account_id)
+    assert "/" not in name
+    assert "\\" not in name
+    assert ".." not in name
 
 
 def test_no_secret_ever_reaches_the_file() -> None:
-    """Пароль счёта живёт только в памяти процесса (CLAUDE.md §5)."""
+    """В файле только смещение: пароля у коллектора нет вовсе (T-07), токен сюда не ходит."""
     dumped = state.dump_state(state.WorkerState(server_utc_offset_minutes=120))
     assert set(json.loads(dumped)) == {"server_utc_offset_minutes"}

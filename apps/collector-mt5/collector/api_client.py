@@ -4,11 +4,15 @@
 «повторять или сдаваться» вынесены в чистые функции — их видно тестами; сетевая часть
 остаётся тонкой.
 
-**Пароль счёта приходит именно сюда** — `GET /internal/collector/assignments` единственный
-ответ API, который его содержит (`CLAUDE.md` §5). Отсюда два следствия. `Assignment.password`
-объявлен с `repr=False`: объект попадает в кадры стека, а кадры печатаются при любом
-падении. И конструктор `Assignment` вносит пароль в скраб логов — это единственная точка,
-где значение появляется в процессе, поэтому здесь защита включается на все пути сразу.
+**Пароля счёта здесь нет вовсе** (`T-07`, `X-66`). В терминал коллектор не входит —
+терминал открывает человек, — и API пароля не отдаёт: его нет ни в поле `Assignment`, ни в
+ответе `/internal/collector/assignments`. Реестр скраба (`logging_setup`) остаётся, но
+секрет в нём теперь один — `COLLECTOR_TOKEN`.
+
+**Системный прокси не используется** (`X-68`): `trust_env=False`. Коллектор по построению
+ходит только на адрес своей установки TradeDesk, а VPN на машине трейдера — норма, и он
+прописывает себя системным прокси Windows. У первого пользователя это дало `502 Bad
+Gateway` на `http://localhost:8000` — симптом, уводящий к «сервер сломался».
 
 Ретраи — `tenacity` с потолком. Потолок обязателен: недоступность API не имеет права
 превратиться ни в бесконечный цикл, ни в потерю данных. Потери и не будет — следующая
@@ -19,7 +23,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from types import TracebackType
 from typing import Any, Final
@@ -61,27 +65,19 @@ class RetryableApiError(Exception):
 
 @dataclass(frozen=True)
 class Assignment:
-    """Задание на один счёт — `SPEC.md` §5.6. **Содержит пароль инвестора.**"""
+    """Задание на один счёт — `SPEC.md` §5.6. Пароля здесь нет намеренно.
+
+    `login` и `server` — это больше не «чем войти», а **чем сверить**: коллектор
+    подключается к открытому человеком терминалу и обязан доказать, что там открыт именно
+    этот счёт, прежде чем отправить хоть одну сделку (`identity.py`).
+    """
 
     account_id: str
     server: str
     login: int
-    # `repr=False` — то же решение и по той же причине, что у `AssignmentResponse` в api:
-    # печать объекта в трейсбеке не имеет права вынести пароль в лог.
-    password: str = field(repr=False)
     sync_requested_at: datetime | None
     last_sync_at: datetime | None
     status: str
-
-    def __post_init__(self) -> None:
-        """Появился объект с паролем — значит, скраб обязан знать это значение.
-
-        Регистрация стоит в конструкторе, а не у вызывающего, потому что это **точка
-        входа пароля в процесс**: другого способа получить его нет. Любой будущий
-        потребитель assignments (менеджер процессов `S1-09`) получает защиту, не зная о
-        ней, а «забыли зарегистрировать» перестаёт быть возможным диффом.
-        """
-        logging_setup.register_secret(self.password)
 
 
 @dataclass(frozen=True)
@@ -144,14 +140,15 @@ def _assignment(item: object) -> Assignment:
             account_id=str(item["account_id"]),
             server=str(item["server"]),
             login=int(item["login"]),
-            password=str(item["password"]),
             sync_requested_at=_moment(item.get("sync_requested_at")),
             last_sync_at=_moment(item.get("last_sync_at")),
             status=str(item.get("status") or ""),
         )
     except (KeyError, TypeError, ValueError) as error:
-        # Текст исключения не подставляется: в `item` лежит пароль, и `KeyError` от
-        # словаря печатает ключ, а `ValueError` от `int()` — значение.
+        # Текст исключения не подставляется: `KeyError` печатает ключ, `ValueError` от
+        # `int()` — значение целиком, и оба по-английски. Это сообщение уезжает в файл лога
+        # человека (`main._assignments`), а причин у отказа ровно две, и обе названы здесь
+        # словами. Само исключение остаётся в цепочке `__cause__` для трейсбека.
         raise ApiError(
             "Задание коллектора пришло в неожиданном виде: нет обязательного поля "
             "или время без часового пояса"
@@ -205,7 +202,7 @@ class HeartbeatAccount:
         if self.message is not None:
             # Скраб на втором канале, которым текст уходит из процесса. Сообщение
             # собирается из текста терминала, а он для нас чужой: `CLAUDE.md` §5 требует,
-            # чтобы пароля не было и в текстах ошибок, а `status_message` видно на экране.
+            # чтобы секрета не было и в текстах ошибок, а `status_message` видно на экране.
             body["message"] = messages.fit(
                 logging_setup.scrub_text(self.message, logging_setup.known_secrets())
             )
@@ -235,6 +232,11 @@ class ApiClient:
                 "Authorization": f"Bearer {settings.collector_token.get_secret_value()}",
                 "Content-Type": "application/json",
             },
+            # X-68: без этого httpx читает HTTP_PROXY, HTTPS_PROXY и системные настройки
+            # прокси Windows, и запрос на `http://localhost:8000` уходит в туннель VPN.
+            # Лазейки «а вдруг TradeDesk за прокси» нет намеренно: `SPEC.md` §8.1 знает
+            # только локальную установку, и появится удалённая — появится своё решение.
+            trust_env=False,
         )
 
     def __enter__(self) -> ApiClient:
