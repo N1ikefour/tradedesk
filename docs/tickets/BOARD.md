@@ -73,6 +73,7 @@ Updated: 2026-09-11
 | X-70 | Хвосты отменённой архитектуры в текстах для человека | collector + infra | **Done** | [PR #44](https://github.com/N1ikefour/tradedesk/pull/44) · документы read order в `X-71` |
 | X-71 | Отменённая архитектура осталась в документах read order | backend + infra | Todo | — |
 | X-72 | Сличитель цитат: мёртвая ветка, потолок и дешёвая подстановка | infra | Todo | — |
+| X-73 | Проверка версии после обновления не ждёт старта приложения | infra | Todo | — · найдено 16.09 у пользователя |
 
 ---
 
@@ -159,7 +160,7 @@ Updated: 2026-09-11
 | X-52 | Токен коллектора даёт запись в любой счёт установки | backend + collector | Todo | — |
 | X-53 | `start.sh` теряет код возврата compose | infra | **Done** | [PR #30](https://github.com/N1ikefour/tradedesk/pull/30) |
 | X-54 | Docker Compose не собирает из пути с кириллицей | infra | **Done** | [PR #30](https://github.com/N1ikefour/tradedesk/pull/30) |
-| X-55 | `.bat` в UTF-8, а русская консоль Windows в CP866 | infra | Todo | — |
+| X-55 | 🔴 Шесть `.bat` с LF не выполняются на Windows | infra | Todo | — · воспроизведено 16.09 у пользователя |
 | X-56 | `make ci-target` не гоняет тесты коллектора | infra | Todo | — |
 | X-57 | Жёсткое завершение менеджера оставляет процессы сиротами | collector | **Снят** | предмета нет: дочерних процессов больше нет ([PR #41](https://github.com/N1ikefour/tradedesk/pull/41)) |
 | X-58 | Файлы установки с секретами читаемы любой учёткой машины | infra | Todo | — |
