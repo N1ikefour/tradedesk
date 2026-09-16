@@ -8,11 +8,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
-from collector import messages, mt5_client
+from collector import messages, mt5_client, sync
 from collector.mt5_client import TerminalError
 
 # --------------------------------------------------------------------------------------
@@ -169,15 +170,53 @@ def test_history_growth_is_read_the_same_way_every_time(
     assert mt5_client.history_step(total, previous) == expected
 
 
+def test_the_counting_window_stays_away_from_the_windows_epoch() -> None:
+    """X-74: у самой эпохи нативный перевод времени на Windows отвечает `EINVAL`.
+
+    Сам перевод здесь не воспроизвести — библиотеки под macOS нет вовсе, и падения на
+    `1970-01-02` на этой машине не было и не будет. Проверяется то, что проверить можно:
+    какие даты уезжают в библиотеку. Обе — без зоны: `MetaTrader5` принимает наивный
+    `datetime` и зону в нём игнорирует.
+    """
+    start, end = mt5_client.history_count_window(datetime(2026, 9, 16, 12, 0, tzinfo=UTC))
+    assert start == datetime(2000, 1, 1)
+    assert end == datetime(2026, 9, 18, 12, 0)
+    assert start.tzinfo is None
+    assert end.tzinfo is None
+
+
+def test_the_counting_window_covers_the_widest_window_the_sync_can_read() -> None:
+    """Счётчик обязан видеть всё, что синк вправе прочитать, иначе он «успокоится» рано.
+
+    Это и есть мера, по которой выбраны обе границы, — число, а не вкус. Самое широкое
+    окно — первый синк на потолке настройки (`FIRST_SYNC_DAYS ≤ 7300`, `config.py`) с
+    неизвестным ещё смещением, то есть с запасом на максимум реальной зоны в обе стороны.
+    """
+    now = datetime(2026, 9, 16, 12, 0, tzinfo=UTC)
+    widest = sync.plan_window(
+        now,
+        last_sync_at=None,
+        sync_requested_at=None,
+        last_finished_at=None,
+        first_sync_days=7300,
+    )
+    read_from, read_to = sync.terminal_bounds(widest, None)
+    start, end = mt5_client.history_count_window(now)
+    assert start <= read_from
+    assert end >= read_to
+
+
 class _FakeModule:
     """Ровно те вызовы библиотеки, которые делает `wait_for_history`."""
 
     def __init__(self, totals: list[int]) -> None:
         self.totals = totals
         self.calls = 0
+        self.windows: list[tuple[Any, Any]] = []
 
     def history_deals_total(self, start: Any, end: Any) -> int:
         self.calls += 1
+        self.windows.append((start, end))
         return self.totals[min(self.calls - 1, len(self.totals) - 1)]
 
 
@@ -196,6 +235,22 @@ def test_waiting_stops_as_soon_as_history_stops_growing() -> None:
     module = _FakeModule([100, 504, 504])
     _TerminalWithModule(module).wait_for_history()
     assert module.calls == 3
+
+
+def test_the_library_is_asked_with_the_dates_the_window_names() -> None:
+    """Связка между проверяемой функцией и непроверяемым вызовом (`X-74`).
+
+    Без неё `history_count_window` остаётся правильной сама по себе, а в библиотеку уезжает
+    что угодно другое: именно так и выглядела ошибка — даты жили прямо в теле метода,
+    который на машине разработки не выполняется.
+    """
+    module = _FakeModule([7, 7])
+    _TerminalWithModule(module).wait_for_history()
+    start, end = module.windows[0]
+    assert start == mt5_client.HISTORY_COUNT_FROM
+    assert start.tzinfo is None
+    assert end.tzinfo is None
+    assert end > datetime.now(UTC).replace(tzinfo=None)
 
 
 def test_history_that_never_settles_says_so_instead_of_going_quiet(monkeypatch: Any) -> None:

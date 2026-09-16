@@ -319,13 +319,15 @@ class Collector:
         **запускал** терминал: там повтор стоил дорого. Теперь отказ означает «человек ещё
         не открыл MetaTrader 5», и правильный ответ на это — попробовать через минуту, а не
         через четверть часа после того, как он его открыл.
+
+        Отказом подключения считается только отказ `connect()`. Ожидание догрузки истории
+        стоит отдельным шагом и права отменить подключение не имеет — `_settle_history`.
         """
         if self._terminal is not None:
             return self._terminal, None
         terminal = self.terminal_factory()
         try:
             terminal.connect()
-            terminal.wait_for_history()
         except TerminalError as error:
             log.warning(
                 "collector.connect_failed",
@@ -336,10 +338,37 @@ class Collector:
             with contextlib.suppress(TerminalError):
                 terminal.close()
             return None, error.message
+        self._settle_history(terminal)
         self._terminal = terminal
         self._last_open = None
         log.info("collector.connected")
         return terminal, None
+
+    def _settle_history(self, terminal: Terminal) -> None:
+        """Подождать догрузки истории. Шаг необязательный, и отказ на нём — не авария.
+
+        Цена пропуска — косметика: первый батч уедет неполным, вставка идемпотентна, и
+        журнал дозаполнится следующим тиком (`SPEC.md` §8.3). Цена аварии здесь измерена на
+        живой Windows: `history_deals_total` уронил `SystemError`, коллектор написал
+        «аварийно остановился», и перестали синхронизироваться **все** счета (`X-74`).
+        Удобство не вправе останавливать продукт, поэтому ловится всё, чем вызов может
+        отказать: `SystemError` и `OSError` из нативного расширения `TerminalError` не
+        наследуют, и список таких классов нам никто не обещал. Терминал при этом остаётся
+        подключённым — связь проверит первый же `account_info()`.
+
+        Молчать нельзя: ни на карточку счёта, ни на экран это не выходит (журнал догонит
+        себя сам, и красить счёт в «требует внимания» из-за косметики — врать человеку),
+        значит единственный след — строка лога, и она обязана назвать причину.
+        """
+        try:
+            terminal.wait_for_history()
+        except Exception as error:
+            log.warning(
+                "collector.history_wait_failed",
+                reason=messages.HISTORY_WAIT_FAILED,
+                error=type(error).__name__,
+                detail=str(error),
+            )
 
     def _terminal_lost(self, error: TerminalError) -> str:
         """Терминал отвалился посреди работы: закрыли руками, упал, машина уснула."""

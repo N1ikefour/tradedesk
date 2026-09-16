@@ -112,6 +112,11 @@ class FakeTerminal:
     connect_errors: list[TerminalError] = field(default_factory=list)
     info_errors: list[TerminalError] = field(default_factory=list)
     history_errors: list[TerminalError] = field(default_factory=list)
+    # Отказ ожидания догрузки — здесь `Exception`, а не `TerminalError`, и это существо
+    # `X-74`: на живой Windows отсюда прилетел `SystemError` из нативного расширения,
+    # который ни от чего нашего не наследует. Подделка, умеющая ронять только `TerminalError`,
+    # тот отказ и не воспроизвела бы.
+    wait_errors: list[Exception] = field(default_factory=list)
     connected: int = 0
     closed: int = 0
     history_calls: list[tuple[datetime, datetime]] = field(default_factory=list)
@@ -127,6 +132,8 @@ class FakeTerminal:
 
     def wait_for_history(self) -> None:
         self.waited += 1
+        if self.wait_errors:
+            raise self.wait_errors.pop(0)
 
     def account_info(self) -> FakeAccountInfo:
         if self.info_errors:
