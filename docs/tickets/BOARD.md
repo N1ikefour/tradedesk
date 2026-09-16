@@ -48,11 +48,11 @@ Updated: 2026-09-11
 | S2-01 | Journal API: список и карточка | backend | **Done** | [PR #20](https://github.com/N1ikefour/tradedesk/pull/20) |
 | S2-02 | Journal API: entry, reflection, tags, vocab | backend | **Done** | [PR #21](https://github.com/N1ikefour/tradedesk/pull/21) |
 | S2-03 | Ручные сделки | backend | Backlog | — |
-| S2-04 | Вложения | backend | Backlog | — |
+| S2-04 | Вложения (слоты «вход»/«выход» — `S2-08`) | backend | Backlog | — · просьба пользователя 16.09 |
 | S2-05 | Календарь API + `analytics/summary` | backend | **Done** | [PR #23](https://github.com/N1ikefour/tradedesk/pull/23) |
 | S2-06 | UI Journal таблица | frontend | **Done** | [PR #22](https://github.com/N1ikefour/tradedesk/pull/22) |
 | S2-07 | UI Position card | frontend | **Done** | [PR #24](https://github.com/N1ikefour/tradedesk/pull/24) |
-| S2-08 | UI Скриншоты | frontend | Backlog | — |
+| S2-08 | Скрины входа и выхода в карточке сделки | frontend + backend | Backlog | — · ⚠️ просьба пользователя 16.09 |
 | S2-09 | UI Calendar | frontend | **Done** | [PR #35](https://github.com/N1ikefour/tradedesk/pull/35) |
 | S2-10 | UI Dashboard v1 | frontend | **Done** | [PR #27](https://github.com/N1ikefour/tradedesk/pull/27) |
 | S2-11 | Переключатель счетов: создание и полировка | frontend | **Done** | [PR #36](https://github.com/N1ikefour/tradedesk/pull/36) |
