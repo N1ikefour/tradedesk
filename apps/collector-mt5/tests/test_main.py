@@ -259,6 +259,61 @@ def test_the_retry_is_the_next_tick_and_nothing_slower(settings: CollectorSettin
     assert sum(slept) == pytest.approx(float(settings.heartbeat_interval_seconds))
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        OSError(22, "Invalid argument"),
+        SystemError("<built-in function history_deals_total> returned a result with an exception"),
+        TerminalError(messages.TERMINAL_LOST, code=-10004, description="IPC failed"),
+    ],
+    ids=["oserror", "systemerror", "terminal_error"],
+)
+def test_a_failed_history_wait_does_not_stop_the_synchronisation(
+    settings: CollectorSettings, monkeypatch: Any, failure: Exception
+) -> None:
+    """X-74: ожидание догрузки истории — удобство, и оно не вправе остановить продукт.
+
+    На живой Windows отказ этого шага останавливал коллектор целиком: `SystemError` из
+    нативной библиотеки уходил наружу мимо `TerminalError`, цикл умирал, на карточках всех
+    счетов оставалось «коллектор аварийно остановился». Проверяется не «не упал», а что
+    тик **дошёл до отправки батча**: ровно та работа, ради которой процесс и живёт.
+
+    Три класса отказа, потому что защита обязана быть не по списку исключений: `OSError` —
+    то, что прилетело с машины пользователя, `SystemError` — то, чем библиотека обернула
+    его наружу, `TerminalError` — наш собственный, который прежде отменял подключение
+    целиком, хотя `connect()` к тому моменту уже удался.
+    """
+    recorder = _Recorder()
+    monkeypatch.setattr(main_module, "log", recorder)
+    api = FakeApi(items=[assignment_for()])
+    terminal = _ready(tick_time=1_788_357_791, wait_errors=[failure])
+    _collector(settings, api, terminal, known_offset=120)[0].run(max_ticks=1)
+
+    assert len(api.batches) == 1
+    assert api.beats[0][0].state == "running"
+    assert recorder.has("collector.connected")
+    fields = recorder.find("collector.history_wait_failed")
+    assert fields["reason"] == messages.HISTORY_WAIT_FAILED
+    assert fields["error"] == type(failure).__name__
+
+
+def test_a_failed_history_wait_keeps_the_terminal_instead_of_reconnecting(
+    settings: CollectorSettings,
+) -> None:
+    """Подключение уже состоялось, и отменять его нечему: связь проверит `account_info()`.
+
+    Иначе каждый тик начинался бы с нового `connect()` — то есть косметический отказ
+    превращался бы в вечное переподключение к исправному терминалу.
+    """
+    api = FakeApi(items=[assignment_for()])
+    terminal = _ready(tick_time=1_788_357_791, wait_errors=[OSError(22, "Invalid argument")])
+    _collector(settings, api, terminal, known_offset=120)[0].run(max_ticks=2)
+
+    assert terminal.connected == 1
+    assert terminal.waited == 1
+    assert len(api.batches) >= 1
+
+
 def test_a_terminal_lost_mid_work_is_reconnected_next_tick(
     settings: CollectorSettings, monkeypatch: Any
 ) -> None:
